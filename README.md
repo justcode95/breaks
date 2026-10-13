@@ -26,6 +26,6 @@ cargo check --workspace      # Anchor programs, host check only
 
 ## Status
 
-Phase 1 scaffold. The programs only contain a placeholder `initialize`. The program IDs in `Anchor.toml` and `declare_id!` are placeholders; run `anchor keys sync` once deploy keypairs exist (keypairs never go in git).
-
-Not verified yet: SBF builds and `anchor test`. The Solana/Anchor toolchain could not be downloaded in the cloud session that wrote the scaffold, so those run in CI from Phase 2.
+- Phase 1 (scaffold): merged.
+- Phase 2 (treasury program): `initialize`, `deposit_fees`, `set_split` with unit tests and on-chain LiteSVM tests. Needs CI to build for SBF; see CLAUDE.md "Run and test".
+- The `breaks` program only has a placeholder `initialize`. Program IDs in `Anchor.toml` and `declare_id!` are placeholders; run `anchor keys sync` once deploy keypairs exist (keypairs never go in git).
