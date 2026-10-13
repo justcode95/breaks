@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { twabByOwner, type BalanceEvent } from "../src/eligibility/twab.js";
+import { sortEvents, twabByOwner, type BalanceEvent } from "../src/eligibility/twab.js";
 
 const W = { start: 1000, end: 2000 }; // 1000 seconds
 
@@ -102,5 +102,57 @@ describe("twabByOwner", () => {
     const broken = [ev("alice", "a1", 1000, 10n, 10n), ev("alice", "a1", 1100, 5n, 99n)];
     expect(() => twabByOwner(broken, W)).toThrow(/delta does not lead/);
     expect(() => twabByOwner([], { start: 5, end: 5 })).toThrow();
+  });
+});
+
+describe("several transactions on one token account in the same slot", () => {
+  // Inside a slot the order of the transactions is not in the data (no signature order follows it), but the balances
+  // chain: each event starts where the one before it ended. The order is recovered from that chain.
+  const at = (sig: string, account: string, time: number, slot: bigint, delta: bigint, after: bigint): BalanceEvent => ({
+    signature: sig, slot, time, owner: "pool", tokenAccount: account, delta, balanceAfter: after,
+  });
+
+  it("does not depend on the signature order", () => {
+    // Real order: 100 -> 150 (sig "z") -> 120 (sig "a"). Sorted by signature they would read 120 <- 100 first.
+    const first = at("z", "v1", 1500, 7n, 50n, 150n);
+    const second = at("a", "v1", 1500, 7n, -30n, 120n);
+    const opening = at("m", "v1", 500, 1n, 100n, 100n);
+    const expected = twabByOwner([opening, first, second], W).get("pool");
+    expect(expected).toBe((100n * 500n + 120n * 500n) / 1000n);
+    expect(twabByOwner([second, opening, first], W).get("pool")).toBe(expected);
+  });
+
+  it("works when a balance comes back to where it was (a cycle)", () => {
+    // 100 -> 80 -> 100 -> 80 -> 100 inside one slot; any order that chains gives the same result.
+    const events = [
+      at("e", "v1", 1200, 9n, -20n, 80n),
+      at("d", "v1", 1200, 9n, 20n, 100n),
+      at("c", "v1", 1200, 9n, -20n, 80n),
+      at("b", "v1", 1200, 9n, 20n, 100n),
+      at("o", "v1", 900, 1n, 100n, 100n),
+    ];
+    expect(twabByOwner(events, W).get("pool")).toBe(100n);
+  });
+
+  it("keeps the accounts of one slot apart", () => {
+    const events = [
+      at("a", "v1", 1200, 9n, 10n, 10n),
+      at("b", "v2", 1200, 9n, 20n, 20n),
+      at("c", "v1", 1200, 9n, 5n, 15n),
+    ];
+    expect(twabByOwner(events, W).get("pool")).toBe((15n * 800n + 20n * 800n) / 1000n);
+  });
+
+  it("still refuses a history with a transaction missing", () => {
+    // 100 -> (missing: +40) -> 140 -> 150: the second event does not start where the first ended.
+    const events = [at("a", "v1", 500, 1n, 100n, 100n), at("b", "v1", 1200, 9n, 10n, 150n), at("c", "v1", 1200, 9n, 5n, 165n)];
+    expect(() => twabByOwner(events, W)).toThrow(/delta does not lead to the balance/);
+  });
+
+  it("sorts events that differ only in their owner in a fixed order", () => {
+    const a: BalanceEvent = { signature: "s", slot: 5n, time: 100, owner: "alice", tokenAccount: "t", delta: -5n, balanceAfter: 0n };
+    const b: BalanceEvent = { ...a, owner: "bob", delta: 5n, balanceAfter: 5n };
+    expect(sortEvents([b, a]).map((e) => e.owner)).toEqual(["alice", "bob"]);
+    expect(sortEvents([a, b]).map((e) => e.owner)).toEqual(["alice", "bob"]);
   });
 });
