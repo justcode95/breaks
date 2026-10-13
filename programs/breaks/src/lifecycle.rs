@@ -34,7 +34,7 @@ pub struct CreateBreak<'info> {
         init, payer = keeper, space = 8 + Break::INIT_SPACE,
         seeds = [BREAK_SEED, &config.next_break_id.to_le_bytes()], bump,
     )]
-    pub break_: Account<'info, Break>,
+    pub break_: Box<Account<'info, Break>>,
     #[account(address = config.usdc_mint)]
     pub usdc_mint: Account<'info, Mint>,
     /// Holds the buyers' USDC until the break is funded or cancelled.
@@ -105,6 +105,7 @@ impl<'info> CreateBreak<'info> {
         b.randomness_requested_at = 0;
         b.seed = [0; 32];
         b.seeded_at = 0;
+        b.free_winner_count = 0;
         b.bump = bumps.break_;
         b.escrow_bump = bumps.escrow;
 
@@ -145,7 +146,7 @@ pub struct BuySpot<'info> {
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, BreaksConfig>,
     #[account(mut, seeds = [BREAK_SEED, &break_.id.to_le_bytes()], bump = break_.bump)]
-    pub break_: Account<'info, Break>,
+    pub break_: Box<Account<'info, Break>>,
     #[account(mut, seeds = [ESCROW_SEED, break_.key().as_ref()], bump = break_.escrow_bump)]
     pub escrow: Account<'info, TokenAccount>,
     #[account(mut, token::mint = config.usdc_mint, token::authority = buyer)]
@@ -207,7 +208,7 @@ impl<'info> BuySpot<'info> {
 #[derive(Accounts)]
 pub struct CloseBreak<'info> {
     #[account(mut, seeds = [BREAK_SEED, &break_.id.to_le_bytes()], bump = break_.bump)]
-    pub break_: Account<'info, Break>,
+    pub break_: Box<Account<'info, Break>>,
 }
 
 impl CloseBreak<'_> {
@@ -236,7 +237,7 @@ pub struct KeeperBreakCall<'info> {
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = keeper @ BreaksError::Unauthorized)]
     pub config: Account<'info, BreaksConfig>,
     #[account(mut, seeds = [BREAK_SEED, &break_.id.to_le_bytes()], bump = break_.bump)]
-    pub break_: Account<'info, Break>,
+    pub break_: Box<Account<'info, Break>>,
 }
 
 impl KeeperBreakCall<'_> {
@@ -295,7 +296,7 @@ pub struct FundPurchases<'info> {
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = keeper @ BreaksError::Unauthorized)]
     pub config: Account<'info, BreaksConfig>,
     #[account(mut, seeds = [BREAK_SEED, &break_.id.to_le_bytes()], bump = break_.bump)]
-    pub break_: Account<'info, Break>,
+    pub break_: Box<Account<'info, Break>>,
     #[account(mut, seeds = [ESCROW_SEED, break_.key().as_ref()], bump = break_.escrow_bump)]
     pub escrow: Account<'info, TokenAccount>,
     /// The buyer wallet's USDC account: the only place the pack budget can go.

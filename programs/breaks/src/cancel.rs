@@ -14,7 +14,7 @@ pub struct CancelBreak<'info> {
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ BreaksError::Unauthorized)]
     pub config: Account<'info, BreaksConfig>,
     #[account(mut, seeds = [BREAK_SEED, &break_.id.to_le_bytes()], bump = break_.bump)]
-    pub break_: Account<'info, Break>,
+    pub break_: Box<Account<'info, Break>>,
     /// CHECK: PDA of this program; it is the treasury's controller and only ever signs CPIs.
     #[account(seeds = [TREASURY_AUTHORITY_SEED], bump)]
     pub treasury_authority: UncheckedAccount<'info>,
@@ -65,7 +65,7 @@ impl CancelBreak<'_> {
 #[derive(Accounts)]
 pub struct RefundSpot<'info> {
     #[account(seeds = [BREAK_SEED, &break_.id.to_le_bytes()], bump = break_.bump)]
-    pub break_: Account<'info, Break>,
+    pub break_: Box<Account<'info, Break>>,
     #[account(mut, seeds = [ESCROW_SEED, break_.key().as_ref()], bump = break_.escrow_bump)]
     pub escrow: Account<'info, TokenAccount>,
     #[account(

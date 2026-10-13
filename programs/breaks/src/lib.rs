@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 
 pub mod admin;
 pub mod cancel;
+pub mod claims;
 pub mod draw;
 pub mod errors;
 pub mod lifecycle;
@@ -12,6 +13,7 @@ pub mod treasury_cpi;
 
 pub use admin::*;
 pub use cancel::*;
+pub use claims::*;
 pub use draw::*;
 pub use lifecycle::*;
 
@@ -125,6 +127,18 @@ pub mod breaks {
     /// Anyone, once the adapter has produced the randomness.
     pub fn settle_randomness(ctx: Context<SettleRandomness>) -> Result<()> {
         ctx.accounts.handle()
+    }
+
+    /// Anyone, once the seed is final. Records the next free-spot winner; the proof must lead to the
+    /// committed eligibility root and the wallet must be the one the draw picks. In order.
+    pub fn claim_free_spot(
+        ctx: Context<ClaimFreeSpot>,
+        index: u8,
+        wallet: Pubkey,
+        weight: u64,
+        proof: Vec<ProofStepArg>,
+    ) -> Result<()> {
+        ctx.accounts.handle(index, wallet, weight, proof)
     }
 
     /// Admin only, before `fund_purchases`.

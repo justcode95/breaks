@@ -1,5 +1,5 @@
 [workspace]
-members = ["programs/*", "testkit"]
+members = ["programs/*", "testkit", "draw-core"]
 resolver = "2"
 
 [profile.release]

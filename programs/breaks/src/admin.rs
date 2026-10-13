@@ -46,6 +46,10 @@ impl Initialize<'_> {
             BreaksError::InvalidLimits
         );
         require!(p.max_paid_spots >= 1, BreaksError::InvalidLimits);
+        require!(
+            usize::from(p.max_free_spots) <= crate::state::MAX_FREE_SPOTS,
+            BreaksError::InvalidLimits
+        );
         require!(p.randomness_timeout_secs > 0, BreaksError::InvalidRandomnessConfig);
 
         let config = &mut self.config;

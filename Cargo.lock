@@ -766,6 +766,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
+ "draw-core",
  "litesvm",
  "litesvm-token",
  "mock-orao",
@@ -1169,6 +1170,13 @@ dependencies = [
  "const-oid 0.10.2",
  "crypto-common 0.2.2",
  "ctutils",
+]
+
+[[package]]
+name = "draw-core"
+version = "0.1.0"
+dependencies = [
+ "solana-sha256-hasher",
 ]
 
 [[package]]

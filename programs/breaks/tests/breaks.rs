@@ -9,9 +9,10 @@ use breaks::{
     errors::BreaksError,
     randomness::{draw_seed, parse_request, request_address, request_id as derive_request_id, RequestState},
     state::{Break, BreakStatus, BreaksConfig, Spot},
-    BreakCancelled, BreakClosed, BreakCreated, CreateBreakParams, EligibilityCommitted, PoolCommitted, PurchasesFunded,
-    RandomnessRequested, RandomnessSettled, SpotBought, SpotRefunded,
+    BreakCancelled, BreakClosed, BreakCreated, CreateBreakParams, EligibilityCommitted, FreeWinnerClaimed,
+    PoolCommitted, PurchasesFunded, RandomnessRequested, RandomnessSettled, SpotBought, SpotRefunded,
 };
+use draw_core::{draw_free_winners, leaf_node, parent, Leaf, Tree};
 use litesvm::LiteSVM;
 use litesvm_token::{
     get_spl_account, spl_token::state::Account as TokenAccountState, CreateAssociatedTokenAccount, CreateMint, MintTo,
@@ -561,6 +562,68 @@ impl Env {
         let (stranger, _) = self.user(0);
         let request = self.request_for(&self.brk(id).randomness_request_id);
         self.settle_with(&stranger, id, request)
+    }
+
+    // ---- the draw
+
+    fn commit_eligibility_with(&mut self, id: u64, root: [u8; 32], total_weight: u64, count: u32) -> Sent {
+        let keeper = self.keeper.insecure_clone();
+        let i = ix(
+            breaks::ID,
+            self.keeper_call(&keeper.pubkey(), id),
+            breaks::instruction::CommitEligibility {
+                root,
+                total_weight,
+                entry_count: count,
+                inputs_hash: [2; 32],
+            },
+        );
+        send(&mut self.svm, &keeper, &[], &[i])
+    }
+
+    fn claim_ix(
+        &self,
+        payer: &Address,
+        id: u64,
+        index: u8,
+        wallet: Address,
+        weight: u64,
+        proof: &[draw_core::ProofStep],
+    ) -> Instruction {
+        ix(
+            breaks::ID,
+            breaks::accounts::ClaimFreeSpot {
+                payer: *payer,
+                break_: break_pda(id),
+            },
+            breaks::instruction::ClaimFreeSpot {
+                index,
+                wallet,
+                weight,
+                proof: proof
+                    .iter()
+                    .map(|s| breaks::ProofStepArg {
+                        hash: s.sibling.hash,
+                        sum: s.sibling.sum,
+                        sibling_is_left: s.sibling_is_left,
+                    })
+                    .collect(),
+            },
+        )
+    }
+
+    /// Anyone (a stranger here) submits a free-spot winner.
+    fn claim(&mut self, id: u64, index: u8, leaf: &Leaf, proof: &[draw_core::ProofStep]) -> Sent {
+        let (stranger, _) = self.user(0);
+        let i = self.claim_ix(
+            &stranger.pubkey(),
+            id,
+            index,
+            Address::new_from_array(leaf.wallet),
+            leaf.weight,
+            proof,
+        );
+        send(&mut self.svm, &stranger, &[], &[i])
     }
 
     fn after_deadline(&mut self) {
@@ -1750,6 +1813,333 @@ fn initialize_rejects_a_zero_randomness_timeout() {
     }
     .data();
     assert_fails_with(env.send_as_authority(&[i]), code(BreaksError::InvalidRandomnessConfig));
+}
+
+// ---------------------------------------------------------------- the draw
+
+/// A break taken all the way to a final seed, with a real eligibility tree committed.
+struct DrawSetup {
+    id: u64,
+    leaves: Vec<Leaf>,
+    tree: Tree,
+    /// The seed the program stored.
+    seed: [u8; 32],
+}
+
+/// Eligible wallets with the given weights, sorted by address like the tree needs.
+fn eligible(weights: &[u64]) -> Vec<Leaf> {
+    let mut wallets: Vec<Address> = weights.iter().map(|_| Address::new_unique()).collect();
+    wallets.sort();
+    wallets
+        .iter()
+        .zip(weights)
+        .map(|(w, weight)| Leaf {
+            wallet: w.to_bytes(),
+            weight: *weight,
+        })
+        .collect()
+}
+
+/// Creates a break (2 free spots), sells `sold` spots, commits `leaves` as the eligible holders,
+/// funds, commits the pool and settles randomness with `answer`.
+fn drawn_setup(env: &mut Env, sold: u16, weights: &[u64], answer: [u8; 64]) -> DrawSetup {
+    let leaves = eligible(weights);
+    let tree = Tree::build(&leaves).unwrap();
+    let id = env.create_break();
+    for _ in 0..sold {
+        env.sell_one(id);
+    }
+    env.after_deadline();
+    let (anyone, _) = env.user(0);
+    env.close(&anyone, id).unwrap();
+    env.commit_eligibility_with(id, tree.root().hash, tree.root().sum, leaves.len() as u32)
+        .unwrap();
+    env.fund(id).unwrap();
+    let keeper = env.keeper.insecure_clone();
+    env.commit_pool_as(&keeper, id, sold + 2.min(leaves.len() as u16))
+        .unwrap();
+    env.request_randomness(id).unwrap();
+    env.mock_fulfill(env.brk(id).randomness_request_id, answer).unwrap();
+    env.settle(id).unwrap();
+    let seed = env.brk(id).seed;
+    DrawSetup { id, leaves, tree, seed }
+}
+
+#[test]
+fn the_drawn_winners_are_recorded_in_order_and_complete_the_draw() {
+    let mut env = Env::ready();
+    let d = drawn_setup(&mut env, 3, &[10, 20, 5, 1, 50, 9], [11; 64]);
+    assert_eq!(env.brk(d.id).status, BreakStatus::Settled);
+    let expected = draw_free_winners(&d.seed, &d.leaves, 2).unwrap();
+    assert_eq!(expected.len(), 2);
+
+    // Winner 0.
+    let w0 = &expected[0];
+    let meta = env
+        .claim(d.id, 0, &d.leaves[w0.leaf_index], &d.tree.proof(w0.leaf_index).unwrap())
+        .unwrap();
+    let b = env.brk(d.id);
+    assert_eq!((b.free_winner_count, b.status), (1, BreakStatus::Settled));
+    assert_eq!(
+        (
+            b.free_winners[0].wallet.to_bytes(),
+            b.free_winners[0].start,
+            b.free_winners[0].weight
+        ),
+        (d.leaves[w0.leaf_index].wallet, w0.start, w0.weight)
+    );
+    let event: FreeWinnerClaimed = find_event(&meta.logs).expect("FreeWinnerClaimed event");
+    assert_eq!((event.index, event.weight, event.position), (0, w0.weight, w0.position));
+
+    // Winner 1 completes the draw.
+    let w1 = &expected[1];
+    env.claim(d.id, 1, &d.leaves[w1.leaf_index], &d.tree.proof(w1.leaf_index).unwrap())
+        .unwrap();
+    let b = env.brk(d.id);
+    assert_eq!((b.free_winner_count, b.status), (2, BreakStatus::Drawn));
+    assert_ne!(w0.leaf_index, w1.leaf_index, "two different wallets");
+    assert_eq!(b.free_winners[1].wallet.to_bytes(), d.leaves[w1.leaf_index].wallet);
+
+    // Nothing more to claim.
+    assert_fails_with(
+        env.claim(d.id, 2, &d.leaves[0], &d.tree.proof(0).unwrap()),
+        code(BreaksError::WrongStatus),
+    );
+}
+
+#[test]
+fn only_the_wallet_the_draw_picked_can_be_claimed() {
+    let mut env = Env::ready();
+    let d = drawn_setup(&mut env, 3, &[10, 20, 5, 1, 50, 9], [12; 64]);
+    let expected = draw_free_winners(&d.seed, &d.leaves, 2).unwrap();
+    let picked = expected[0].leaf_index;
+
+    // Every other wallet has a valid proof and a real weight, and is still refused.
+    for (i, leaf) in d.leaves.iter().enumerate().filter(|(i, _)| *i != picked) {
+        assert_fails_with(
+            env.claim(d.id, 0, leaf, &d.tree.proof(i).unwrap()),
+            code(BreaksError::NotTheDrawnWinner),
+        );
+    }
+    assert_eq!(env.brk(d.id).free_winner_count, 0);
+    // Winner 1's wallet cannot be claimed as winner 0 either.
+    assert_fails_with(
+        env.claim(
+            d.id,
+            0,
+            &d.leaves[expected[1].leaf_index],
+            &d.tree.proof(expected[1].leaf_index).unwrap(),
+        ),
+        code(BreaksError::NotTheDrawnWinner),
+    );
+    // The right one works.
+    env.claim(d.id, 0, &d.leaves[picked], &d.tree.proof(picked).unwrap())
+        .unwrap();
+}
+
+#[test]
+fn winners_are_claimed_in_order_and_no_more_than_the_draw_produces() {
+    let mut env = Env::ready();
+    let d = drawn_setup(&mut env, 3, &[10, 20, 5, 1, 50, 9], [13; 64]);
+    let expected = draw_free_winners(&d.seed, &d.leaves, 2).unwrap();
+    let (w0, w1) = (expected[0].leaf_index, expected[1].leaf_index);
+
+    // Winner 1 first: refused, even though the wallet is the right one for index 1.
+    assert_fails_with(
+        env.claim(d.id, 1, &d.leaves[w1], &d.tree.proof(w1).unwrap()),
+        code(BreaksError::WrongClaimIndex),
+    );
+    env.claim(d.id, 0, &d.leaves[w0], &d.tree.proof(w0).unwrap()).unwrap();
+    // The same index twice.
+    assert_fails_with(
+        env.claim(d.id, 0, &d.leaves[w0], &d.tree.proof(w0).unwrap()),
+        code(BreaksError::WrongClaimIndex),
+    );
+}
+
+#[test]
+fn a_wrong_weight_or_proof_is_rejected() {
+    let mut env = Env::ready();
+    let d = drawn_setup(&mut env, 3, &[10, 20, 5, 1, 50, 9], [14; 64]);
+    let w = draw_free_winners(&d.seed, &d.leaves, 2).unwrap()[0].leaf_index;
+    let proof = d.tree.proof(w).unwrap();
+    let leaf = d.leaves[w];
+
+    // A heavier weight than the tree has: the proof no longer leads to the root.
+    let heavier = Leaf {
+        weight: leaf.weight + 1,
+        ..leaf
+    };
+    assert_fails_with(env.claim(d.id, 0, &heavier, &proof), code(BreaksError::InvalidProof));
+    // A tampered step.
+    let mut tampered = proof.clone();
+    tampered[0].sibling.sum += 1;
+    assert_fails_with(env.claim(d.id, 0, &leaf, &tampered), code(BreaksError::InvalidProof));
+    // A step on the wrong side.
+    let mut flipped = proof.clone();
+    flipped[0].sibling_is_left = !flipped[0].sibling_is_left;
+    assert_fails_with(env.claim(d.id, 0, &leaf, &flipped), code(BreaksError::InvalidProof));
+    // A shortened proof.
+    assert_fails_with(env.claim(d.id, 0, &leaf, &proof[1..]), code(BreaksError::InvalidProof));
+    // A proof from a different tree entirely.
+    let other = Tree::build(&eligible(&[1, 2, 3])).unwrap();
+    assert_fails_with(
+        env.claim(d.id, 0, &leaf, &other.proof(0).unwrap()),
+        code(BreaksError::InvalidProof),
+    );
+    // A zero weight.
+    let zero = Leaf { weight: 0, ..leaf };
+    assert_fails_with(env.claim(d.id, 0, &zero, &proof), code(BreaksError::InvalidProof));
+    assert_eq!(env.brk(d.id).free_winner_count, 0);
+}
+
+#[test]
+fn claims_wait_for_the_final_seed() {
+    let mut env = Env::ready();
+    let leaves = eligible(&[10, 20, 5]);
+    let tree = Tree::build(&leaves).unwrap();
+    let id = env.create_break();
+    env.sell_one(id);
+    env.after_deadline();
+    let (anyone, _) = env.user(0);
+    env.close(&anyone, id).unwrap();
+    env.commit_eligibility_with(id, tree.root().hash, tree.root().sum, 3)
+        .unwrap();
+    // No seed yet: the break is merely closed with eligibility committed.
+    assert_fails_with(
+        env.claim(id, 0, &leaves[0], &tree.proof(0).unwrap()),
+        code(BreaksError::WrongStatus),
+    );
+    env.fund(id).unwrap();
+    let keeper = env.keeper.insecure_clone();
+    env.commit_pool_as(&keeper, id, 3).unwrap();
+    assert_fails_with(
+        env.claim(id, 0, &leaves[0], &tree.proof(0).unwrap()),
+        code(BreaksError::WrongStatus),
+    );
+    env.request_randomness(id).unwrap();
+    assert_fails_with(
+        env.claim(id, 0, &leaves[0], &tree.proof(0).unwrap()),
+        code(BreaksError::WrongStatus),
+    );
+}
+
+#[test]
+fn a_whale_cannot_be_drawn_twice_and_the_draw_never_runs_out_of_wallets() {
+    let mut env = Env::ready();
+    // One wallet holds almost all the weight, as in the case a retry rule would fail on.
+    let d = drawn_setup(&mut env, 2, &[1, 1, 1, 1_000_000_000_000_000, 1], [15; 64]);
+    let expected = draw_free_winners(&d.seed, &d.leaves, 2).unwrap();
+    assert_ne!(expected[0].leaf_index, expected[1].leaf_index);
+    for (i, w) in expected.iter().enumerate() {
+        env.claim(
+            d.id,
+            i as u8,
+            &d.leaves[w.leaf_index],
+            &d.tree.proof(w.leaf_index).unwrap(),
+        )
+        .unwrap();
+    }
+    assert_eq!(env.brk(d.id).status, BreakStatus::Drawn);
+}
+
+#[test]
+fn fewer_eligible_holders_than_free_spots_draws_only_those_who_exist() {
+    let mut env = Env::ready();
+    // 2 free spots but a single eligible holder: the pool has one free pack.
+    let d = drawn_setup(&mut env, 3, &[7], [16; 64]);
+    assert_eq!(env.brk(d.id).pool_size, 4);
+    env.claim(d.id, 0, &d.leaves[0], &d.tree.proof(0).unwrap()).unwrap();
+    assert_eq!(env.brk(d.id).status, BreakStatus::Drawn);
+    assert_fails_with(
+        env.claim(d.id, 1, &d.leaves[0], &d.tree.proof(0).unwrap()),
+        code(BreaksError::WrongStatus),
+    );
+}
+
+#[test]
+fn with_nobody_eligible_the_draw_is_complete_as_soon_as_the_seed_is_final() {
+    let mut env = Env::ready();
+    let id = env.create_break();
+    env.sell_one(id);
+    env.after_deadline();
+    let (anyone, _) = env.user(0);
+    env.close(&anyone, id).unwrap();
+    env.commit_eligibility_with(id, [0; 32], 0, 0).unwrap();
+    env.fund(id).unwrap();
+    let keeper = env.keeper.insecure_clone();
+    env.commit_pool_as(&keeper, id, 1).unwrap();
+    env.request_randomness(id).unwrap();
+    env.mock_fulfill(env.brk(id).randomness_request_id, [17; 64]).unwrap();
+    env.settle(id).unwrap();
+    assert_eq!(env.brk(id).status, BreakStatus::Drawn);
+    assert_eq!(env.brk(id).free_winner_count, 0);
+}
+
+#[test]
+fn a_tree_that_lists_one_wallet_twice_cannot_make_it_win_twice() {
+    // The keeper's builder never produces this (it rejects duplicates), but the program must not
+    // trust that: the same wallet in two leaves would otherwise win two free spots.
+    let mut env = Env::ready();
+    let wallet = Address::new_unique().to_bytes();
+    let (a, b) = (Leaf { wallet, weight: 5 }, Leaf { wallet, weight: 7 });
+    let (na, nb) = (leaf_node(&a), leaf_node(&b));
+    let root = parent(&na, &nb).unwrap();
+
+    let id = env.create_break();
+    env.sell_one(id);
+    env.after_deadline();
+    let (anyone, _) = env.user(0);
+    env.close(&anyone, id).unwrap();
+    env.commit_eligibility_with(id, root.hash, root.sum, 2).unwrap();
+    env.fund(id).unwrap();
+    let keeper = env.keeper.insecure_clone();
+    env.commit_pool_as(&keeper, id, 3).unwrap();
+    env.request_randomness(id).unwrap();
+    env.mock_fulfill(env.brk(id).randomness_request_id, [18; 64]).unwrap();
+    env.settle(id).unwrap();
+    let seed = env.brk(id).seed;
+
+    // Whichever leaf wins first is accepted; the other leaf of the same wallet is then refused.
+    let first = draw_free_winners(&seed, &[a, b], 2).unwrap();
+    let proofs = [
+        vec![draw_core::ProofStep {
+            sibling: nb,
+            sibling_is_left: false,
+        }],
+        vec![draw_core::ProofStep {
+            sibling: na,
+            sibling_is_left: true,
+        }],
+    ];
+    let leaves = [a, b];
+    env.claim(id, 0, &leaves[first[0].leaf_index], &proofs[first[0].leaf_index])
+        .unwrap();
+    assert_fails_with(
+        env.claim(id, 1, &leaves[first[1].leaf_index], &proofs[first[1].leaf_index]),
+        code(BreaksError::WinnerAlreadyDrawn),
+    );
+}
+
+#[test]
+fn the_config_cannot_allow_more_free_spots_than_the_winner_list_holds() {
+    let mut env = Env::base();
+    let mut i = env.initialize_ix(&env.authority.pubkey(), env.breaks_programdata);
+    i.data = breaks::instruction::Initialize {
+        params: breaks::InitializeParams {
+            admin: env.admin.pubkey(),
+            keeper: env.keeper.pubkey(),
+            buyer: env.buyer.pubkey(),
+            min_window_secs: 6 * HOUR,
+            max_window_secs: 24 * HOUR,
+            max_paid_spots: 20,
+            max_free_spots: 17,
+            randomness_program: mock_orao::ID,
+            randomness_timeout_secs: HOUR,
+        },
+    }
+    .data();
+    assert_fails_with(env.send_as_authority(&[i]), code(BreaksError::InvalidLimits));
 }
 
 // ---------------------------------------------------------------- the whole flow

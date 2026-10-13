@@ -1,0 +1,9 @@
+[package]
+name = "draw-core"
+version = "0.1.0"
+description = "Pure logic of the draw: Merkle sum tree, free-spot winners without replacement, card assignment. Shared by the breaks program and its tests; the TypeScript keeper must reproduce vectors.json."
+edition = "2021"
+publish = false
+
+[dependencies]
+solana-sha256-hasher = { version = "3.1", features = ["sha2"] }

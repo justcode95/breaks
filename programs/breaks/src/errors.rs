@@ -50,4 +50,12 @@ pub enum BreaksError {
     TooManyAttempts,
     #[msg("The randomness adapter must be a program and the timeout must be positive")]
     InvalidRandomnessConfig,
+    #[msg("Winners must be claimed in order, and no more than the draw produces")]
+    WrongClaimIndex,
+    #[msg("The proof does not lead to the committed eligibility root")]
+    InvalidProof,
+    #[msg("This wallet is not the one the draw picked for this winner")]
+    NotTheDrawnWinner,
+    #[msg("This wallet was already drawn")]
+    WinnerAlreadyDrawn,
 }

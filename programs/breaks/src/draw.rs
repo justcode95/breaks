@@ -18,7 +18,7 @@ pub struct RequestRandomness<'info> {
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = keeper @ BreaksError::Unauthorized)]
     pub config: Account<'info, BreaksConfig>,
     #[account(mut, seeds = [BREAK_SEED, &break_.id.to_le_bytes()], bump = break_.bump)]
-    pub break_: Account<'info, Break>,
+    pub break_: Box<Account<'info, Break>>,
     /// CHECK: the VRF program the admin appointed (ORAO in production).
     #[account(executable, address = config.randomness_program @ BreaksError::InvalidRandomnessRecord)]
     pub vrf_program: UncheckedAccount<'info>,
@@ -114,7 +114,7 @@ pub struct SettleRandomness<'info> {
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, BreaksConfig>,
     #[account(mut, seeds = [BREAK_SEED, &break_.id.to_le_bytes()], bump = break_.bump)]
-    pub break_: Account<'info, Break>,
+    pub break_: Box<Account<'info, Break>>,
     /// CHECK: the request account of the current attempt; owner, address and seed are checked.
     pub request: UncheckedAccount<'info>,
 }
@@ -136,7 +136,12 @@ impl SettleRandomness<'_> {
         let seed = randomness::draw_seed(&answer);
         b.seed = seed;
         b.seeded_at = Clock::get()?.unix_timestamp;
-        b.status = BreakStatus::Settled;
+        // With no free spots there is nobody to draw.
+        b.status = if b.free_winners_expected() == 0 {
+            BreakStatus::Drawn
+        } else {
+            BreakStatus::Settled
+        };
 
         emit!(RandomnessSettled {
             id: b.id,
