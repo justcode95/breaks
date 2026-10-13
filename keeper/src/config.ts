@@ -29,6 +29,12 @@ const schema = z.object({
   KEEPER_KEYPAIR_PATH: z.string().min(1).optional(),
   // What counts as landed, for sends and reads. `finalized` is slower and safer.
   SOLANA_COMMITMENT: z.enum(["confirmed", "finalized"]).default("confirmed"),
+  // Who is eligible for a free spot (CLAUDE.md, "No staking"). Both are in token base units. The minimum is an open
+  // decision, so it has no default. WEIGHT_CAP is pending decision A2: a cap rewards splitting a balance over wallets.
+  MIN_TWAB: z.coerce.bigint().positive(),
+  WEIGHT_CAP: z.coerce.bigint().positive().optional(),
+  // The balance indexer must have read this far past the end of a window before the list is computed.
+  INDEXER_SETTLE_SECS: z.coerce.number().int().min(0).default(120),
   // The deployed programs.
   BREAKS_PROGRAM_ID: address,
   TREASURY_PROGRAM_ID: address,
@@ -51,6 +57,7 @@ export type Config = {
   commitment: "confirmed" | "finalized";
   programs: Programs;
   vrf: { program: Address; treasury: Address };
+  eligibility: { minTwab: bigint; capPerWallet?: bigint; settleSecs: number };
 };
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -73,5 +80,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     commitment: e.SOLANA_COMMITMENT,
     programs: { breaks: e.BREAKS_PROGRAM_ID, treasury: e.TREASURY_PROGRAM_ID },
     vrf: { program: e.VRF_PROGRAM_ID, treasury: e.ORAO_TREASURY },
+    eligibility: {
+      minTwab: e.MIN_TWAB,
+      ...(e.WEIGHT_CAP !== undefined ? { capPerWallet: e.WEIGHT_CAP } : {}),
+      settleSecs: e.INDEXER_SETTLE_SECS,
+    },
   };
 }

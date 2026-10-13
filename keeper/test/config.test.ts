@@ -11,6 +11,7 @@ const base = {
   BREAKS_PROGRAM_ID: BREAKS,
   TREASURY_PROGRAM_ID: TREASURY,
   ORAO_TREASURY: addr(0xa2),
+  MIN_TWAB: "1000000000000",
 };
 
 describe("loadConfig", () => {
@@ -27,7 +28,17 @@ describe("loadConfig", () => {
       commitment: "confirmed",
       programs: { breaks: BREAKS, treasury: TREASURY },
       vrf: { program: ORAO_PROGRAM, treasury: addr(0xa2) },
+      eligibility: { minTwab: 1_000_000_000_000n, settleSecs: 120 },
     });
+  });
+
+  it("reads the eligibility policy", () => {
+    const c = loadConfig({ ...base, WEIGHT_CAP: "5000000000000", INDEXER_SETTLE_SECS: "30" });
+    expect(c.eligibility).toEqual({ minTwab: 1_000_000_000_000n, capPerWallet: 5_000_000_000_000n, settleSecs: 30 });
+    expect(() => loadConfig({ ...base, MIN_TWAB: "0" })).toThrow(/MIN_TWAB/);
+    expect(() => loadConfig({ ...base, MIN_TWAB: "a lot" })).toThrow(/MIN_TWAB/);
+    expect(() => loadConfig({ ...base, WEIGHT_CAP: "0" })).toThrow(/WEIGHT_CAP/);
+    expect(() => loadConfig({ ...base, INDEXER_SETTLE_SECS: "-1" })).toThrow(/INDEXER_SETTLE_SECS/);
   });
 
   it("reads the keeper key path, the commitment and the job timings", () => {
@@ -50,9 +61,9 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, CARD_TRANSFER: "collector-crypt" })).toThrow(/CARD_TRANSFER/);
   });
 
-  it("requires an RPC url, a database url, both program ids and ORAO's treasury", () => {
+  it("requires an RPC url, a database url, both program ids, ORAO's treasury and the minimum TWAB", () => {
     expect(() => loadConfig({})).toThrow(/SOLANA_RPC_URL.*DATABASE_URL|DATABASE_URL.*SOLANA_RPC_URL/);
-    for (const key of ["BREAKS_PROGRAM_ID", "TREASURY_PROGRAM_ID", "ORAO_TREASURY"] as const) {
+    for (const key of ["BREAKS_PROGRAM_ID", "TREASURY_PROGRAM_ID", "ORAO_TREASURY", "MIN_TWAB"] as const) {
       const { [key]: _removed, ...rest } = base;
       expect(() => loadConfig(rest)).toThrow(new RegExp(key));
     }

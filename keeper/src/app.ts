@@ -4,11 +4,12 @@
 //   pipeline   - the on-chain steps (commit_pool, randomness, free-spot claims) and the status mirror
 //   pack-buyer - buys the packs of funded breaks
 //   delivery   - sends the cards of drawn breaks
-// The steps before funding (scheduler, close, eligibility, fund_purchases) are not built yet; until they are, a
-// break has to reach `Funded` by other means.
+// Creating a break (the scheduler) and filling `balance_events` / `indexer_state` (the balance indexer) are not built
+// yet. Until they are, a break has to be created by hand, and nothing is eligible until the indexer has run.
 
 import type { Config } from "./config.js";
 import { Deliverer, deliveryJob } from "./delivery/deliverer.js";
+import { DbPublisher, SqlEligibilityPlanner } from "./eligibility/planner.js";
 import { MockCardTransfer } from "./delivery/mock-transfer.js";
 import { SqlDeliveryStore } from "./delivery/sql-store.js";
 import type { Job, Logger } from "./job.js";
@@ -39,7 +40,7 @@ export async function checkSchema(sql: Sql): Promise<string[]> {
   const problems: string[] = [];
   const have = async (q: string, params: unknown[] = []) => ((await sql.query<{ n: string }>(q, params)).rows[0]?.n ?? "0") !== "0";
 
-  for (const table of ["breaks", "spots", "packs", "deliveries", "twab_snapshots"]) {
+  for (const table of ["breaks", "spots", "packs", "deliveries", "twab_snapshots", "eligibility_lists", "balance_events", "exclusions"]) {
     if (!(await have("select count(*)::text as n from information_schema.tables where table_schema = 'public' and table_name = $1", [table]))) {
       problems.push(`table ${table} is missing (migration 0001)`);
     }
@@ -49,6 +50,8 @@ export async function checkSchema(sql: Sql): Promise<string[]> {
     ["pack_attempts", "signature", "0002"],
     ["deliveries", "adopted", "0003"],
     ["delivery_attempts", "signature", "0003"],
+    ["indexer_state", "indexed_until", "0005"],
+    ["published_documents", "sha256", "0005"],
   ];
   for (const [table, column, migration] of columns) {
     const ok = await have(
@@ -91,7 +94,7 @@ export interface AppDeps {
   now?: () => Date;
 }
 
-export type AppConfig = Pick<Config, "programs" | "vrf" | "packProvider" | "cardTransfer" | "mockPackPrice" | "jobIntervalMs">;
+export type AppConfig = Pick<Config, "programs" | "vrf" | "packProvider" | "cardTransfer" | "mockPackPrice" | "jobIntervalMs" | "eligibility">;
 
 /** Checks the database and the key, then builds the jobs. Throws, before any job runs, if something is not ready. */
 export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]> {
@@ -131,6 +134,10 @@ export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]
     keeper,
     vrf: { program: config.vrf.program, networkState: oraoNetworkState(config.vrf.program), treasury: config.vrf.treasury },
     eligibility: new SqlEligibilityStore(sql),
+    planner: new SqlEligibilityPlanner(sql, new DbPublisher(sql), {
+      policy: { minTwab: config.eligibility.minTwab, ...(config.eligibility.capPerWallet !== undefined ? { capPerWallet: config.eligibility.capPerWallet } : {}) },
+      settleSecs: config.eligibility.settleSecs,
+    }),
     packs,
     cards,
     log,

@@ -1,7 +1,8 @@
-// The pipeline: drives a funded break through the on-chain steps that need the keeper, from its packs being
-// pulled to the draw being recorded.
+// The pipeline: drives a break through the on-chain steps that need the keeper, from the end of its sale to
+// the draw being recorded.
 //
-//   Funded ──commit_pool──▶ PoolCommitted ──request_randomness──▶ RandomnessRequested ──settle_randomness──▶ Settled
+//   Open ──close_break──▶ Closed ──commit_eligibility──▶ EligibilityCommitted ──fund_purchases──▶ Funded
+//   ──commit_pool──▶ PoolCommitted ──request_randomness──▶ RandomnessRequested ──settle_randomness──▶ Settled
 //   ──claim_free_spot × n──▶ Drawn                                    (ORAO's answer is awaited; repeated on timeout)
 //
 // Every call to `advance` starts from what the chain says (the `Break` account's status), never from notes of
@@ -10,12 +11,13 @@
 // send harmless; the pipeline additionally waits `resendAfterMs` before repeating a send whose result it could
 // not tell.
 //
-// What it does NOT do: buying packs (the pack buyer), delivering cards (the deliverer), and the steps before
-// funding (create, close, eligibility, fund), which belong to the scheduler and the eligibility job.
+// What it does NOT do: buying packs (the pack buyer), delivering cards (the deliverer), creating a break (the
+// scheduler) and computing the eligibility list (the planner it asks, which waits for the balance indexer).
 
 import { equalBytes } from "../draw/bytes.js";
 import { drawFreeWinners } from "../draw/draw.js";
 import { poolHash } from "../draw/pool.js";
+import type { EligibilityPlanner } from "../eligibility/planner.js";
 import { Tree } from "../draw/tree.js";
 import type { Logger } from "../job.js";
 import { type PackStore } from "../packs/store.js";
@@ -26,19 +28,22 @@ import {
   type Programs,
   breakAddress,
   claimFreeSpot,
+  closeBreak,
+  commitEligibility,
   commitPool,
   configAddress,
   decodeBreak,
   decodeBreaksConfig,
   decodeRequest,
   drawSeed,
+  fundPurchases,
   requestAddress,
   requestId,
   requestRandomness,
   settleRandomness,
 } from "../solana/breaks.js";
 import type { Instruction } from "../solana/instruction.js";
-import { type Address, addressFromBytes, addressToBytes } from "../solana/pubkey.js";
+import { type Address, addressFromBytes, addressToBytes, associatedTokenAddress } from "../solana/pubkey.js";
 import type { CardTransfer } from "../delivery/transfer.js";
 import type { ChainClient, SendResult } from "./chain.js";
 import type { EligibilityStore } from "./eligibility-store.js";
@@ -71,6 +76,8 @@ export interface PipelineDeps {
   keeper: Address;
   vrf: VrfAccounts;
   eligibility: EligibilityStore;
+  /** Works out the eligibility list to commit once a break is closed (waits for the balance indexer). */
+  planner: EligibilityPlanner;
   /** Where the pulled cards are recorded (the pack buyer's notes). */
   packs: PackStore;
   /** Only `ownerOf` is used: the pool is not committed unless the buyer wallet holds every card. */
@@ -99,6 +106,8 @@ const wait = (reason: string): Step => ({ kind: "wait", reason });
 const problem = (reason: string): Step => ({ kind: "problem", reason });
 
 const MAX_HOPS = 40;
+/** `close_break` is only sent this long after the deadline, so a keeper clock that runs ahead of the chain does not waste a transaction. */
+const CLOSE_MARGIN_SECS = 5n;
 
 export class BreakPipeline {
   private readonly resendAfterMs: number;
@@ -150,9 +159,11 @@ export class BreakPipeline {
   private async next(active: ActiveBreak, b: BreakAccount, config: BreaksConfigAccount, report: PipelineReport): Promise<Step> {
     switch (b.status) {
       case "Open":
+        return this.closeWhenDue(active, b, report);
       case "Closed":
+        return this.commitEligibility(active, b, report);
       case "EligibilityCommitted":
-        return wait(`break is ${b.status}: not funded yet`);
+        return this.fund(active, b, config, report);
       case "Funded":
         return this.commitPool(active, b, config, report);
       case "PoolCommitted":
@@ -190,6 +201,61 @@ export class BreakPipeline {
     }
     this.deps.log.error("pipeline step failed on-chain", { break: active.id, step, reason: result.reason });
     return problem(`${step} failed: ${result.reason}`);
+  }
+
+  // ---------------------------------------------------------------- Open → Closed → EligibilityCommitted → Funded
+
+  /** Anyone may close a break once its deadline has passed; a few seconds' margin keeps our clock from being ahead of the chain's. */
+  private async closeWhenDue(active: ActiveBreak, b: BreakAccount, report: PipelineReport): Promise<Step> {
+    const nowSecs = BigInt(Math.floor(this.deps.now().getTime() / 1000));
+    const dueAt = b.closesAt + CLOSE_MARGIN_SECS;
+    if (nowSecs < dueAt) return wait(`open until ${new Date(Number(b.closesAt) * 1000).toISOString()}`);
+    return this.send(active, b, "close_break", closeBreak(this.deps.programs, { breakId: active.onchainId }), report);
+  }
+
+  private async commitEligibility(active: ActiveBreak, b: BreakAccount, report: PipelineReport): Promise<Step> {
+    const plan = await this.deps.planner.plan(active.id, { start: Number(b.opensAt), end: Number(b.closesAt) });
+    if (plan.kind === "wait") return wait(`eligibility: ${plan.reason}`);
+    const v = plan.values;
+    if ((v.totalWeight === 0n) !== (v.entryCount === 0)) {
+      return problem("the stored eligibility list has a total weight and an entry count that disagree about being empty");
+    }
+    return this.send(
+      active,
+      b,
+      "commit_eligibility",
+      commitEligibility(this.deps.programs, {
+        keeper: this.deps.keeper,
+        breakId: active.onchainId,
+        root: v.root,
+        totalWeight: v.totalWeight,
+        entryCount: v.entryCount,
+        inputsHash: v.inputsHash,
+      }),
+      report,
+    );
+  }
+
+  /** `fund_purchases` sends the pack budget to the buyer wallet, so everything it depends on is checked first. */
+  private async fund(active: ActiveBreak, b: BreakAccount, config: BreaksConfigAccount, report: PipelineReport): Promise<Step> {
+    const { chain, planner, keeper, programs } = this.deps;
+    if (config.paused) return wait("the program is paused: fund_purchases is stopped");
+
+    const poolSize = b.spotsSold + Math.min(b.freeSpots, b.eligibilityCount);
+    if (poolSize === 0) return problem("nothing to fund: no paid spot was sold and nobody is eligible; the admin must cancel this break");
+
+    // The free-spot winners can only be claimed from the list that was committed, so it must be in hand before money moves.
+    const v = await planner.committed(active.id);
+    if (!v) return problem("the eligibility list of this break is not stored, so its free winners could not be claimed; not funding");
+    if (!equalBytes(v.root, b.eligibilityRoot) || v.totalWeight !== b.eligibilityTotalWeight || v.entryCount !== b.eligibilityCount || !equalBytes(v.inputsHash, b.eligibilityInputsHash)) {
+      return problem("the stored eligibility list is not the one that was committed on-chain");
+    }
+
+    const buyerUsdc = associatedTokenAddress(config.buyer, config.usdcMint);
+    if (!(await chain.getAccountData(buyerUsdc))) {
+      return problem(`the buyer wallet has no USDC account at ${buyerUsdc}; create it before funding`);
+    }
+    return this.send(active, b, "fund_purchases", fundPurchases(programs, { keeper, breakId: active.onchainId, buyerUsdc }), report);
   }
 
   // ---------------------------------------------------------------- Funded → PoolCommitted

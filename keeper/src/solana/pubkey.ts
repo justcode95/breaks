@@ -42,3 +42,12 @@ export function findProgramAddress(seeds: readonly Uint8Array[], programId: Addr
 }
 
 export { concat };
+
+/** The Associated Token Account program. */
+export const ASSOCIATED_TOKEN_PROGRAM: Address = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+const SPL_TOKEN_PROGRAM: Address = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+
+/** Where `owner`'s USDC (or any SPL token) account for `mint` lives: the associated token account. */
+export function associatedTokenAddress(owner: Address, mint: Address): Address {
+  return findProgramAddress([addressToBytes(owner), addressToBytes(SPL_TOKEN_PROGRAM), addressToBytes(mint)], ASSOCIATED_TOKEN_PROGRAM).address;
+}

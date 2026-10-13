@@ -1,12 +1,13 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
+import { ed25519 } from "@noble/curves/ed25519.js";
 import { beforeAll, describe, expect, it } from "vitest";
 import { type AppConfig, buildJobs, checkSchema, sqlFromPool, verifyKeeperIdentity } from "../src/app.js";
 import { assignCards } from "../src/draw/pool.js";
 import { createRunner } from "../src/job.js";
 import { ORAO_PROGRAM, requestAddress } from "../src/solana/breaks.js";
-import { addressToBytes } from "../src/solana/pubkey.js";
+import { addressFromBytes, addressToBytes } from "../src/solana/pubkey.js";
 import { addr } from "./support/chain.js";
 import { insertBreak, migratedDb } from "./support/db.js";
 import { ANSWER, KEEPER, PROGRAMS, logger, world } from "./support/world.js";
@@ -18,6 +19,7 @@ const config: AppConfig = {
   cardTransfer: "mock",
   mockPackPrice: 25_000_000n,
   jobIntervalMs: 1000,
+  eligibility: { minTwab: 1n, settleSecs: 120 },
 };
 
 describe("sqlFromPool", () => {
@@ -62,6 +64,8 @@ describe("checkSchema", () => {
       "pack_attempts.signature is missing (migration 0002)",
       "deliveries.adopted is missing (migration 0003)",
       "delivery_attempts.signature is missing (migration 0003)",
+      "indexer_state.indexed_until is missing (migration 0005)",
+      "published_documents.sha256 is missing (migration 0005)",
       "breaks.status does not accept 'drawn' (migration 0004)",
     ]);
   });
@@ -190,6 +194,73 @@ describe("the jobs, run by the real runner", () => {
     await tick();
     await tick();
     expect(w.chain.sendCalls).toBe(sends);
+  });
+});
+
+describe("the jobs, from an open break", () => {
+  it("close it, work out the eligibility list from the indexed balances, commit it, fund, buy, draw and deliver", async () => {
+    const db = shared;
+    const w = world({ status: "Open", id: 8n });
+    const { log, errors } = logger();
+    const b0 = w.chain.breaks.get(8n)!;
+    const opensAt = Number(b0.opensAt);
+    const closesAt = Number(b0.closesAt);
+
+    // Six real holders, each with a different balance held through the whole window, and an indexer that has read past it.
+    await db.query("delete from balance_events");
+    await db.query("delete from exclusions");
+    const holders = [1, 2, 3, 4, 5, 6].map((n) => addressFromBytes(ed25519.getPublicKey(new Uint8Array(32).fill(100 + n))));
+    for (const [i, owner] of holders.entries()) {
+      await db.query(
+        "insert into balance_events (signature, slot, block_time, owner, token_account, delta, balance_after) values ($1, $2, to_timestamp($3), $4, $5, $6::numeric, $6::numeric)",
+        [`holder-sig-${i}`, i + 1, opensAt - 100, owner, `holder-acct-${i}`, String((i + 1) * 1000)],
+      );
+    }
+    await db.query("insert into indexer_state (id, indexed_until) values (1, to_timestamp($1)) on conflict (id) do update set indexed_until = excluded.indexed_until", [closesAt + 120]);
+
+    const id = await insertBreak(db);
+    await db.query("update breaks set onchain_id = 8, status = 'open' where id = $1::bigint", [id]);
+
+    const jobs = await buildJobs({ ...config, eligibility: { minTwab: 1n, settleSecs: 120 } }, { sql: db, chain: w.chain, keeper: KEEPER, log, now: w.clock.now });
+    let clock = 1_800_040_000_000;
+    const runner = createRunner(jobs, { now: () => new Date(clock), log });
+    const status = async () => (await db.query<{ status: string }>("select status from breaks where id = $1::bigint", [id])).rows[0]?.status;
+
+    for (let i = 0; i < 30 && (await status()) !== "delivered"; i++) {
+      await runner.tick();
+      clock += 1000;
+      // ORAO answers as soon as the request exists.
+      const requestId = w.chain.breaks.get(8n)!.randomnessRequestId;
+      if (w.chain.breaks.get(8n)!.status === "RandomnessRequested") {
+        w.chain.fulfill(requestAddress(ORAO_PROGRAM, requestId), ANSWER);
+      }
+    }
+    expect(await status()).toBe("delivered");
+    expect(errors).toEqual([]);
+    expect(w.chain.applied.slice(0, 3)).toEqual(["close_break", "commit_eligibility", "fund_purchases"]);
+
+    // The list that went on-chain is the stored one, and its record is public.
+    const b = w.chain.breaks.get(8n)!;
+    const list = (await db.query<{ root: string; total_weight: string; entry_count: number; list_uri: string; inputs_uri: string }>(
+      "select encode(root, 'hex') as root, total_weight::text as total_weight, entry_count, list_uri, inputs_uri from eligibility_lists where break_id = $1::bigint",
+      [id],
+    )).rows[0]!;
+    expect(list.root).toBe(Buffer.from(b.eligibilityRoot).toString("hex"));
+    expect(list.total_weight).toBe("21000"); // 1000 + 2000 + ... + 6000
+    expect(list.entry_count).toBe(6);
+    expect(b.eligibilityTotalWeight).toBe(21_000n);
+    for (const uri of [list.list_uri, list.inputs_uri]) {
+      const doc = await db.query("select 1 from published_documents where sha256 = $1", [uri.replace("db:sha256:", "")]);
+      expect(doc.rows).toHaveLength(1);
+    }
+
+    // The two free winners are two of the six holders, and every card went out.
+    const winners = b.freeWinners.slice(0, 2).map((x) => x.wallet);
+    expect(winners.every((x) => holders.includes(x))).toBe(true);
+    expect(new Set(winners).size).toBe(2);
+    const delivered = await db.query<{ status: string }>("select status from deliveries where break_id = $1::bigint", [id]);
+    expect(delivered.rows).toHaveLength(5);
+    expect(delivered.rows.every((r) => r.status === "confirmed")).toBe(true);
   });
 });
 

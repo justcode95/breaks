@@ -3,11 +3,12 @@ import { Tree, type Leaf } from "../../src/draw/tree.js";
 import { poolHash } from "../../src/draw/pool.js";
 import type { Logger } from "../../src/job.js";
 import { MemoryPackStore } from "../../src/packs/store.js";
+import type { CommitValues, EligibilityPlan, EligibilityPlanner } from "../../src/eligibility/planner.js";
 import { BreakPipeline, type ActiveBreak, type PipelineDeps } from "../../src/pipeline/pipeline.js";
 import type { EligibilityStore } from "../../src/pipeline/eligibility-store.js";
 import type { BreakRepo, DbBreakStatus, SpotRecord } from "../../src/pipeline/repo.js";
 import { type BreakAccount, type BreaksConfigAccount, ORAO_PROGRAM, type Programs } from "../../src/solana/breaks.js";
-import { type Address, addressToBytes } from "../../src/solana/pubkey.js";
+import { type Address, addressToBytes, associatedTokenAddress } from "../../src/solana/pubkey.js";
 import { addr, BUYER } from "./chain.js";
 import { MockChain } from "./mock-chain.js";
 
@@ -24,6 +25,25 @@ export function logger() {
   const infos: string[] = [];
   const log: Logger = { info: (m) => infos.push(m), error: (m) => errors.push(m) };
   return { log, errors, infos };
+}
+
+/** A planner with a fixed answer, for tests that are not about the eligibility computation. */
+export class FakePlanner implements EligibilityPlanner {
+  public plans = 0;
+  constructor(
+    public values: CommitValues,
+    /** Whether the list is "stored" (what `committed` answers). */
+    public stored = true,
+    /** When set, `plan` says wait with this reason. */
+    public waitReason?: string,
+  ) {}
+  async plan(): Promise<EligibilityPlan> {
+    this.plans++;
+    return this.waitReason ? { kind: "wait", reason: this.waitReason } : { kind: "ready", values: this.values };
+  }
+  async committed(): Promise<CommitValues | undefined> {
+    return this.stored ? this.values : undefined;
+  }
 }
 
 export class MemoryEligibility implements EligibilityStore {
@@ -61,7 +81,7 @@ export class MemoryRepo implements BreakRepo {
  * A break that is `Funded` on a pretend chain: 3 paid spots, 2 free spots drawn from 6 eligible wallets, the
  * pool's cards pulled and held by the buyer wallet, the eligibility list stored.
  */
-export function world(opts: { paid?: number; free?: number; cardBase?: number; id?: bigint; wallets?: number } = {}) {
+export function world(opts: { paid?: number; free?: number; cardBase?: number; id?: bigint; wallets?: number; status?: BreakAccount["status"] } = {}) {
   const paid = opts.paid ?? 3;
   const free = opts.free ?? 2;
   const id = opts.id ?? 7n;
@@ -92,9 +112,11 @@ export function world(opts: { paid?: number; free?: number; cardBase?: number; i
     bump: 255,
   };
   const chain = new MockChain(PROGRAMS, config);
+  // Before the eligibility list is committed and the break funded, the chain holds none of that yet.
+  const early = opts.status === "Open" || opts.status === "Closed";
   const b: BreakAccount = {
     id,
-    status: "Funded",
+    status: opts.status ?? "Funded",
     paidSpots: paid,
     freeSpots: free,
     spotPrice: 20_000_000n,
@@ -105,12 +127,12 @@ export function world(opts: { paid?: number; free?: number; cardBase?: number; i
     spotsSold: paid,
     lockedSubsidy: 0n,
     lockedHolder: 0n,
-    eligibilityRoot: tree.root.hash,
-    eligibilityTotalWeight: tree.root.sum,
-    eligibilityCount: leaves.length,
-    eligibilityInputsHash: new Uint8Array(32).fill(0x22),
-    poolSize,
-    packBudget: BigInt(poolSize) * 25_000_000n,
+    eligibilityRoot: early ? new Uint8Array(32) : tree.root.hash,
+    eligibilityTotalWeight: early ? 0n : tree.root.sum,
+    eligibilityCount: early ? 0 : leaves.length,
+    eligibilityInputsHash: early ? new Uint8Array(32) : new Uint8Array(32).fill(0x22),
+    poolSize: early || opts.status === "EligibilityCommitted" ? 0 : poolSize,
+    packBudget: early || opts.status === "EligibilityCommitted" ? 0n : BigInt(poolSize) * 25_000_000n,
     poolHash: new Uint8Array(32),
     randomnessAttempt: 0,
     randomnessRequestId: new Uint8Array(32),
@@ -127,7 +149,9 @@ export function world(opts: { paid?: number; free?: number; cardBase?: number; i
     chain.addSpot({ breakId: id, index: i, owner: addr(10 + i), paid: 20_000_000n, refunded: false, bump: 255 });
   }
 
-  const active: ActiveBreak = { id: String(id), onchainId: id, machine: "pokemon-25", status: "funded" };
+  chain.tokenAccounts.add(associatedTokenAddress(config.buyer, config.usdcMint));
+  const planner = new FakePlanner({ root: tree.root.hash, totalWeight: tree.root.sum, entryCount: leaves.length, inputsHash: new Uint8Array(32).fill(0x22) });
+  const active: ActiveBreak = { id: String(id), onchainId: id, machine: "pokemon-25", status: (opts.status ?? "Funded").toLowerCase() };
   const packs = new MemoryPackStore();
   const transfer = new MockCardTransfer();
   const eligibility = new MemoryEligibility(leaves);
@@ -154,6 +178,7 @@ export function world(opts: { paid?: number; free?: number; cardBase?: number; i
       keeper: KEEPER,
       vrf: { program: ORAO_PROGRAM, networkState: addr(0xa1), treasury: addr(0xa2) },
       eligibility,
+      planner,
       packs,
       cards: transfer,
       log,
@@ -163,5 +188,5 @@ export function world(opts: { paid?: number; free?: number; cardBase?: number; i
   }
 
   const expectedPoolHash = () => poolHash(cards.map(addressToBytes));
-  return { chain, b, active, packs, transfer, eligibility, tree, leaves, cards, config, pipeline, pullPacks, clock, errors, infos, log, expectedPoolHash };
+  return { chain, b, active, packs, transfer, eligibility, planner, tree, leaves, cards, config, pipeline, pullPacks, clock, errors, infos, log, expectedPoolHash };
 }
