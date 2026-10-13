@@ -1,16 +1,19 @@
 // Wires the jobs together: which stores, which providers, which chain. `index.ts` only starts it.
 //
-// Three jobs, each idempotent and each starting from what it reads, never from a shared in-memory state:
+// Four jobs, each idempotent and each starting from what it reads, never from a shared in-memory state:
 //   pipeline   - the on-chain steps (commit_pool, randomness, free-spot claims) and the status mirror
 //   pack-buyer - buys the packs of funded breaks
 //   delivery   - sends the cards of drawn breaks
-// Creating a break (the scheduler) and filling `balance_events` / `indexer_state` (the balance indexer) are not built
-// yet. Until they are, a break has to be created by hand, and nothing is eligible until the indexer has run.
+//   indexer    - reads every transfer of the token into `balance_events` and says how far it got (`indexer_state`)
+// Creating a break (the scheduler) is not built yet: until it is, a break has to be created by hand.
 
 import type { Config } from "./config.js";
 import { Deliverer, deliveryJob } from "./delivery/deliverer.js";
 import { DbPublisher, SqlEligibilityPlanner } from "./eligibility/planner.js";
 import { MockCardTransfer } from "./delivery/mock-transfer.js";
+import { indexerJob, TokenIndexer } from "./indexer/indexer.js";
+import type { TokenReader } from "./indexer/reader.js";
+import { SqlIndexStore } from "./indexer/store.js";
 import { SqlDeliveryStore } from "./delivery/sql-store.js";
 import type { Job, Logger } from "./job.js";
 import { PackBuyer, packBuyerJob } from "./packs/buyer.js";
@@ -52,6 +55,7 @@ export async function checkSchema(sql: Sql): Promise<string[]> {
     ["delivery_attempts", "signature", "0003"],
     ["indexer_state", "indexed_until", "0005"],
     ["published_documents", "sha256", "0005"],
+    ["indexed_accounts", "until_sig", "0006"],
   ];
   for (const [table, column, migration] of columns) {
     const ok = await have(
@@ -68,7 +72,28 @@ export async function checkSchema(sql: Sql): Promise<string[]> {
     );
     if (!ok) problems.push("breaks.status does not accept 'drawn' (migration 0004)");
   }
+  // 0006: a token account that changes owner has two rows for one transaction, so the owner is part of the key.
+  if (await have("select count(*)::text as n from information_schema.tables where table_schema = 'public' and table_name = 'balance_events'")) {
+    const ok = await have(
+      `select count(*)::text as n from pg_constraint
+        where conrelid = 'balance_events'::regclass and contype = 'u' and pg_get_constraintdef(oid) like '%owner%'`,
+    );
+    if (!ok) problems.push("balance_events is not unique per owner (migration 0006)");
+  }
   return problems;
+}
+
+/**
+ * Refuses a TOKEN_MINT that is not an initialized token mint on this cluster. With a wrong address the indexer would
+ * find nothing, claim to have read everything, and every break would get an empty eligibility list.
+ */
+export async function verifyMint(chain: ChainClient, mint: Address): Promise<void> {
+  const data = await chain.getAccountData(mint);
+  if (!data) throw new Error(`TOKEN_MINT ${mint} does not exist on this cluster`);
+  // A mint is 82 bytes (is_initialized at 45). Token-2022 mints are longer (padded to 165, then the account type 1 = mint).
+  const classic = data.length === 82 && data[45] === 1;
+  const extended = data.length >= 166 && data[45] === 1 && data[165] === 1;
+  if (!classic && !extended) throw new Error(`TOKEN_MINT ${mint} is not an initialized token mint`);
 }
 
 /**
@@ -88,21 +113,25 @@ export async function verifyKeeperIdentity(chain: ChainClient, config: Pick<Conf
 export interface AppDeps {
   sql: Sql;
   chain: ChainClient;
+  /** Reads token history from a node (finalized data only). */
+  reader: TokenReader;
   /** The keeper's address (the key `chain` signs with). */
   keeper: Address;
   log: Logger;
   now?: () => Date;
 }
 
-export type AppConfig = Pick<Config, "programs" | "vrf" | "packProvider" | "cardTransfer" | "mockPackPrice" | "jobIntervalMs" | "eligibility">;
+export type AppConfig = Pick<Config, "programs" | "vrf" | "packProvider" | "cardTransfer" | "mockPackPrice" | "jobIntervalMs" | "eligibility" | "indexer">;
 
 /** Checks the database and the key, then builds the jobs. Throws, before any job runs, if something is not ready. */
 export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]> {
-  const { sql, chain, keeper, log } = deps;
+  const { sql, chain, reader, keeper, log } = deps;
   const now = deps.now ?? (() => new Date());
 
   const problems = await checkSchema(sql);
   if (problems.length > 0) throw new Error(`the database is not ready: ${problems.join("; ")}`);
+
+  await verifyMint(chain, config.indexer.mint);
 
   if (await verifyKeeperIdentity(chain, config, keeper)) {
     log.info("keeper key matches the breaks program", { keeper });
@@ -145,7 +174,21 @@ export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]
   });
 
   const intervalMs = config.jobIntervalMs;
+  const indexer = new TokenIndexer({
+    reader,
+    store: new SqlIndexStore(sql),
+    log,
+    options: {
+      mint: config.indexer.mint,
+      intervalSecs: config.indexer.intervalSecs,
+      lagSecs: config.indexer.lagSecs,
+      settleSecs: config.eligibility.settleSecs,
+      callsPerRun: config.indexer.callsPerRun,
+      pageSize: config.indexer.pageSize,
+    },
+  });
   return [
+    indexerJob({ indexer, intervalMs, log }),
     pipelineJob({ pipeline, repo, intervalMs }),
     packBuyerJob({ buyer: new PackBuyer({ provider, store: packs, log }), source: new FundedBreaks(sourceDeps), intervalMs }),
     deliveryJob({
