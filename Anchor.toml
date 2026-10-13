@@ -1,0 +1,15 @@
+[toolchain]
+package_manager = "pnpm"
+
+[features]
+resolution = true
+skip-lint = false
+
+# Placeholder IDs. Run `anchor keys sync` once the deploy keypairs exist (they stay out of git).
+[programs.devnet]
+treasury = "Bvq3U9fz2MiHkLH8u4zyt6T1bimxnaEuHkZhezNDT5R9"
+breaks = "8tmJjCG3D4TF7oPiPWNoaCjZ4pN2U4H237BSGVw2B8KU"
+
+[provider]
+cluster = "devnet"
+wallet = "~/.config/solana/id.json"

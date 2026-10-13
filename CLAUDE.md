@@ -102,9 +102,23 @@ programs/treasury   programs/breaks
 keeper/             (jobs, indexer, buyer, bot)
 web/                (Next.js)
 db/                 (migrations)
-tests/              (Anchor tests: every instruction, happy + failure paths)
-scripts/            (devnet setup, mock PackProvider)
+tests/              (Anchor tests: every instruction, happy + failure paths; added in Phase 2)
+scripts/            (devnet setup; added when needed)
 ```
+
+The mock `PackProvider` lives in `keeper/src/pack-provider.ts`. Root files: `Anchor.toml`, `Cargo.toml` (Rust workspace), `pnpm-workspace.yaml` (keeper + web).
+
+## Run and test
+```
+pnpm install
+pnpm typecheck
+pnpm test                    # keeper tests, incl. db/migrations applied on an in-memory Postgres (PGlite)
+pnpm --filter web build
+cargo check --workspace      # Anchor programs, host check only
+```
+CI (`.github/workflows/ci.yml`) runs the same on every pull request and on pushes to main.
+
+**Toolchain limit in cloud sessions:** the Solana/Anchor binaries could not be downloaded there (release.anza.xyz and GitHub release downloads were blocked by the network policy), so SBF builds and `anchor test` have not been run anywhere yet. Phase 2 adds a CI job for them. Until then, program logic is only host-checked; do not claim it is tested.
 
 ## Build phases
 0. **Feasibility (no code, you run these; the first one gates everything):**
@@ -114,7 +128,7 @@ scripts/            (devnet setup, mock PackProvider)
    4. Check whether our program could verify a pull from Collector Crypt's on-chain accounts. If yes, release funds per verified pull and close the trust gap.
    5. Check whether the card can be held in a program-owned account (only if an on-chain escrow is wanted).
    6. Pick the VRF provider (A1).
-1. **Scaffold** — Anchor workspace (2 programs), Next.js app, keeper skeleton, DB migrations. Devnet only.
+1. **Scaffold** (done, in review) — Anchor workspace (2 programs, placeholder instructions), Next.js app, keeper skeleton (config, job runner, `PackProvider` + mock), DB migration v0. Devnet only.
 2. **Treasury** with full tests.
 3. **Breaks program** — create/buy/close/fund/cancel with tests. Then randomness + claims + pool commit.
 4. **Keeper** — indexer, TWAB, eligibility, scheduler, pack buyer, delivery, pipeline.

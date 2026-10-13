@@ -20,3 +20,8 @@ out/
 .DS_Store
 .idea/
 .vscode/
+
+# Build output
+dist/
+next-env.d.ts
+*.tsbuildinfo
