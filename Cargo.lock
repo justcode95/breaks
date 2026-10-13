@@ -765,6 +765,14 @@ name = "breaks"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "anchor-spl",
+ "litesvm",
+ "litesvm-token",
+ "solana-address 2.7.0",
+ "solana-keypair",
+ "solana-signer",
+ "testkit",
+ "treasury",
 ]
 
 [[package]]
@@ -4389,6 +4397,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
+name = "testkit"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "base64 0.22.1",
+ "litesvm",
+ "litesvm-token",
+ "solana-address 2.7.0",
+ "solana-instruction-error",
+ "solana-keypair",
+ "solana-message",
+ "solana-signer",
+ "solana-transaction",
+ "solana-transaction-error",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4509,16 +4534,12 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
- "base64 0.22.1",
  "litesvm",
  "litesvm-token",
  "solana-address 2.7.0",
- "solana-instruction-error",
  "solana-keypair",
- "solana-message",
  "solana-signer",
- "solana-transaction",
- "solana-transaction-error",
+ "testkit",
 ]
 
 [[package]]

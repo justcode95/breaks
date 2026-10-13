@@ -35,7 +35,8 @@ jobs:
           restore-keys: solana-platform-tools-${{ runner.os }}-
       - run: solana --version
       - run: cargo build-sbf --manifest-path programs/treasury/Cargo.toml
-      - run: cargo test -p treasury --locked
+      - run: cargo build-sbf --manifest-path programs/breaks/Cargo.toml
+      - run: cargo test -p treasury -p breaks --locked --no-fail-fast
 
   node:
     runs-on: ubuntu-latest

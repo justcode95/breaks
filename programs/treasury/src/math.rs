@@ -25,6 +25,13 @@ pub fn split(amount: u64, subsidy_bps: u16) -> Result<(u64, u64)> {
     Ok((to_subsidy, to_holder))
 }
 
+/// Funds in a vault that are not reserved for a break.
+pub fn available(vault_balance: u64, locked: u64) -> Result<u64> {
+    vault_balance
+        .checked_sub(locked)
+        .ok_or_else(|| TreasuryError::InsufficientAvailable.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,5 +87,12 @@ mod tests {
         assert!(validate_split(7_000, 2_999).is_err());
         assert!(validate_split(7_000, 3_001).is_err());
         assert!(validate_split(u16::MAX, u16::MAX).is_err());
+    }
+
+    #[test]
+    fn available_is_balance_minus_locked() {
+        assert_eq!(available(100, 30).unwrap(), 70);
+        assert_eq!(available(100, 100).unwrap(), 0);
+        assert!(available(100, 101).is_err());
     }
 }
