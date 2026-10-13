@@ -39,9 +39,22 @@ pub enum BreakStatus {
     PoolCommitted,
     /// Randomness was requested from the adapter and has not been settled yet.
     RandomnessRequested,
-    /// The seed is final. The draw can be verified and the cards delivered.
+    /// The seed is final. The free-spot winners are claimed one by one with a proof.
     Settled,
+    /// Every free-spot winner is recorded (or there were none). The cards can be assigned and delivered.
+    Drawn,
     Cancelled,
+}
+
+/// Most free spots a break can have (also the capacity of the winner list).
+pub const MAX_FREE_SPOTS: usize = 16;
+
+/// A recorded free-spot winner: the wallet and the weight range that was drawn.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default, InitSpace)]
+pub struct FreeWinner {
+    pub wallet: Pubkey,
+    pub start: u64,
+    pub weight: u64,
 }
 
 #[account]
@@ -78,8 +91,18 @@ pub struct Break {
     /// The seed of the draw: what the adapter's VRF produced for the settled request.
     pub seed: [u8; 32],
     pub seeded_at: i64,
+    /// How many free-spot winners have been claimed so far (they are claimed in order).
+    pub free_winner_count: u8,
+    pub free_winners: [FreeWinner; MAX_FREE_SPOTS],
     pub bump: u8,
     pub escrow_bump: u8,
+}
+
+impl Break {
+    /// Free-spot winners this break will have: the pool minus the paid spots.
+    pub fn free_winners_expected(&self) -> u16 {
+        self.pool_size - self.spots_sold
+    }
 }
 
 impl Break {

@@ -37,10 +37,14 @@ A Solana memecoin whose trading fees fund group "breaks" of Collector Crypt gach
 - **Known trust gap (MVP):** the chain cannot prove the keeper really bought every pack or delivered every card. The per-spot ledger makes any gap publicly visible. A tighter option is listed in Phase 0.
 
 ## Draw algorithm (deterministic, documented on the site)
-- **Free-spot winners:** eligible wallets sorted by address, in a Merkle **sum** tree (each node commits `(hash, sum_of_weights)`), so ranges are derived from the proof and can't be hand-crafted. Leaf = `wallet(32) ‖ weight(u64 LE)`, with distinct leaf/node prefixes. For winner `i`: `r_i = H(seed, "free", i, n) mod total_weight`, `n = 0,1,…` until the wallet is new (max 32 tries, then the spot is dropped). Claims are verified on-chain with the proof; `claim_free_spot` is permissionless (the keeper submits it).
-- **Card → spot assignment:** pool sorted by card mint (so pull order can't matter), then Fisher–Yates with `j = H(seed, "items", k) mod (k+1)`.
-- `H` = keccak256 (or SHA-256), fixed in the program and in the verify tool.
+Implemented in `draw-core/` (pure Rust, shared by the `breaks` program and its tests). `draw-core/vectors.json` holds a fixed example with every output; the TypeScript keeper and the "verify this draw" tool must reproduce it byte for byte (the Rust test fails when the file is stale).
+- **Hash:** SHA-256 everywhere (the Solana syscall on-chain).
+- **Eligibility tree (Merkle sum tree):** leaves are `(wallet, weight)`, sorted by wallet bytes ascending, strictly increasing (no wallet twice), weight > 0. Leaf hash `H(0x00 ‖ wallet(32) ‖ weight u64 LE)`, sum = weight. Inner hash `H(0x01 ‖ left.hash ‖ left.sum u64 LE ‖ right.hash ‖ right.sum u64 LE)`, sum = left + right (overflow = invalid). An odd node at the end of a level is carried up unchanged (never duplicated, which would count its weight twice). The root hash is committed in `commit_eligibility`, with `total_weight` = root sum. A proof is a list of `(sibling hash, sibling sum, sibling_is_left)`; it proves the leaf's range `[start, start + weight)` in `[0, total_weight)`, where `start` is the sum of the left siblings. So the keeper cannot hand-craft ranges.
+- **Free-spot winners, drawn without replacement.** Winner `i` (0, 1, …): `remaining = total_weight − Σ weights of earlier winners`; `r = u128_le(H("breaks:free:v1" ‖ seed ‖ i as u16 LE)[0..16]) mod remaining`; then walk the earlier winners' ranges in ascending order of start and do `if r >= start { r += weight }`; the winner is the leaf whose range contains `r`. This always yields `min(free_spots, eligible)` distinct wallets however skewed the weights are (this replaces the earlier "retry with a nonce, give up after 32 tries" rule, which could fail when one wallet holds almost all the weight, after the pool size was already fixed).
+- **`claim_free_spot(index, wallet, weight, proof)`** is permissionless (the keeper submits it) and **in order**: the program recomputes where winner `index` lands, checks the proof against the committed root and total weight, checks the wallet's range contains the drawn position, and records the winner. A wallet that appears in two leaves of a bad tree is refused the second time. When the last winner is recorded the break is `Drawn`; with no free winners it is `Drawn` as soon as the seed is final.
+- **Card → spot assignment** (off-chain, anyone can recompute): the pool sorted by card mint (so pull order can't matter); spots are ordered paid spots by purchase order, then free spots in draw order. Fisher–Yates from the back: for `k` from `n−1` down to 1, `j = u128_le(H("breaks:items:v1" ‖ seed ‖ k as u16 LE)[0..16]) mod (k+1)`, swap positions `k` and `j`. Spot `s` gets the card at index `perm[s]` of the sorted pool.
 - The eligibility commit also includes `inputs_hash` of the published `balance_events` snapshot, so anyone can recompute TWAB.
+- Limits: at most 16 free spots per break (the winner list is stored in the break account); a proof is at most 40 steps, in practice about 14 for thousands of holders, which fits a transaction.
 
 ## Randomness
 
@@ -62,7 +66,7 @@ A Solana memecoin whose trading fees fund group "breaks" of Collector Crypt gach
 - `lock_funds` / `unlock_funds` / `pay_from_locked` — controller only. Locking is how the on-chain funding rule works (the treasury refuses unless the bucket has that much unlocked). Pay-outs can only come out of locked funds, so they never touch money reserved for another break.
 - Read-only balances for the website: the two vault balances and `locked_subsidy` / `locked_holder` in the config account.
 
-**`breaks`** (built: everything up to the pool commit; the rest is marked "next")
+**`breaks`** (built: the whole on-chain flow up to the recorded draw)
 - `initialize(params)` — upgrade authority only. Config: admin, keeper, buyer wallet, window and spot limits, pause.
 - `set_keeper`, `set_buyer`, `set_paused` — admin only. Pausing stops new breaks, new spots and `fund_purchases`; cancel and refunds always work.
 - `create_break(params)` — keeper; locks `paid_spots × (max_pack_price − spot_price)` of subsidy and `free_spots × max_pack_price` of holder funds in the treasury (the funding rule). `spot_price ≤ max_pack_price` is enforced: a markup is not supported yet.
@@ -75,8 +79,8 @@ A Solana memecoin whose trading fees fund group "breaks" of Collector Crypt gach
 - `request_randomness` — keeper, after the pool is committed. Asks ORAO for randomness with a seed that commits to the break, the attempt, the eligibility root and the pool hash. The keeper pays ORAO's request fee. If someone already asked ORAO for the same seed, the request is adopted instead of failing. A request that ORAO never answers can be repeated after `randomness_timeout_secs` (at most 5 attempts), but never once it has been answered.
 - `settle_randomness` — anyone, once ORAO has answered: stores the seed of the draw (`sha256("breaks:seed:v1" || ORAO's 64 bytes)`). Final.
 - `set_randomness(program, timeout_secs)` — admin only: which VRF program to use (ORAO's address in production) and the repeat timeout.
-- Next: `claim_free_spot` and the draw itself. Also open: what happens to buyer-wallet money that is not spent (return path), and the partial-failure policy.
-- Draw design note for the next step: draw free winners **without replacement** (after each winner, skip the ranges of earlier winners) instead of "retry with a nonce, give up after 32 tries". The retry rule can fail when one wallet holds almost all the weight, and the pool size is already fixed before the seed exists.
+- `claim_free_spot(index, wallet, weight, proof)` — anyone, once the seed is final; records the free-spot winners in order (see "Draw algorithm"). Status flow: … `PoolCommitted` → `RandomnessRequested` → `Settled` → `Drawn`.
+- Next: the keeper side of the pipeline (pack buyer, delivery). Open: what happens to buyer-wallet money that is not spent (return path), and the partial-failure policy.
 
 No vault program. Cards pass through the buyer wallet. An on-chain escrow for cards is only added if Phase 0 shows it is possible.
 
@@ -113,6 +117,7 @@ Rate-limit, dedupe via `bot_posts`, never post before the on-chain event is **fi
 ## Repo layout
 ```
 programs/treasury   programs/breaks   programs/mock-orao (test only)
+draw-core/          (pure logic of the draw + vectors.json for other languages)
 testkit/            (shared helpers for the on-chain tests)
 keeper/             (jobs, indexer, buyer, bot)
 web/                (Next.js)
@@ -133,7 +138,7 @@ cargo check --workspace      # Anchor programs, host check only
 ```
 CI (`.github/workflows/ci.yml`) runs the same on every pull request and on pushes to main.
 
-**Program tests:** each program has pure-logic unit tests (`cargo test -p treasury -p breaks --lib`, runs anywhere) and on-chain tests in `programs/<name>/tests/` that run the compiled program inside LiteSVM. The on-chain tests need `target/deploy/<name>.so` from `cargo build-sbf --manifest-path programs/<name>/Cargo.toml`; without it they fail on purpose.
+**Program tests:** each program has pure-logic unit tests (`cargo test -p treasury -p breaks -p draw-core --lib`, runs anywhere) and on-chain tests in `programs/<name>/tests/` that run the compiled program inside LiteSVM. The on-chain tests need `target/deploy/<name>.so` from `cargo build-sbf --manifest-path programs/<name>/Cargo.toml`; without it they fail on purpose.
 
 On-chain tests share helpers in `testkit/` (deploy with an upgrade authority, send, error and event assertions, clock). Both programs' tests need both `.so` files, so build both before `cargo test`.
 
@@ -149,7 +154,7 @@ On-chain tests share helpers in `testkit/` (deploy with an upgrade authority, se
    6. (done) VRF provider: ORAO.
 1. **Scaffold** (merged) — Anchor workspace (2 programs, placeholder instructions), Next.js app, keeper skeleton (config, job runner, `PackProvider` + mock), DB migration v0. Devnet only.
 2. **Treasury** (initialize, deposit_fees, set_split; merged). No admin-transfer instruction yet: decide whether to add a two-step handover.
-3. **Breaks program** — create/buy/close/commit/fund/cancel/refund with tests and the treasury lock/pay-out (in review). Then randomness + claims (needs A1).
+3. **Breaks program** — create/buy/close/commit/fund/cancel/refund, randomness (ORAO) and the free-spot draw, with the treasury lock/pay-out (merged and in review).
 4. **Keeper** — indexer, TWAB, eligibility, scheduler, pack buyer, delivery, pipeline.
 5. **Website** — live break, dashboard, transparency + verify tool.
 6. **X bot.**
