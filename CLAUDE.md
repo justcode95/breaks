@@ -100,6 +100,12 @@ No vault program. Cards pass through the buyer wallet. An on-chain escrow for ca
   - the provider's price is re-checked against `max_pack_price`; a live price above the cap buys nothing and the pack waits;
   - a pack bought twice is reported (`BreakProgress.anomalies`, `PackRow.lastError`), never hidden; a pack that reverts `maxAttempts` times is `failed` and the buyer does nothing more with it (the partial-failure policy is still open).
   - `MockPackProvider` is a pretend chain (signatures before sending, block-height expiry) with injectable failures: `drop`, `throw`, `land-then-throw`, `revert`. `packBuyerJob` wraps the buyer for the runner; it needs a `BreakSource` (funded breaks → `BreakPlan`, progress report), which the pipeline provides.
+- `src/delivery/`: sends each pulled card to the wallet the draw assigned it to, written against the `CardTransfer` steps (`ownerOf`, `prepare`, `submit`, `status`; `transfer.ts`) because how a Collector Crypt card moves (pNFT rule set, Core asset, whether it can still be sold back) is a Phase 0 answer. Same shape as the pack buyer (`deliverer.ts`, `store.ts` in memory + `sql-store.ts` over `deliveries` + `delivery_attempts`, migration 0003, one contract test for both stores, `MockCardTransfer`, `deliveryJob`). A wrong recipient cannot be undone, so:
+  - `plan.ts` (`buildDeliveryPlan`) works out who gets which card only from what the chain committed, and throws a `PlanError` naming the first thing that does not add up: break not `Drawn`, empty seed, paid spots that do not match `spots_sold` (order, break, refunded), free winners that do not match `pool_size − spots_sold`, a pool that is not exactly the committed size, or whose `poolHash` is not the one committed before the draw. The assignment is `assignCards` (the verified Fisher–Yates), so the order the cards were pulled in does not matter.
+  - the chain is the source of truth for where a card is: nothing is sent unless the buyer wallet owns it; a card already at its recipient counts as delivered (`adopted`, no signature); a card in any other wallet stops that delivery and is reported in `DeliveryProgress.anomalies`; a transfer reported confirmed whose card is not at the recipient is a failure, not a success;
+  - the transfer the provider built is checked against the plan (recipient, card, sender) before anything is saved or sent; the attempt is saved before the send; a new transfer is built only after the saved one reverted or can never land;
+  - if the plan for a spot ever differs from the recorded one (`PlanChangedError`), that delivery stops.
+  - Not done: tracking Collector Crypt's sellback deadline (about 72 h from the pull) waits for Phase 0 to confirm it; the `deliveries.sellback_deadline` column stays empty.
 - Earlier: config (devnet only), idempotent job runner.
 
 **Still to build (jobs):**
@@ -108,7 +114,7 @@ No vault program. Cards pass through the buyer wallet. An on-chain escrow for ca
 - **Balance indexer** — Helius webhooks/geyser for every token transfer → Postgres.
 - **TWAB + eligibility** — at `closes_at`, compute TWAB per wallet, apply min/exclusions, build the sum tree, `commit_eligibility`, publish the list and the `balance_events` snapshot (site + IPFS/Arweave).
 - **Pack buyer, still open:** the real `PackProvider` (needs the Phase 0 answers: how a purchase is made, whether the memo can ride along, how the pull is read, whether the card can be delivered straight to another wallet), a `BreakSource` over the database, and the hand-over to `commit_pool` once a break `complete`s.
-- **Pool commit → randomness → delivery** pipeline. Transfer each card to its winner within minutes of the seed settling, because Collector Crypt's sellback window is about 72 hours from the pull. Create ATAs; keeper pays the rent.
+- **Pool commit → randomness → delivery** pipeline: `commit_pool` once a break's packs are pulled, `request_randomness`, `settle_randomness`, the `claim_free_spot` calls, then a `DeliverySource` that reads the `Drawn` break and its `Spot` accounts from the chain, builds the plan with `buildDeliveryPlan` and feeds the `deliveryJob`; and the real `CardTransfer` (after Phase 0: create the recipient's token account, keeper pays the rent). Cards must go out within minutes of the seed settling, because Collector Crypt's sellback window is about 72 hours from the pull.
 - **X bot** (see below).
 - Every step safe to re-run.
 
@@ -172,7 +178,7 @@ On-chain tests share helpers in `testkit/` (deploy with an upgrade authority, se
 1. **Scaffold** (merged) — Anchor workspace (2 programs, placeholder instructions), Next.js app, keeper skeleton (config, job runner, `PackProvider` + mock), DB migration v0. Devnet only.
 2. **Treasury** (initialize, deposit_fees, set_split; merged). No admin-transfer instruction yet: decide whether to add a two-step handover.
 3. **Breaks program** — create/buy/close/commit/fund/cancel/refund, randomness (ORAO) and the free-spot draw, with the treasury lock/pay-out (merged and in review).
-4. **Keeper** — TWAB, eligibility, the draw logic and the instruction encoders / account decoders (built, tested against the Rust vectors); the pack buyer logic (mock provider only); next: indexer, scheduler, real pack provider (after Phase 0), delivery, pipeline.
+4. **Keeper** — TWAB, eligibility, the draw logic and the instruction encoders / account decoders (built, tested against the Rust vectors); the pack buyer and delivery logic (mock providers only); next: indexer, scheduler, the pipeline that connects them to the chain, the real pack provider and card transfer (after Phase 0).
 5. **Website** — live break, dashboard, transparency + verify tool.
 6. **X bot.**
 7. **Hardening** — admin panel, monitoring/alerts, external audit, then mainnet with small breaks.

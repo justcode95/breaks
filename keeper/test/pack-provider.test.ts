@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MockPackProvider } from "../src/packs/mock-provider.js";
 import { PriceAboveCapError } from "../src/packs/provider.js";
+import { addressToBytes } from "../src/solana/pubkey.js";
 
 const opts = { machine: "pokemon-25", maxPrice: 25_000_000n };
 const key = { breakId: "1", index: 0 };
@@ -29,7 +30,7 @@ describe("MockPackProvider", () => {
     expect(await p.findExisting(key)).toEqual([{ signature: prepared.signature, expiry: prepared.expiry }]);
     expect(p.moneySpent()).toBe(25_000_000n);
     const reveal = await p.reveal(prepared.signature);
-    expect(reveal?.cardMint).toMatch(/^mock-card-/);
+    expect(addressToBytes(reveal?.cardMint as string)).toHaveLength(32);
     expect(reveal?.price).toBe(25_000_000n);
   });
 

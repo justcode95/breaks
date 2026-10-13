@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { addressFromBytes } from "../solana/pubkey.js";
 import {
   type BuyOptions,
   type ExistingPurchase,
@@ -41,6 +42,8 @@ interface Landed {
 
 const BLOCKS_VALID = 150;
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
+/** A card mint is a 32-byte address, like a real one (the pool hash is computed over the raw bytes). */
+const mintFor = (s: string) => addressFromBytes(createHash("sha256").update(s).digest());
 
 /**
  * A pretend chain for devnet and tests. Purchases have a signature before they are sent and a block height
@@ -154,7 +157,7 @@ export class MockPackProvider implements PackProvider {
     this.revealCalls.set(signature, calls);
     if (calls <= this.revealDelay) return undefined;
     return {
-      cardMint: `mock-card-${digest(`${l.machine}:${keyString(l.key)}:${signature}`).slice(0, 16)}`,
+      cardMint: mintFor(`card:${l.machine}:${keyString(l.key)}:${signature}`),
       proofRef: `mock-proof-${digest(signature).slice(0, 12)}`,
       price: l.price,
     };
