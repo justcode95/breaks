@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fromHex, u16le, u64le, utf8 } from "../src/draw/bytes.js";
-import { addressFromBytes, addressToBytes, findProgramAddress, isOnCurve } from "../src/solana/pubkey.js";
+import { PublicKey } from "@solana/web3.js";
+import { addressFromBytes, addressToBytes, associatedTokenAddress, findProgramAddress, isOnCurve } from "../src/solana/pubkey.js";
 
 const TREASURY = "Bvq3U9fz2MiHkLH8u4zyt6T1bimxnaEuHkZhezNDT5R9";
 const BREAKS = "8tmJjCG3D4TF7oPiPWNoaCjZ4pN2U4H237BSGVw2B8KU";
@@ -73,5 +74,25 @@ describe("base58", () => {
     expect(addressFromBytes(addressToBytes(TREASURY))).toBe(TREASURY);
     expect(() => addressToBytes("1111")).toThrow();
     expect(() => addressFromBytes(new Uint8Array(31))).toThrow();
+  });
+});
+
+describe("associatedTokenAddress", () => {
+  it("is the address web3.js derives for the same owner and mint", () => {
+    const TOKEN = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+    const ATA = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+    for (const n of [1, 7, 200]) {
+      const owner = addressFromBytes(new Uint8Array(32).fill(n));
+      const mint = addressFromBytes(new Uint8Array(32).fill(n + 1));
+      const [expected] = PublicKey.findProgramAddressSync([new PublicKey(owner).toBytes(), new PublicKey(TOKEN).toBytes(), new PublicKey(mint).toBytes()], new PublicKey(ATA));
+      expect(associatedTokenAddress(owner, mint)).toBe(expected.toBase58());
+    }
+  });
+
+  it("differs by owner and by mint", () => {
+    const a = addressFromBytes(new Uint8Array(32).fill(1));
+    const b = addressFromBytes(new Uint8Array(32).fill(2));
+    expect(associatedTokenAddress(a, b)).not.toBe(associatedTokenAddress(b, a));
+    expect(associatedTokenAddress(a, b)).not.toBe(associatedTokenAddress(a, a));
   });
 });

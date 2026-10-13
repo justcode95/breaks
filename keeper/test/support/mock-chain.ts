@@ -24,7 +24,7 @@ import {
 } from "../../src/solana/breaks.js";
 import { Reader } from "../../src/solana/codec.js";
 import { type Instruction, instructionDiscriminator } from "../../src/solana/instruction.js";
-import { type Address, addressToBytes } from "../../src/solana/pubkey.js";
+import { type Address, addressToBytes, associatedTokenAddress } from "../../src/solana/pubkey.js";
 import { encodeBreak, encodeBreaksConfig, encodeRequest, encodeSpot } from "./accounts.js";
 
 /** What happens to the next `sendAndConfirm`. */
@@ -56,6 +56,8 @@ export class MockChain implements ChainClient {
   private readonly requests = new Map<Address, Request>();
   private readonly behaviors: SendBehavior[] = [];
   public sendCalls = 0;
+  /** Accounts that exist and hold some data (the buyer wallet's USDC account, for `fund_purchases`). */
+  public readonly tokenAccounts = new Set<Address>();
   /** Every transaction that was applied, in order, by instruction name. */
   public readonly applied: string[] = [];
 
@@ -84,6 +86,7 @@ export class MockChain implements ChainClient {
     for (const [id, b] of this.breaks) if (address === breakAddress(this.programs, id)) return encodeBreak(b);
     const spot = this.spots.get(address);
     if (spot) return encodeSpot(spot);
+    if (this.tokenAccounts.has(address)) return new Uint8Array(165);
     const request = this.requests.get(address);
     if (request) return encodeRequest(request.client, request.seed, request.state);
     return undefined;
@@ -137,11 +140,20 @@ export class MockChain implements ChainClient {
     this.require(ix.programId === this.programs.breaks, `the model only knows the breaks program, not ${ix.programId}`);
     const disc = hex(ix.data.subarray(0, 8));
     const args = new Reader(ix.data.subarray(8));
-    const name = ["commit_pool", "request_randomness", "settle_randomness", "claim_free_spot"].find(
+    const name = ["close_break", "commit_eligibility", "fund_purchases", "commit_pool", "request_randomness", "settle_randomness", "claim_free_spot"].find(
       (n) => hex(instructionDiscriminator(n)) === disc,
     );
     if (!name) throw new Error(`the mock chain does not model instruction ${disc}`);
     switch (name) {
+      case "close_break":
+        this.closeBreak(ix);
+        break;
+      case "commit_eligibility":
+        this.commitEligibility(ix, args);
+        break;
+      case "fund_purchases":
+        this.fundPurchases(ix);
+        break;
       case "commit_pool":
         this.commitPool(ix, args);
         break;
@@ -164,6 +176,47 @@ export class MockChain implements ChainClient {
   }
 
   // programs/breaks/src/lifecycle.rs
+  private closeBreak(ix: Instruction) {
+    const b = this.breakAt((ix.accounts[0] as Instruction["accounts"][number]).pubkey);
+    this.require(b.status === "Open", "WrongStatus");
+    this.require(this.unixTime >= b.closesAt, "TooEarlyToClose");
+    b.status = "Closed";
+  }
+
+  private commitEligibility(ix: Instruction, args: Reader) {
+    this.requireKeeper(ix, 0);
+    const root = args.fixed(32);
+    const totalWeight = args.u64();
+    const entryCount = args.u32();
+    const inputsHash = args.fixed(32);
+    const b = this.breakAt((ix.accounts[2] as Instruction["accounts"][number]).pubkey);
+    this.require(b.status === "Closed", "WrongStatus");
+    this.require((totalWeight === 0n) === (entryCount === 0), "InvalidEligibility");
+    b.eligibilityRoot = root;
+    b.eligibilityTotalWeight = totalWeight;
+    b.eligibilityCount = entryCount;
+    b.eligibilityInputsHash = inputsHash;
+    b.status = "EligibilityCommitted";
+  }
+
+  // programs/breaks/src/lifecycle.rs and math.rs (`funding`); the USDC itself is not modelled
+  private fundPurchases(ix: Instruction) {
+    this.requireKeeper(ix, 0);
+    this.require(!this.config.paused, "Paused");
+    const b = this.breakAt((ix.accounts[2] as Instruction["accounts"][number]).pubkey);
+    this.require(b.status === "EligibilityCommitted", "WrongStatus");
+    const buyerUsdc = (ix.accounts[4] as Instruction["accounts"][number]).pubkey;
+    this.require(buyerUsdc === associatedTokenAddress(this.config.buyer, this.config.usdcMint) && this.tokenAccounts.has(buyerUsdc), "ConstraintTokenOwner");
+    const drawnFree = Math.min(b.freeSpots, b.eligibilityCount);
+    const poolSize = b.spotsSold + drawnFree;
+    this.require(poolSize > 0, "EmptyPool");
+    b.poolSize = poolSize;
+    b.packBudget = BigInt(poolSize) * b.maxPackPrice;
+    b.lockedSubsidy = 0n;
+    b.lockedHolder = 0n;
+    b.status = "Funded";
+  }
+
   private commitPool(ix: Instruction, args: Reader) {
     this.requireKeeper(ix, 0);
     const poolHash = args.fixed(32);

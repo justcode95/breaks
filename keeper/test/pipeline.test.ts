@@ -3,6 +3,7 @@ import { drawFreeWinners } from "../src/draw/draw.js";
 import { equalBytes } from "../src/draw/bytes.js";
 import { MAX_RANDOMNESS_ATTEMPTS, ORAO_PROGRAM, breakAddress, drawSeed, requestAddress, requestId } from "../src/solana/breaks.js";
 import { addressFromBytes } from "../src/solana/pubkey.js";
+import { associatedTokenAddress } from "../src/solana/pubkey.js";
 import { addr, BUYER } from "./support/chain.js";
 import { ANSWER, PROGRAMS, world } from "./support/world.js";
 
@@ -146,16 +147,6 @@ describe("BreakPipeline: the pool is only committed when it is real", () => {
 });
 
 describe("BreakPipeline: other states", () => {
-  it("waits for a break that is not funded yet", async () => {
-    for (const status of ["Open", "Closed", "EligibilityCommitted"] as const) {
-      const w = world();
-      w.chain.breaks.get(7n)!.status = status;
-      const r = await w.pipeline().advance(w.active);
-      expect(r.waiting).toMatch(/not funded yet/);
-      expect(w.chain.sendCalls).toBe(0);
-    }
-  });
-
   it("leaves a cancelled break alone, and reports a break that does not exist", async () => {
     const w = world();
     w.chain.breaks.get(7n)!.status = "Cancelled";
@@ -381,5 +372,159 @@ describe("BreakPipeline: sends whose result is not known", () => {
     const r = await broken.advance(w.active);
     expect(r.problem).toBe("rpc: 503");
     expect(w.errors).toContain("pipeline step failed");
+  });
+});
+
+describe("BreakPipeline: before funding", () => {
+  const closesAt = (w: ReturnType<typeof world>) => w.chain.breaks.get(7n)!.closesAt;
+
+  it("waits while the sale is open, closes it a few seconds after the deadline", async () => {
+    const w = world({ status: "Open" });
+    const pipe = w.pipeline();
+    w.chain.unixTime = closesAt(w) - 100n;
+    const early = await pipe.advance(w.active);
+    expect(early.waiting).toMatch(/^open until /);
+    expect(early.sent).toEqual([]);
+
+    w.chain.unixTime = closesAt(w) + 4n; // past the deadline but inside the margin
+    expect((await pipe.advance(w.active)).sent).toEqual([]);
+    expect(w.chain.sendCalls).toBe(0);
+
+    w.chain.unixTime = closesAt(w) + 5n;
+    const r = await pipe.advance(w.active);
+    expect(steps(r)[0]).toBe("close_break");
+  });
+
+  it("closes, commits the planned eligibility list and funds the purchases, then waits for the packs", async () => {
+    const w = world({ status: "Open" });
+    const r = await w.pipeline().advance(w.active);
+    expect(steps(r)).toEqual(["close_break", "commit_eligibility", "fund_purchases"]);
+    expect(r.chainStatus).toBe("Funded");
+    expect(r.waiting).toBe("packs: 0/5 pulled");
+
+    const b = w.chain.breaks.get(7n)!;
+    // What went on-chain is exactly what the planner produced.
+    expect(equalBytes(b.eligibilityRoot, w.planner.values.root)).toBe(true);
+    expect(b.eligibilityTotalWeight).toBe(w.planner.values.totalWeight);
+    expect(b.eligibilityCount).toBe(w.planner.values.entryCount);
+    expect(equalBytes(b.eligibilityInputsHash, w.planner.values.inputsHash)).toBe(true);
+    expect(b.poolSize).toBe(5);
+    expect(b.packBudget).toBe(125_000_000n);
+  });
+
+  it("goes all the way from an open break to a recorded draw", async () => {
+    const w = world({ status: "Open" });
+    const pipe = w.pipeline();
+    expect(steps(await pipe.advance(w.active))).toEqual(["close_break", "commit_eligibility", "fund_purchases"]);
+    await w.pullPacks();
+    expect(steps(await pipe.advance(w.active))).toEqual(["commit_pool", "request_randomness"]);
+    w.chain.fulfill(requestOf(w), ANSWER);
+    const done = await pipe.advance(w.active);
+    expect(done.chainStatus).toBe("Drawn");
+    expect(w.chain.applied).toEqual([
+      "close_break",
+      "commit_eligibility",
+      "fund_purchases",
+      "commit_pool",
+      "request_randomness",
+      "settle_randomness",
+      "claim_free_spot",
+      "claim_free_spot",
+    ]);
+  });
+
+  it("waits for the eligibility list while the indexer is behind, and commits nothing", async () => {
+    const w = world({ status: "Closed" });
+    w.planner.waitReason = "the balance indexer has read up to 5 but needs 9";
+    const r = await w.pipeline().advance(w.active);
+    expect(r.waiting).toBe("eligibility: the balance indexer has read up to 5 but needs 9");
+    expect(r.sent).toEqual([]);
+    expect(w.chain.sendCalls).toBe(0);
+  });
+
+  it("refuses a list whose weight and entry count disagree about being empty", async () => {
+    const w = world({ status: "Closed" });
+    w.planner.values = { ...w.planner.values, totalWeight: 0n };
+    expect((await w.pipeline().advance(w.active)).problem).toMatch(/disagree about being empty/);
+    expect(w.chain.sendCalls).toBe(0);
+  });
+
+  it("commits an empty list when nobody is eligible, and funds the paid spots alone", async () => {
+    const w = world({ status: "Closed" });
+    w.planner.values = { root: new Uint8Array(32), totalWeight: 0n, entryCount: 0, inputsHash: new Uint8Array(32).fill(0x22) };
+    const r = await w.pipeline().advance(w.active);
+    expect(steps(r)).toEqual(["commit_eligibility", "fund_purchases"]);
+    expect(w.chain.breaks.get(7n)!.poolSize).toBe(3); // the three paid spots; no free winners
+  });
+
+  it("draws fewer free winners than free spots when too few holders are eligible", async () => {
+    const w = world({ status: "Closed" });
+    w.planner.values = { ...w.planner.values, entryCount: 1 }; // one eligible holder for two free spots
+    await w.pipeline().advance(w.active);
+    expect(w.chain.breaks.get(7n)!.poolSize).toBe(4);
+  });
+
+  it("does not fund a break with nothing in it: the admin must cancel it", async () => {
+    const w = world({ paid: 0, free: 2, status: "Closed" });
+    w.planner.values = { root: new Uint8Array(32), totalWeight: 0n, entryCount: 0, inputsHash: new Uint8Array(32).fill(0x22) };
+    const r = await w.pipeline().advance(w.active);
+    expect(steps(r)).toEqual(["commit_eligibility"]);
+    expect(r.problem).toMatch(/nothing to fund.*admin must cancel/);
+    expect(w.chain.applied).not.toContain("fund_purchases");
+  });
+
+  describe("fund_purchases is only sent when everything it depends on is in order", () => {
+    it("not while the program is paused", async () => {
+      const w = world({ status: "EligibilityCommitted" });
+      w.chain.config = { ...w.chain.config, paused: true };
+      const r = await w.pipeline().advance(w.active);
+      expect(r.waiting).toMatch(/paused/);
+      expect(w.chain.sendCalls).toBe(0);
+    });
+
+    it("not without the stored eligibility list, which the free winners are claimed from", async () => {
+      const w = world({ status: "EligibilityCommitted" });
+      w.planner.stored = false;
+      const r = await w.pipeline().advance(w.active);
+      expect(r.problem).toMatch(/not stored.*not funding/);
+      expect(w.chain.sendCalls).toBe(0);
+    });
+
+    it("not if the stored list is not the one that was committed", async () => {
+      for (const change of [
+        { root: new Uint8Array(32).fill(1) },
+        { totalWeight: 1n },
+        { entryCount: 99 },
+        { inputsHash: new Uint8Array(32).fill(7) },
+      ]) {
+        const w = world({ status: "EligibilityCommitted" });
+        w.planner.values = { ...w.planner.values, ...change };
+        expect((await w.pipeline().advance(w.active)).problem, JSON.stringify(Object.keys(change))).toMatch(/not the one that was committed/);
+        expect(w.chain.sendCalls).toBe(0);
+      }
+    });
+
+    it("not when the buyer wallet has no USDC account", async () => {
+      const w = world({ status: "EligibilityCommitted" });
+      w.chain.tokenAccounts.clear();
+      const r = await w.pipeline().advance(w.active);
+      expect(r.problem).toMatch(/buyer wallet has no USDC account at /);
+      expect(r.problem).toContain(associatedTokenAddress(BUYER, w.chain.config.usdcMint));
+      expect(w.chain.sendCalls).toBe(0);
+    });
+
+    it("and then it is sent", async () => {
+      const w = world({ status: "EligibilityCommitted" });
+      const r = await w.pipeline().advance(w.active);
+      expect(steps(r)).toEqual(["fund_purchases"]);
+      expect(r.chainStatus).toBe("Funded");
+    });
+  });
+
+  it("reports a refusal by the program, for example a keeper that is not the configured one", async () => {
+    const w = world({ status: "Closed" });
+    w.chain.config = { ...w.chain.config, keeper: addr(99) };
+    const r = await w.pipeline().advance(w.active);
+    expect(r.problem).toMatch(/commit_eligibility failed: Unauthorized/);
   });
 });
