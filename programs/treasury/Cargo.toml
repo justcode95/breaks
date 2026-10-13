@@ -14,13 +14,26 @@ cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
-idl-build = ["anchor-lang/idl-build"]
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 anchor-debug = []
 custom-heap = []
 custom-panic = []
 
 [dependencies]
 anchor-lang = "1.2.1"
+anchor-spl = "1.2.1"
+
+[dev-dependencies]
+base64 = "0.22"
+litesvm = "0.18"
+litesvm-token = "0.18"
+solana-address = "2.7"
+solana-instruction-error = "2.5"
+solana-keypair = "3.1"
+solana-message = "4.2"
+solana-signer = "3"
+solana-transaction = { version = "4.1", features = ["verify"] }
+solana-transaction-error = "3.4"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
