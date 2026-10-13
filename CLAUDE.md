@@ -118,7 +118,9 @@ cargo check --workspace      # Anchor programs, host check only
 ```
 CI (`.github/workflows/ci.yml`) runs the same on every pull request and on pushes to main.
 
-**Toolchain limit in cloud sessions:** the Solana/Anchor binaries could not be downloaded there (release.anza.xyz and GitHub release downloads were blocked by the network policy), so SBF builds and `anchor test` have not been run anywhere yet. Phase 2 adds a CI job for them. Until then, program logic is only host-checked; do not claim it is tested.
+**Program tests:** each program has pure-logic unit tests (`cargo test -p treasury --lib`, runs anywhere) and on-chain tests in `programs/<name>/tests/` that run the compiled program inside LiteSVM. The on-chain tests need `target/deploy/<name>.so` from `cargo build-sbf --manifest-path programs/<name>/Cargo.toml`; without it they fail on purpose.
+
+**Toolchain limit in cloud sessions:** the Solana/Anchor binaries could not be downloaded there (release.anza.xyz and GitHub release downloads were blocked by the network policy), so `cargo build-sbf` and the on-chain tests run in CI (job `programs`), not in the session. Read CI results with the GitHub Actions tools. CI also runs on pushes to `claude/**` branches so work can be verified without opening a pull request. Do not claim on-chain behavior is tested until that job is green.
 
 ## Build phases
 0. **Feasibility (no code, you run these; the first one gates everything):**
@@ -129,7 +131,7 @@ CI (`.github/workflows/ci.yml`) runs the same on every pull request and on pushe
    5. Check whether the card can be held in a program-owned account (only if an on-chain escrow is wanted).
    6. Pick the VRF provider (A1).
 1. **Scaffold** (done, in review) — Anchor workspace (2 programs, placeholder instructions), Next.js app, keeper skeleton (config, job runner, `PackProvider` + mock), DB migration v0. Devnet only.
-2. **Treasury** with full tests.
+2. **Treasury** (initialize, deposit_fees, set_split; done, in review). Outflows from the buckets (lock for a break, fund the pack buyer) are designed with the `breaks` program in Phase 3. No admin-transfer instruction yet: decide in Phase 3 whether to add a two-step handover.
 3. **Breaks program** — create/buy/close/fund/cancel with tests. Then randomness + claims + pool commit.
 4. **Keeper** — indexer, TWAB, eligibility, scheduler, pack buyer, delivery, pipeline.
 5. **Website** — live break, dashboard, transparency + verify tool.

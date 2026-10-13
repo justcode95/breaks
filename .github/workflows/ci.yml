@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, "claude/**"]
 
 jobs:
   rust:
@@ -11,9 +11,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
-      # Host-side check only. SBF build and `anchor test` are added in Phase 2 (see CLAUDE.md).
+      - run: cargo fmt --all --check
       - run: cargo check --workspace --locked
+
+  # Builds the programs for Solana (SBF) and runs them inside LiteSVM.
+  programs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/solana
+          key: solana-platform-tools-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: solana-platform-tools-${{ runner.os }}-
+      - run: solana --version
+      - run: cargo build-sbf --manifest-path programs/treasury/Cargo.toml
+      - run: cargo test -p treasury --locked
 
   node:
     runs-on: ubuntu-latest
