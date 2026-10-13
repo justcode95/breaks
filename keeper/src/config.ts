@@ -35,6 +35,19 @@ const schema = z.object({
   WEIGHT_CAP: z.coerce.bigint().positive().optional(),
   // The balance indexer must have read this far past the end of a window before the list is computed.
   INDEXER_SETTLE_SECS: z.coerce.number().int().min(0).default(120),
+  // The token whose holders get free spots. Required: with the wrong mint every list would be empty. The keeper checks
+  // at startup that it is an initialized mint on this cluster.
+  TOKEN_MINT: address,
+  // The balance indexer reads every holder again at least this often (seconds); a break whose window ended is read at once.
+  INDEXER_INTERVAL_SECS: z.coerce.number().int().min(60).default(900),
+  // A pass only claims what happened this long before it started (finalization takes seconds, a stalled cluster longer).
+  INDEXER_LAG_SECS: z.coerce.number().int().min(30).default(120),
+  // Node calls per run of the indexer (a page of signatures or a transaction each), signatures per page, and transactions
+  // fetched at the same time. A page is read whole, so a run is a few pages: the defaults are about 6 calls a second with
+  // bursts of 4. Lower them on a node with tight rate limits, raise them to catch up faster on a busy token.
+  INDEXER_CALLS_PER_RUN: z.coerce.number().int().min(1).default(60),
+  INDEXER_PAGE_SIZE: z.coerce.number().int().min(1).max(1000).default(25),
+  INDEXER_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(4),
   // The deployed programs.
   BREAKS_PROGRAM_ID: address,
   TREASURY_PROGRAM_ID: address,
@@ -58,6 +71,7 @@ export type Config = {
   programs: Programs;
   vrf: { program: Address; treasury: Address };
   eligibility: { minTwab: bigint; capPerWallet?: bigint; settleSecs: number };
+  indexer: { mint: Address; intervalSecs: number; lagSecs: number; callsPerRun: number; pageSize: number; concurrency: number };
 };
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -84,6 +98,14 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       minTwab: e.MIN_TWAB,
       ...(e.WEIGHT_CAP !== undefined ? { capPerWallet: e.WEIGHT_CAP } : {}),
       settleSecs: e.INDEXER_SETTLE_SECS,
+    },
+    indexer: {
+      mint: e.TOKEN_MINT,
+      intervalSecs: e.INDEXER_INTERVAL_SECS,
+      lagSecs: e.INDEXER_LAG_SECS,
+      callsPerRun: e.INDEXER_CALLS_PER_RUN,
+      pageSize: e.INDEXER_PAGE_SIZE,
+      concurrency: e.INDEXER_CONCURRENCY,
     },
   };
 }

@@ -12,6 +12,7 @@ const base = {
   TREASURY_PROGRAM_ID: TREASURY,
   ORAO_TREASURY: addr(0xa2),
   MIN_TWAB: "1000000000000",
+  TOKEN_MINT: addr(0xb1),
 };
 
 describe("loadConfig", () => {
@@ -29,7 +30,19 @@ describe("loadConfig", () => {
       programs: { breaks: BREAKS, treasury: TREASURY },
       vrf: { program: ORAO_PROGRAM, treasury: addr(0xa2) },
       eligibility: { minTwab: 1_000_000_000_000n, settleSecs: 120 },
+      indexer: { mint: addr(0xb1), intervalSecs: 900, lagSecs: 120, callsPerRun: 60, pageSize: 25, concurrency: 4 },
     });
+  });
+
+  it("reads the indexer settings and refuses values that would make it unsafe or useless", () => {
+    const c = loadConfig({ ...base, INDEXER_INTERVAL_SECS: "300", INDEXER_LAG_SECS: "60", INDEXER_CALLS_PER_RUN: "10", INDEXER_PAGE_SIZE: "50", INDEXER_CONCURRENCY: "2" });
+    expect(c.indexer).toEqual({ mint: addr(0xb1), intervalSecs: 300, lagSecs: 60, callsPerRun: 10, pageSize: 50, concurrency: 2 });
+    // A lag of a few seconds could claim transactions that have not finalized yet.
+    expect(() => loadConfig({ ...base, INDEXER_LAG_SECS: "5" })).toThrow(/INDEXER_LAG_SECS/);
+    expect(() => loadConfig({ ...base, INDEXER_INTERVAL_SECS: "1" })).toThrow(/INDEXER_INTERVAL_SECS/);
+    expect(() => loadConfig({ ...base, INDEXER_CALLS_PER_RUN: "0" })).toThrow(/INDEXER_CALLS_PER_RUN/);
+    expect(() => loadConfig({ ...base, INDEXER_PAGE_SIZE: "5000" })).toThrow(/INDEXER_PAGE_SIZE/);
+    expect(() => loadConfig({ ...base, INDEXER_CONCURRENCY: "0" })).toThrow(/INDEXER_CONCURRENCY/);
   });
 
   it("reads the eligibility policy", () => {
@@ -61,9 +74,9 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, CARD_TRANSFER: "collector-crypt" })).toThrow(/CARD_TRANSFER/);
   });
 
-  it("requires an RPC url, a database url, both program ids, ORAO's treasury and the minimum TWAB", () => {
+  it("requires an RPC url, a database url, both program ids, ORAO's treasury, the minimum TWAB and the token", () => {
     expect(() => loadConfig({})).toThrow(/SOLANA_RPC_URL.*DATABASE_URL|DATABASE_URL.*SOLANA_RPC_URL/);
-    for (const key of ["BREAKS_PROGRAM_ID", "TREASURY_PROGRAM_ID", "ORAO_TREASURY", "MIN_TWAB"] as const) {
+    for (const key of ["BREAKS_PROGRAM_ID", "TREASURY_PROGRAM_ID", "ORAO_TREASURY", "MIN_TWAB", "TOKEN_MINT"] as const) {
       const { [key]: _removed, ...rest } = base;
       expect(() => loadConfig(rest)).toThrow(new RegExp(key));
     }
@@ -73,6 +86,7 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, BREAKS_PROGRAM_ID: "REPLACE_ME" })).toThrow(/BREAKS_PROGRAM_ID.*not a Solana address/);
     expect(() => loadConfig({ ...base, ORAO_TREASURY: "REPLACE_WITH_ORAO_TREASURY" })).toThrow(/ORAO_TREASURY/);
     expect(() => loadConfig({ ...base, VRF_PROGRAM_ID: "nope" })).toThrow(/VRF_PROGRAM_ID/);
+    expect(() => loadConfig({ ...base, TOKEN_MINT: "REPLACE_WITH_THE_TOKEN_MINT" })).toThrow(/TOKEN_MINT/);
   });
 
   it("lets the VRF program be changed, as the admin can switch it on-chain", () => {

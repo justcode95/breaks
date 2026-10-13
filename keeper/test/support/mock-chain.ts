@@ -58,6 +58,8 @@ export class MockChain implements ChainClient {
   public sendCalls = 0;
   /** Accounts that exist and hold some data (the buyer wallet's USDC account, for `fund_purchases`). */
   public readonly tokenAccounts = new Set<Address>();
+  /** Any other account the test wants the chain to have (a token mint, say). */
+  public readonly accounts = new Map<Address, Uint8Array>();
   /** Every transaction that was applied, in order, by instruction name. */
   public readonly applied: string[] = [];
 
@@ -87,6 +89,8 @@ export class MockChain implements ChainClient {
     const spot = this.spots.get(address);
     if (spot) return encodeSpot(spot);
     if (this.tokenAccounts.has(address)) return new Uint8Array(165);
+    const extra = this.accounts.get(address);
+    if (extra) return extra;
     const request = this.requests.get(address);
     if (request) return encodeRequest(request.client, request.seed, request.state);
     return undefined;

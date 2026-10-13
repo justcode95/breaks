@@ -11,6 +11,7 @@ import { type BreakAccount, type BreaksConfigAccount, ORAO_PROGRAM, type Program
 import { type Address, addressToBytes, associatedTokenAddress } from "../../src/solana/pubkey.js";
 import { addr, BUYER } from "./chain.js";
 import { MockChain } from "./mock-chain.js";
+import { MINT, mintAccountData } from "./token-ledger.js";
 
 export const PROGRAMS: Programs = {
   breaks: "8tmJjCG3D4TF7oPiPWNoaCjZ4pN2U4H237BSGVw2B8KU",
@@ -112,6 +113,7 @@ export function world(opts: { paid?: number; free?: number; cardBase?: number; i
     bump: 255,
   };
   const chain = new MockChain(PROGRAMS, config);
+  chain.accounts.set(MINT, mintAccountData());
   // Before the eligibility list is committed and the break funded, the chain holds none of that yet.
   const early = opts.status === "Open" || opts.status === "Closed";
   const b: BreakAccount = {

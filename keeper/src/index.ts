@@ -1,9 +1,11 @@
 import pg from "pg";
 import { buildJobs, sqlFromPool } from "./app.js";
 import { loadConfig } from "./config.js";
+import { RpcTokenReader } from "./indexer/reader.js";
 import { createRunner, type Logger } from "./job.js";
 import { connectFromConfig } from "./pipeline/rpc-chain.js";
 import { startLoop } from "./run.js";
+import { RpcClient } from "./solana/rpc.js";
 
 const log: Logger = {
   info: (msg, extra) => console.log(JSON.stringify({ level: "info", msg, ...extra })),
@@ -24,7 +26,9 @@ async function main() {
     throw new Error(`cannot reach the database: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const jobs = await buildJobs(config, { sql: sqlFromPool(pool), chain, keeper: chain.keeper, log });
+  // The same node the chain client just checked (devnet only), read through plain JSON-RPC.
+  const reader = new RpcTokenReader(new RpcClient({ url: config.rpcUrl }), { concurrency: config.indexer.concurrency });
+  const jobs = await buildJobs(config, { sql: sqlFromPool(pool), chain, reader, keeper: chain.keeper, log });
   const runner = createRunner(jobs, { now: () => new Date(), log });
   log.info("keeper started", { cluster: config.cluster, keeper: chain.keeper, jobs: jobs.map((j) => j.name) });
   const loop = startLoop(runner, config.jobTickMs, log);

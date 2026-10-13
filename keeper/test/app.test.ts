@@ -3,13 +3,14 @@ import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { beforeAll, describe, expect, it } from "vitest";
-import { type AppConfig, buildJobs, checkSchema, sqlFromPool, verifyKeeperIdentity } from "../src/app.js";
+import { type AppConfig, buildJobs, checkSchema, sqlFromPool, verifyKeeperIdentity, verifyMint } from "../src/app.js";
 import { assignCards } from "../src/draw/pool.js";
 import { createRunner } from "../src/job.js";
 import { ORAO_PROGRAM, requestAddress } from "../src/solana/breaks.js";
 import { addressFromBytes, addressToBytes } from "../src/solana/pubkey.js";
 import { addr } from "./support/chain.js";
 import { insertBreak, migratedDb } from "./support/db.js";
+import { MINT, TokenLedger } from "./support/token-ledger.js";
 import { ANSWER, KEEPER, PROGRAMS, logger, world } from "./support/world.js";
 
 const config: AppConfig = {
@@ -20,7 +21,11 @@ const config: AppConfig = {
   mockPackPrice: 25_000_000n,
   jobIntervalMs: 1000,
   eligibility: { minTwab: 1n, settleSecs: 120 },
+  indexer: { mint: MINT, intervalSecs: 900, lagSecs: 120, callsPerRun: 1000, pageSize: 100, concurrency: 4 },
 };
+
+/** A node that has seen no transactions of the token. */
+const quietNode = () => new TokenLedger(1_800_000_000);
 
 describe("sqlFromPool", () => {
   it("passes the query and its parameters through and returns the rows", async () => {
@@ -66,7 +71,9 @@ describe("checkSchema", () => {
       "delivery_attempts.signature is missing (migration 0003)",
       "indexer_state.indexed_until is missing (migration 0005)",
       "published_documents.sha256 is missing (migration 0005)",
+      "indexed_accounts.until_sig is missing (migration 0006)",
       "breaks.status does not accept 'drawn' (migration 0004)",
+      "balance_events is not unique per owner (migration 0006)",
     ]);
   });
 });
@@ -89,29 +96,62 @@ describe("verifyKeeperIdentity", () => {
   });
 });
 
+describe("verifyMint", () => {
+  it("accepts a classic mint and a Token-2022 mint", async () => {
+    const w = world();
+    await verifyMint(w.chain, MINT);
+    const extended = new Uint8Array(200);
+    extended[45] = 1;
+    extended[165] = 1;
+    w.chain.accounts.set(addr(0xc1), extended);
+    await verifyMint(w.chain, addr(0xc1));
+  });
+
+  it("refuses an address that does not exist, so a typo cannot make every list empty", async () => {
+    const w = world();
+    await expect(verifyMint(w.chain, addr(0xc2))).rejects.toThrow(/does not exist on this cluster/);
+  });
+
+  it("refuses an account that is not a mint", async () => {
+    const w = world();
+    w.chain.accounts.set(addr(0xc3), new Uint8Array(165).fill(1)); // a token account is 165 bytes
+    w.chain.accounts.set(addr(0xc4), new Uint8Array(82)); // not initialized
+    const extendedAccount = new Uint8Array(200);
+    extendedAccount[45] = 1;
+    extendedAccount[165] = 2; // account type 2 = token account
+    w.chain.accounts.set(addr(0xc5), extendedAccount);
+    for (const a of [addr(0xc3), addr(0xc4), addr(0xc5)]) await expect(verifyMint(w.chain, a)).rejects.toThrow(/not an initialized token mint/);
+  });
+
+  it("is checked before any job is built", async () => {
+    const w = world();
+    await expect(buildJobs({ ...config, indexer: { ...config.indexer, mint: addr(0xc2) } }, { sql: shared, chain: w.chain, reader: quietNode(), keeper: KEEPER, log: logger().log })).rejects.toThrow(/TOKEN_MINT/);
+  });
+});
+
 describe("buildJobs", () => {
   it("refuses a database that is not ready, before any job exists", async () => {
     const w = world();
-    await expect(buildJobs(config, { sql: new PGlite(), chain: w.chain, keeper: KEEPER, log: logger().log })).rejects.toThrow(/the database is not ready: table breaks is missing/);
+    await expect(buildJobs(config, { sql: new PGlite(), chain: w.chain, reader: quietNode(), keeper: KEEPER, log: logger().log })).rejects.toThrow(/the database is not ready: table breaks is missing/);
   });
 
   it("refuses the wrong key", async () => {
     const w = world();
-    await expect(buildJobs(config, { sql: shared, chain: w.chain, keeper: addr(99), log: logger().log })).rejects.toThrow(/expects/);
+    await expect(buildJobs(config, { sql: shared, chain: w.chain, reader: quietNode(), keeper: addr(99), log: logger().log })).rejects.toThrow(/expects/);
   });
 
   it("still builds the jobs when the program is not initialized yet, and says so", async () => {
     const w = world();
     const { log, errors } = logger();
-    const jobs = await buildJobs({ ...config, programs: { breaks: addr(1), treasury: addr(2) } }, { sql: shared, chain: w.chain, keeper: KEEPER, log });
-    expect(jobs.map((j) => j.name)).toEqual(["pipeline", "pack-buyer", "delivery"]);
+    const jobs = await buildJobs({ ...config, programs: { breaks: addr(1), treasury: addr(2) } }, { sql: shared, chain: w.chain, reader: quietNode(), keeper: KEEPER, log });
+    expect(jobs.map((j) => j.name)).toEqual(["indexer", "pipeline", "pack-buyer", "delivery"]);
     expect(errors).toEqual(["the breaks program is not initialized on this cluster; breaks will be reported as problems until it is"]);
   });
 
   it("says that the providers are mocks", async () => {
     const w = world();
     const { log, infos } = logger();
-    await buildJobs(config, { sql: shared, chain: w.chain, keeper: KEEPER, log });
+    await buildJobs(config, { sql: shared, chain: w.chain, reader: quietNode(), keeper: KEEPER, log });
     expect(infos).toContain("MOCK pack provider and MOCK card transfer: no real packs are bought and no real cards move");
   });
 });
@@ -130,7 +170,7 @@ describe("the jobs, run by the real runner", () => {
       await db.query("insert into twab_snapshots (break_id, wallet, twab, weight, eligible) values ($1, $2, $3, $3, true)", [id, addressOf(leaf.wallet), leaf.weight]);
     }
 
-    const jobs = await buildJobs(config, { sql: db, chain: w.chain, keeper: KEEPER, log, now: w.clock.now });
+    const jobs = await buildJobs(config, { sql: db, chain: w.chain, reader: quietNode(), keeper: KEEPER, log, now: w.clock.now });
     let clock = 1_800_040_000_000;
     const runner = createRunner(jobs, { now: () => new Date(clock), log });
     const tick = async () => {
@@ -198,7 +238,7 @@ describe("the jobs, run by the real runner", () => {
 });
 
 describe("the jobs, from an open break", () => {
-  it("close it, work out the eligibility list from the indexed balances, commit it, fund, buy, draw and deliver", async () => {
+  it("index the holders from the node, close the break, work out the eligibility list, commit it, fund, buy, draw and deliver", async () => {
     const db = shared;
     const w = world({ status: "Open", id: 8n });
     const { log, errors } = logger();
@@ -206,22 +246,19 @@ describe("the jobs, from an open break", () => {
     const opensAt = Number(b0.opensAt);
     const closesAt = Number(b0.closesAt);
 
-    // Six real holders, each with a different balance held through the whole window, and an indexer that has read past it.
-    await db.query("delete from balance_events");
+    // Six real holders, each with a different balance held through the whole window. The indexer reads them from a node.
+    await db.exec("truncate indexed_accounts, balance_events, indexer_state");
     await db.query("delete from exclusions");
-    const holders = [1, 2, 3, 4, 5, 6].map((n) => addressFromBytes(ed25519.getPublicKey(new Uint8Array(32).fill(100 + n))));
-    for (const [i, owner] of holders.entries()) {
-      await db.query(
-        "insert into balance_events (signature, slot, block_time, owner, token_account, delta, balance_after) values ($1, $2, to_timestamp($3), $4, $5, $6::numeric, $6::numeric)",
-        [`holder-sig-${i}`, i + 1, opensAt - 100, owner, `holder-acct-${i}`, String((i + 1) * 1000)],
-      );
-    }
-    await db.query("insert into indexer_state (id, indexed_until) values (1, to_timestamp($1)) on conflict (id) do update set indexed_until = excluded.indexed_until", [closesAt + 120]);
+    const ledger = new TokenLedger(opensAt - 1000);
+    const holders = [1, 2, 3, 4, 5, 6].map((n) => ledger.holder(`holder${n}`));
+    ledger.at(opensAt - 100);
+    for (const [i, h] of holders.entries()) ledger.mintTo(h, BigInt((i + 1) * 1000));
+    const wallets = holders.map((h) => h.wallet);
 
     const id = await insertBreak(db);
     await db.query("update breaks set onchain_id = 8, status = 'open' where id = $1::bigint", [id]);
 
-    const jobs = await buildJobs({ ...config, eligibility: { minTwab: 1n, settleSecs: 120 } }, { sql: db, chain: w.chain, keeper: KEEPER, log, now: w.clock.now });
+    const jobs = await buildJobs({ ...config, eligibility: { minTwab: 1n, settleSecs: 120 } }, { sql: db, chain: w.chain, reader: ledger, keeper: KEEPER, log, now: w.clock.now });
     let clock = 1_800_040_000_000;
     const runner = createRunner(jobs, { now: () => new Date(clock), log });
     const status = async () => (await db.query<{ status: string }>("select status from breaks where id = $1::bigint", [id])).rows[0]?.status;
@@ -256,7 +293,7 @@ describe("the jobs, from an open break", () => {
 
     // The two free winners are two of the six holders, and every card went out.
     const winners = b.freeWinners.slice(0, 2).map((x) => x.wallet);
-    expect(winners.every((x) => holders.includes(x))).toBe(true);
+    expect(winners.every((x) => wallets.includes(x))).toBe(true);
     expect(new Set(winners).size).toBe(2);
     const delivered = await db.query<{ status: string }>("select status from deliveries where break_id = $1::bigint", [id]);
     expect(delivered.rows).toHaveLength(5);
