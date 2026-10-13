@@ -27,7 +27,7 @@ describe("db/migrations", () => {
     );
     const names = rows.map((r) => r.table_name);
     for (const t of [
-      "breaks", "spots", "packs", "deliveries", "balance_events", "twab_snapshots",
+      "breaks", "spots", "packs", "pack_attempts", "deliveries", "balance_events", "twab_snapshots",
       "eligibility_lists", "draws", "treasury_events", "exclusions", "x_links", "bot_posts",
     ]) {
       expect(names).toContain(t);
