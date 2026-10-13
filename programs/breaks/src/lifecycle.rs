@@ -100,6 +100,11 @@ impl<'info> CreateBreak<'info> {
         b.pool_size = 0;
         b.pack_budget = 0;
         b.pool_hash = [0; 32];
+        b.randomness_attempt = 0;
+        b.randomness_request_id = [0; 32];
+        b.randomness_requested_at = 0;
+        b.seed = [0; 32];
+        b.seeded_at = 0;
         b.bump = bumps.break_;
         b.escrow_bump = bumps.escrow;
 

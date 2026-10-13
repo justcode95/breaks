@@ -2,14 +2,17 @@ use anchor_lang::prelude::*;
 
 pub mod admin;
 pub mod cancel;
+pub mod draw;
 pub mod errors;
 pub mod lifecycle;
 pub mod math;
+pub mod randomness;
 pub mod state;
 pub mod treasury_cpi;
 
 pub use admin::*;
 pub use cancel::*;
+pub use draw::*;
 pub use lifecycle::*;
 
 // Placeholder ID. Replace with `anchor keys sync` once the deploy keypair exists.
@@ -63,6 +66,20 @@ pub mod breaks {
         Ok(())
     }
 
+    /// Admin only. Appoints the randomness adapter program (see `randomness.rs`).
+    pub fn set_randomness(ctx: Context<AdminOnly>, program: Pubkey, timeout_secs: i64) -> Result<()> {
+        require!(timeout_secs > 0, errors::BreaksError::InvalidRandomnessConfig);
+        let config = &mut ctx.accounts.config;
+        emit!(RandomnessChanged {
+            old_program: config.randomness_program,
+            program,
+            timeout_secs
+        });
+        config.randomness_program = program;
+        config.randomness_timeout_secs = timeout_secs;
+        Ok(())
+    }
+
     /// Keeper only.
     pub fn create_break(ctx: Context<CreateBreak>, params: CreateBreakParams) -> Result<()> {
         ctx.accounts.handle(params, &ctx.bumps)
@@ -97,6 +114,17 @@ pub mod breaks {
     /// Keeper only.
     pub fn commit_pool(ctx: Context<KeeperBreakCall>, pool_hash: [u8; 32], pool_size: u16) -> Result<()> {
         ctx.accounts.commit_pool(pool_hash, pool_size)
+    }
+
+    /// Keeper only, once the eligibility root and the pool are committed. Repeats the request if
+    /// the adapter never answered within the configured timeout.
+    pub fn request_randomness<'info>(ctx: Context<'info, RequestRandomness<'info>>) -> Result<()> {
+        ctx.accounts.handle(ctx.remaining_accounts)
+    }
+
+    /// Anyone, once the adapter has produced the randomness.
+    pub fn settle_randomness(ctx: Context<SettleRandomness>) -> Result<()> {
+        ctx.accounts.handle()
     }
 
     /// Admin only, before `fund_purchases`.

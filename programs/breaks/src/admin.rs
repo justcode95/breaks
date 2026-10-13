@@ -15,6 +15,9 @@ pub struct InitializeParams {
     pub max_window_secs: i64,
     pub max_paid_spots: u16,
     pub max_free_spots: u16,
+    /// Randomness adapter program.
+    pub randomness_program: Pubkey,
+    pub randomness_timeout_secs: i64,
 }
 
 #[derive(Accounts)]
@@ -43,12 +46,15 @@ impl Initialize<'_> {
             BreaksError::InvalidLimits
         );
         require!(p.max_paid_spots >= 1, BreaksError::InvalidLimits);
+        require!(p.randomness_timeout_secs > 0, BreaksError::InvalidRandomnessConfig);
 
         let config = &mut self.config;
         config.admin = p.admin;
         config.keeper = p.keeper;
         config.buyer = p.buyer;
         config.usdc_mint = self.usdc_mint.key();
+        config.randomness_program = p.randomness_program;
+        config.randomness_timeout_secs = p.randomness_timeout_secs;
         config.next_break_id = 0;
         config.min_window_secs = p.min_window_secs;
         config.max_window_secs = p.max_window_secs;
@@ -91,6 +97,13 @@ pub struct KeeperChanged {
 pub struct BuyerChanged {
     pub old_buyer: Pubkey,
     pub buyer: Pubkey,
+}
+
+#[event]
+pub struct RandomnessChanged {
+    pub old_program: Pubkey,
+    pub program: Pubkey,
+    pub timeout_secs: i64,
 }
 
 #[event]

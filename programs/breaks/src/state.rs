@@ -11,6 +11,11 @@ pub struct BreaksConfig {
     /// Wallet that receives the pack budget and buys the packs (Collector Crypt). Capped per break.
     pub buyer: Pubkey,
     pub usdc_mint: Pubkey,
+    /// Adapter program that produces randomness (see `randomness.rs`). Appointed by the admin so
+    /// a vendor can be replaced without touching this program.
+    pub randomness_program: Pubkey,
+    /// How long a randomness request may stay unanswered before it can be repeated.
+    pub randomness_timeout_secs: i64,
     pub next_break_id: u64,
     pub min_window_secs: i64,
     pub max_window_secs: i64,
@@ -32,6 +37,10 @@ pub enum BreakStatus {
     Funded,
     /// The pulled cards are committed on-chain (hash of the pool).
     PoolCommitted,
+    /// Randomness was requested from the adapter and has not been settled yet.
+    RandomnessRequested,
+    /// The seed is final. The draw can be verified and the cards delivered.
+    Settled,
     Cancelled,
 }
 
@@ -62,6 +71,13 @@ pub struct Break {
     /// Most the buyer wallet may spend: `pool_size * max_pack_price`. Set when funded.
     pub pack_budget: u64,
     pub pool_hash: [u8; 32],
+    /// Number of the current randomness request (0 for the first).
+    pub randomness_attempt: u8,
+    pub randomness_request_id: [u8; 32],
+    pub randomness_requested_at: i64,
+    /// The seed of the draw: what the adapter's VRF produced for the settled request.
+    pub seed: [u8; 32],
+    pub seeded_at: i64,
     pub bump: u8,
     pub escrow_bump: u8,
 }

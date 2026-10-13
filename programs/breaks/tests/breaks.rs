@@ -7,9 +7,10 @@
 use anchor_lang::{solana_program::instruction::Instruction, AnchorDeserialize, InstructionData, ToAccountMetas};
 use breaks::{
     errors::BreaksError,
+    randomness::{draw_seed, parse_request, request_address, request_id as derive_request_id, RequestState},
     state::{Break, BreakStatus, BreaksConfig, Spot},
     BreakCancelled, BreakClosed, BreakCreated, CreateBreakParams, EligibilityCommitted, PoolCommitted, PurchasesFunded,
-    SpotBought, SpotRefunded,
+    RandomnessRequested, RandomnessSettled, SpotBought, SpotRefunded,
 };
 use litesvm::LiteSVM;
 use litesvm_token::{
@@ -75,6 +76,14 @@ fn holder_vault() -> Address {
     pda(&[treasury::HOLDER_VAULT_SEED], &treasury::ID)
 }
 
+/// Stand-ins for ORAO's network state and fee treasury (the mock ignores them).
+fn vrf_network_state() -> Address {
+    Address::new_from_array([0xA1; 32])
+}
+fn vrf_treasury() -> Address {
+    Address::new_from_array([0xA2; 32])
+}
+
 fn ix(program_id: Address, accounts: impl ToAccountMetas, data: impl InstructionData) -> Instruction {
     Instruction {
         program_id,
@@ -109,6 +118,7 @@ impl Env {
 
         let treasury_programdata = deploy(&mut svm, treasury::ID, "treasury", &authority.pubkey());
         let breaks_programdata = deploy(&mut svm, breaks::ID, "breaks", &authority.pubkey());
+        deploy(&mut svm, mock_orao::ID, "mock_orao", &authority.pubkey());
         let mint = CreateMint::new(&mut svm, &authority).decimals(6).send().unwrap();
         let buyer_usdc = CreateAssociatedTokenAccount::new(&mut svm, &authority, &mint)
             .owner(&buyer.pubkey())
@@ -200,6 +210,8 @@ impl Env {
                     max_window_secs: 24 * HOUR,
                     max_paid_spots: 20,
                     max_free_spots: 6,
+                    randomness_program: mock_orao::ID,
+                    randomness_timeout_secs: HOUR,
                 },
             },
         )
@@ -454,6 +466,103 @@ impl Env {
             .unwrap();
     }
 
+    // ---- randomness
+
+    fn request_id_for(&self, id: u64, attempt: u8) -> [u8; 32] {
+        let b = self.brk(id);
+        derive_request_id(&break_pda(id), attempt, &b.eligibility_root, &b.pool_hash)
+    }
+
+    /// Where the (mock) ORAO program keeps the request for `request_id`.
+    fn request_for(&self, request_id: &[u8; 32]) -> Address {
+        request_address(&mock_orao::ID, request_id)
+    }
+
+    fn request_randomness_ix(&self, who: &Address, id: u64, attempt: u8, previous: Address) -> Instruction {
+        let request = self.request_for(&self.request_id_for(id, attempt));
+        ix(
+            breaks::ID,
+            breaks::accounts::RequestRandomness {
+                keeper: *who,
+                config: breaks_config(),
+                break_: break_pda(id),
+                vrf_program: mock_orao::ID,
+                vrf_network_state: vrf_network_state(),
+                vrf_treasury: vrf_treasury(),
+                request,
+                previous_request: previous,
+                system_program: anchor_lang::system_program::ID,
+            },
+            breaks::instruction::RequestRandomness {},
+        )
+    }
+
+    /// The keeper asks for the first randomness of a committed break.
+    fn request_randomness(&mut self, id: u64) -> Sent {
+        let keeper = self.keeper.insecure_clone();
+        let i = self.request_randomness_ix(&keeper.pubkey(), id, 0, anchor_lang::system_program::ID);
+        send(&mut self.svm, &keeper, &[], &[i])
+    }
+
+    /// The keeper repeats the request of a break that is already waiting for an answer.
+    fn repeat_randomness(&mut self, id: u64) -> Sent {
+        let keeper = self.keeper.insecure_clone();
+        let b = self.brk(id);
+        let previous = self.request_for(&b.randomness_request_id);
+        let i = self.request_randomness_ix(&keeper.pubkey(), id, b.randomness_attempt + 1, previous);
+        send(&mut self.svm, &keeper, &[], &[i])
+    }
+
+    /// Anyone (here: a stranger) asks the VRF program for the seed before the keeper does.
+    fn squat_request(&mut self, seed: [u8; 32]) -> Sent {
+        let (stranger, _) = self.user(0);
+        let i = ix(
+            mock_orao::ID,
+            mock_orao::accounts::RequestV2 {
+                payer: stranger.pubkey(),
+                network_state: vrf_network_state(),
+                treasury: vrf_treasury(),
+                request: self.request_for(&seed),
+                system_program: anchor_lang::system_program::ID,
+            },
+            mock_orao::instruction::RequestV2 { seed },
+        );
+        send(&mut self.svm, &stranger, &[], &[i])
+    }
+
+    /// Test double for ORAO's oracles: sets the "random" answer of a request.
+    fn mock_fulfill(&mut self, seed: [u8; 32], randomness: [u8; 64]) -> Sent {
+        let i = ix(
+            mock_orao::ID,
+            mock_orao::accounts::FulfillForTest {
+                request: self.request_for(&seed),
+            },
+            mock_orao::instruction::FulfillForTest { seed, randomness },
+        );
+        let authority = self.authority.insecure_clone();
+        send(&mut self.svm, &authority, &[], &[i])
+    }
+
+    fn settle_with(&mut self, who: &Keypair, id: u64, request: Address) -> Sent {
+        let i = ix(
+            breaks::ID,
+            breaks::accounts::SettleRandomness {
+                config: breaks_config(),
+                break_: break_pda(id),
+                request,
+            },
+            breaks::instruction::SettleRandomness {},
+        );
+        send(&mut self.svm, who, &[], &[i])
+    }
+
+    /// Anyone settles the current request of a break.
+    fn settle(&mut self, id: u64) -> Sent {
+        let (stranger, _) = self.user(0);
+        let request = self.request_for(&self.brk(id).randomness_request_id);
+        self.settle_with(&stranger, id, request)
+    }
+
     fn after_deadline(&mut self) {
         set_unix_time(&mut self.svm, T0 + 6 * HOUR);
     }
@@ -515,6 +624,8 @@ fn initialize_rejects_nonsense_limits() {
             max_window_secs: 6 * HOUR,
             max_paid_spots: 20,
             max_free_spots: 6,
+            randomness_program: mock_orao::ID,
+            randomness_timeout_secs: HOUR,
         },
     }
     .data();
@@ -1262,6 +1373,380 @@ fn pausing_never_traps_anyones_money() {
     let (stranger, _) = env.user(0);
     env.refund(&stranger, id, 0, alice_usdc).unwrap();
     assert_eq!(env.balance(&alice_usdc), 20 * USDC);
+}
+
+// ---------------------------------------------------------------- randomness
+
+/// A break that is funded and has its pool committed, so randomness can be requested.
+fn committed(env: &mut Env) -> u64 {
+    let (id, _) = closed_with(env, 3, 5);
+    env.fund(id).unwrap();
+    let keeper = env.keeper.insecure_clone();
+    env.commit_pool_as(&keeper, id, 5).unwrap();
+    id
+}
+
+#[test]
+fn randomness_is_only_requested_once_eligibility_and_the_pool_are_committed() {
+    let mut env = Env::ready();
+    let id = env.create_break();
+    assert_fails_with(env.request_randomness(id), code(BreaksError::WrongStatus)); // open
+    env.sell_one(id);
+    env.after_deadline();
+    let (anyone, _) = env.user(0);
+    env.close(&anyone, id).unwrap();
+    assert_fails_with(env.request_randomness(id), code(BreaksError::WrongStatus)); // closed
+    env.commit_eligibility(id, 1_000, 5).unwrap();
+    assert_fails_with(env.request_randomness(id), code(BreaksError::WrongStatus)); // no pool yet
+    env.fund(id).unwrap();
+    assert_fails_with(env.request_randomness(id), code(BreaksError::WrongStatus)); // funded, pool not committed
+    let keeper = env.keeper.insecure_clone();
+    env.commit_pool_as(&keeper, id, 3).unwrap();
+    env.request_randomness(id).unwrap();
+}
+
+#[test]
+fn a_request_goes_to_the_vrf_program_and_is_bound_to_the_commitments() {
+    let mut env = Env::ready();
+    let id = committed(&mut env);
+    let before = (
+        env.balance(&env.buyer_usdc),
+        env.balance(&subsidy_vault()),
+        env.balance(&holder_vault()),
+    );
+
+    let meta = env.request_randomness(id).unwrap();
+
+    let b = env.brk(id);
+    assert_eq!(
+        (b.status, b.randomness_attempt, b.randomness_requested_at),
+        (BreakStatus::RandomnessRequested, 0, T0 + 6 * HOUR)
+    );
+
+    // The id commits to the break, the attempt, the eligibility root and the pool hash.
+    let expected = solana_sha256_hasher::hashv(&[
+        b"breaks:randomness:v1",
+        break_pda(id).as_ref(),
+        &[0u8],
+        &b.eligibility_root,
+        &b.pool_hash,
+    ])
+    .to_bytes();
+    assert_eq!(b.randomness_request_id, expected);
+
+    // The VRF program created a pending request for exactly that seed.
+    let request = env.request_for(&expected);
+    let account = env.svm.get_account(&request).expect("request exists");
+    assert_eq!(account.owner, mock_orao::ID);
+    assert_eq!(parse_request(&account.data, &expected).unwrap(), RequestState::Pending);
+
+    let event: RandomnessRequested = find_event(&meta.logs).expect("RandomnessRequested event");
+    assert_eq!(
+        (event.id, event.attempt, event.request_id, event.request),
+        (id, 0, expected, request)
+    );
+    // Asking for randomness moves no money.
+    assert_eq!(
+        before,
+        (
+            env.balance(&env.buyer_usdc),
+            env.balance(&subsidy_vault()),
+            env.balance(&holder_vault())
+        )
+    );
+}
+
+#[test]
+fn only_the_keeper_requests_randomness_and_only_once_per_attempt() {
+    let mut env = Env::ready();
+    let id = committed(&mut env);
+    let (stranger, _) = env.user(0);
+    let i = env.request_randomness_ix(&stranger.pubkey(), id, 0, anchor_lang::system_program::ID);
+    assert_fails_with(
+        send(&mut env.svm, &stranger, &[], &[i]),
+        code(BreaksError::Unauthorized),
+    );
+
+    env.request_randomness(id).unwrap();
+    // A second first-time request is rejected: the break is already waiting.
+    assert_fails_with(env.request_randomness(id), code(BreaksError::RequestNotTimedOut));
+}
+
+#[test]
+fn the_seed_is_locked_in_by_anyone_once_the_adapter_answers_and_never_changes() {
+    let mut env = Env::ready();
+    let id = committed(&mut env);
+    env.request_randomness(id).unwrap();
+    let rid = env.brk(id).randomness_request_id;
+
+    assert_fails_with(env.settle(id), code(BreaksError::RandomnessNotFulfilled));
+    env.mock_fulfill(rid, [42; 64]).unwrap();
+    let meta = env.settle(id).unwrap();
+
+    let b = env.brk(id);
+    assert_eq!((b.status, b.seed), (BreakStatus::Settled, draw_seed(&[42; 64])));
+    let event: RandomnessSettled = find_event(&meta.logs).expect("RandomnessSettled event");
+    assert_eq!((event.id, event.seed), (id, draw_seed(&[42; 64])));
+
+    // Final: settling again, requesting again, replacing the adapter's answer and cancelling all fail.
+    assert_fails_with(env.settle(id), code(BreaksError::WrongStatus));
+    assert_fails_with(env.request_randomness(id), code(BreaksError::WrongStatus));
+    assert_fails_with(env.cancel(id), code(BreaksError::WrongStatus));
+    assert!(env.mock_fulfill(rid, [7; 64]).is_err());
+    assert_eq!(env.brk(id).seed, draw_seed(&[42; 64]));
+}
+
+#[test]
+fn the_request_of_another_break_cannot_settle_this_one() {
+    let mut env = Env::ready();
+    let a = committed(&mut env);
+    env.request_randomness(a).unwrap();
+    env.after_deadline(); // same clock is fine; just make a second break
+    let b = {
+        set_unix_time(&mut env.svm, T0);
+        let b = committed(&mut env);
+        env.request_randomness(b).unwrap();
+        b
+    };
+    let (rid_a, rid_b) = (env.brk(a).randomness_request_id, env.brk(b).randomness_request_id);
+    assert_ne!(rid_a, rid_b);
+    env.mock_fulfill(rid_a, [1; 64]).unwrap();
+    env.mock_fulfill(rid_b, [2; 64]).unwrap();
+
+    let (stranger, _) = env.user(0);
+    let record_b = env.request_for(&rid_b);
+    assert_fails_with(
+        env.settle_with(&stranger, a, record_b),
+        code(BreaksError::InvalidRandomnessRecord),
+    );
+    // Each settles with its own.
+    env.settle(a).unwrap();
+    env.settle(b).unwrap();
+    assert_eq!((env.brk(a).seed, env.brk(b).seed), ([1; 32], [2; 32]));
+}
+
+#[test]
+fn a_forged_request_account_cannot_provide_the_seed() {
+    let mut env = Env::ready();
+    let id = committed(&mut env);
+    env.request_randomness(id).unwrap();
+    let rid = env.brk(id).randomness_request_id;
+    let (stranger, _) = env.user(0);
+
+    // A look-alike request account, "fulfilled" with a chosen value, in ORAO's exact layout.
+    let mut data = vec![139, 239, 184, 215, 227, 86, 191, 226]; // RandomnessV2 discriminator
+    data.push(1); // Fulfilled
+    data.extend_from_slice(&[7; 32]); // client
+    data.extend_from_slice(&rid); // seed
+    data.extend_from_slice(&[99; 64]); // the answer the attacker wants
+    assert_eq!(parse_request(&data, &rid).unwrap(), RequestState::Fulfilled([99; 64]));
+
+    // (1) owned by someone other than the VRF program
+    let at_right_address = env.request_for(&rid);
+    let genuine = env.svm.get_account(&at_right_address).unwrap();
+    let mut forged = genuine.clone();
+    forged.owner = anchor_lang::system_program::ID;
+    forged.data = data.clone();
+    env.svm.set_account(at_right_address, forged).unwrap();
+    assert_fails_with(
+        env.settle_with(&stranger, id, at_right_address),
+        code(BreaksError::InvalidRandomnessRecord),
+    );
+    env.svm.set_account(at_right_address, genuine).unwrap();
+
+    // (2) owned by the VRF program but at an address it would not use for this seed
+    let elsewhere = Address::new_unique();
+    let mut look_alike = env.svm.get_account(&at_right_address).unwrap();
+    look_alike.data = data;
+    env.svm.set_account(elsewhere, look_alike).unwrap();
+    assert_fails_with(
+        env.settle_with(&stranger, id, elsewhere),
+        code(BreaksError::InvalidRandomnessRecord),
+    );
+
+    // The genuine, still pending request keeps the break waiting.
+    assert_fails_with(env.settle(id), code(BreaksError::RandomnessNotFulfilled));
+    assert_eq!(env.brk(id).status, BreakStatus::RandomnessRequested);
+}
+
+#[test]
+fn a_request_someone_else_already_made_for_the_same_seed_is_adopted_not_a_dead_end() {
+    // The seed becomes computable once the commitments are on-chain, so anyone could ask the VRF
+    // program for it first. That must not block the break: the answer is just as unpredictable.
+    let mut env = Env::ready();
+    let id = committed(&mut env);
+    let seed = env.request_id_for(id, 0);
+    env.squat_request(seed).unwrap();
+
+    env.request_randomness(id).unwrap(); // does not fail, does not ask again
+    let b = env.brk(id);
+    assert_eq!(
+        (b.status, b.randomness_request_id),
+        (BreakStatus::RandomnessRequested, seed)
+    );
+
+    env.mock_fulfill(seed, [8; 64]).unwrap();
+    env.settle(id).unwrap();
+    assert_eq!(env.brk(id).seed, draw_seed(&[8; 64]));
+}
+
+#[test]
+fn a_request_that_was_already_answered_before_the_keeper_asked_can_be_settled_right_away() {
+    let mut env = Env::ready();
+    let id = committed(&mut env);
+    let seed = env.request_id_for(id, 0);
+    env.squat_request(seed).unwrap();
+    env.mock_fulfill(seed, [3; 64]).unwrap();
+
+    env.request_randomness(id).unwrap();
+    env.settle(id).unwrap();
+    assert_eq!(env.brk(id).seed, draw_seed(&[3; 64]));
+}
+
+#[test]
+fn an_unanswered_request_can_be_repeated_after_the_timeout_and_the_old_answer_is_ignored() {
+    let mut env = Env::ready();
+    let id = committed(&mut env);
+    env.request_randomness(id).unwrap();
+    let first = env.brk(id).randomness_request_id;
+
+    assert_fails_with(env.repeat_randomness(id), code(BreaksError::RequestNotTimedOut));
+    set_unix_time(&mut env.svm, T0 + 6 * HOUR + HOUR - 1);
+    assert_fails_with(env.repeat_randomness(id), code(BreaksError::RequestNotTimedOut));
+    set_unix_time(&mut env.svm, T0 + 6 * HOUR + HOUR);
+    env.repeat_randomness(id).unwrap();
+
+    let b = env.brk(id);
+    assert_eq!((b.status, b.randomness_attempt), (BreakStatus::RandomnessRequested, 1));
+    assert_ne!(b.randomness_request_id, first);
+    assert_eq!(b.randomness_request_id, env.request_id_for(id, 1));
+
+    // The vendor finally answers the OLD request: it is ignored.
+    env.mock_fulfill(first, [1; 64]).unwrap();
+    let (stranger, _) = env.user(0);
+    let old_record = env.request_for(&first);
+    assert_fails_with(
+        env.settle_with(&stranger, id, old_record),
+        code(BreaksError::InvalidRandomnessRecord),
+    );
+    assert_fails_with(env.settle(id), code(BreaksError::RandomnessNotFulfilled));
+
+    env.mock_fulfill(b.randomness_request_id, [2; 64]).unwrap();
+    env.settle(id).unwrap();
+    assert_eq!(env.brk(id).seed, draw_seed(&[2; 64]));
+}
+
+#[test]
+fn an_answered_request_must_be_settled_it_can_never_be_replaced() {
+    let mut env = Env::ready();
+    let id = committed(&mut env);
+    env.request_randomness(id).unwrap();
+    env.mock_fulfill(env.brk(id).randomness_request_id, [5; 64]).unwrap();
+
+    // Even long after the timeout, a keeper cannot re-roll an answer it does not like.
+    set_unix_time(&mut env.svm, T0 + 6 * HOUR + 10 * HOUR);
+    assert_fails_with(env.repeat_randomness(id), code(BreaksError::AlreadyFulfilled));
+    env.settle(id).unwrap();
+    assert_eq!(env.brk(id).seed, draw_seed(&[5; 64]));
+}
+
+#[test]
+fn a_repeat_must_present_the_previous_request_and_the_number_of_repeats_is_limited() {
+    let mut env = Env::ready();
+    let id = committed(&mut env);
+    env.request_randomness(id).unwrap();
+    let keeper = env.keeper.insecure_clone();
+
+    // Hiding the previous request is not an option.
+    set_unix_time(&mut env.svm, T0 + 7 * HOUR);
+    let sneaky = env.request_randomness_ix(&keeper.pubkey(), id, 1, anchor_lang::system_program::ID);
+    assert_fails_with(
+        send(&mut env.svm, &keeper, &[], &[sneaky]),
+        code(BreaksError::InvalidRandomnessRecord),
+    );
+
+    // Attempts 1..=4 are allowed, the sixth request is not.
+    for attempt in 1..5u8 {
+        set_unix_time(&mut env.svm, T0 + 6 * HOUR + HOUR * (i64::from(attempt) + 1));
+        env.repeat_randomness(id).unwrap();
+        assert_eq!(env.brk(id).randomness_attempt, attempt);
+    }
+    set_unix_time(&mut env.svm, T0 + 6 * HOUR + HOUR * 10);
+    assert_fails_with(env.repeat_randomness(id), code(BreaksError::TooManyAttempts));
+}
+
+#[test]
+fn only_the_admin_appoints_the_vrf_program_and_requests_go_only_to_it() {
+    let mut env = Env::ready();
+    let admin = env.admin.insecure_clone();
+    let keeper = env.keeper.insecure_clone();
+    assert_fails_with(
+        env.admin_call(
+            &keeper,
+            breaks::instruction::SetRandomness {
+                program: treasury::ID,
+                timeout_secs: HOUR,
+            },
+        ),
+        code(BreaksError::Unauthorized),
+    );
+    assert_fails_with(
+        env.admin_call(
+            &admin,
+            breaks::instruction::SetRandomness {
+                program: treasury::ID,
+                timeout_secs: 0,
+            },
+        ),
+        code(BreaksError::InvalidRandomnessConfig),
+    );
+
+    let id = committed(&mut env);
+    // Appoint a different program: the mock is no longer accepted.
+    env.admin_call(
+        &admin,
+        breaks::instruction::SetRandomness {
+            program: treasury::ID,
+            timeout_secs: 2 * HOUR,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        (env.config().randomness_program, env.config().randomness_timeout_secs),
+        (treasury::ID, 2 * HOUR)
+    );
+    assert_fails_with(env.request_randomness(id), code(BreaksError::InvalidRandomnessRecord));
+    // Appointing the mock again works.
+    env.admin_call(
+        &admin,
+        breaks::instruction::SetRandomness {
+            program: mock_orao::ID,
+            timeout_secs: HOUR,
+        },
+    )
+    .unwrap();
+    env.request_randomness(id).unwrap();
+}
+
+#[test]
+fn initialize_rejects_a_zero_randomness_timeout() {
+    let mut env = Env::base();
+    let mut i = env.initialize_ix(&env.authority.pubkey(), env.breaks_programdata);
+    i.data = breaks::instruction::Initialize {
+        params: breaks::InitializeParams {
+            admin: env.admin.pubkey(),
+            keeper: env.keeper.pubkey(),
+            buyer: env.buyer.pubkey(),
+            min_window_secs: 6 * HOUR,
+            max_window_secs: 24 * HOUR,
+            max_paid_spots: 20,
+            max_free_spots: 6,
+            randomness_program: mock_orao::ID,
+            randomness_timeout_secs: 0,
+        },
+    }
+    .data();
+    assert_fails_with(env.send_as_authority(&[i]), code(BreaksError::InvalidRandomnessConfig));
 }
 
 // ---------------------------------------------------------------- the whole flow

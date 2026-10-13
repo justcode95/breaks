@@ -31,8 +31,7 @@ A Solana memecoin whose trading fees fund group "breaks" of Collector Crypt gach
   - Exclude: LP pools, exchange wallets, team wallets, flagged bundle/sniper wallets. Exclusion list is public.
   - Staking may be added later as an extra weight multiplier — keep the eligibility module pluggable.
   > PENDING APPROVAL (A2): the cap rewards splitting (10× the cap in one wallet = 1× weight; split into ten wallets = 10×). Proposal: linear weight (no cap or a high sanity cap), keep the min TWAB, one spot per wallet, and merge wallets funded from the same source into one entity (published, with reason codes).
-- **Randomness:** one request per break, after `closes_at`, and **after both the eligibility root and the pool hash are committed**. Provider sits behind an adapter.
-  > PENDING APPROVAL (A1): news reports say Switchboard shut down on 2026-09-25 (unconfirmed by me; check their channels). Candidates: ORAO VRF, MagicBlock VRF. Verify audit status, devnet support, and who can withhold a fulfilment.
+- **Randomness: ORAO VRF** (decided by the owner). One request per break, after `closes_at`, and **after both the eligibility root and the pool hash are committed**. See "Randomness" below. (Switchboard was dropped: news reports say it shut down on 2026-09-25.)
   > PENDING APPROVAL (A4): add a `challenge_period` (30–60 min) between `commit_eligibility` and `request_randomness`. The multisig may void the root (max 2 re-commits) while no seed exists yet.
 - **Everything verifiable:** `pack_machine` and `max_pack_price` committed at creation, eligibility root and pool hash committed before the draw, randomness proof stored, all derivations deterministic. The site shows a per-spot ledger: pack purchase tx → Collector Crypt VRF proof → assignment → delivery tx.
 - **Known trust gap (MVP):** the chain cannot prove the keeper really bought every pack or delivered every card. The per-spot ledger makes any gap publicly visible. A tighter option is listed in Phase 0.
@@ -42,6 +41,15 @@ A Solana memecoin whose trading fees fund group "breaks" of Collector Crypt gach
 - **Card → spot assignment:** pool sorted by card mint (so pull order can't matter), then Fisher–Yates with `j = H(seed, "items", k) mod (k+1)`.
 - `H` = keccak256 (or SHA-256), fixed in the program and in the verify tool.
 - The eligibility commit also includes `inputs_hash` of the published `balance_events` snapshot, so anyone can recompute TWAB.
+
+## Randomness
+
+- **Provider:** ORAO VRF, program `VRFzZoJdhFWL8rkvu87LpKM3RbcVezpMEc6X5GVDr7y` (same address on mainnet and devnet). ORAO's Rust crate targets Anchor 0.32, so we do not use it: `programs/breaks/src/randomness.rs` builds the `request_v2` instruction by hand and reads the request account's bytes. Both layouts are pinned by tests against fixtures generated with the real `orao-solana-vrf` 0.7.0 crate.
+- **Flow:** `request_randomness` (seed = `sha256("breaks:randomness:v1" || break || attempt || eligibility_root || pool_hash)`) → ORAO's oracles write 64 bytes (an Ed25519 signature of the seed) into the request account → `settle_randomness` stores `sha256("breaks:seed:v1" || those 64 bytes)` as the draw seed. Anyone can check the 64 bytes against ORAO's public key.
+- **Why the seed is safe:** it cannot be known before the eligibility root and the pool hash are committed, so nobody can prepare an answer for it. If a stranger asks ORAO for the same seed first, `breaks` adopts that request.
+- **Cost:** ORAO charges a request fee (SOL, or ORAO tokens if its network state is configured that way). The keeper wallet pays it; for token fees the keeper passes ORAO's token accounts as extra accounts.
+- **Tests:** `programs/mock-orao` is a TEST-ONLY stand-in with ORAO's `request_v2` interface and account bytes, where anyone can fulfil with any value. It is never deployed with real money. Not yet tested: the real ORAO program itself. Plan: a CI job that dumps ORAO's program and network state from devnet, loads them into LiteSVM, swaps in a test fulfilment authority and runs the same flow with a real signature.
+- **Trust left:** ORAO's oracle set (a Byzantine quorum of its authorities) and the ORAO program upgrade authority. The admin can switch to another program with the same interface via `set_randomness`.
 
 ## Architecture
 
@@ -64,7 +72,10 @@ A Solana memecoin whose trading fees fund group "breaks" of Collector Crypt gach
 - `fund_purchases` — keeper. Pays `pool_size × max_pack_price` to the buyer wallet (escrow + locked subsidy + locked holder funds) and returns the unused locks. The destination is fixed to the configured buyer wallet. **This is the step users trust.** `pool_size` = sold paid spots + `min(free_spots, entry_count)`; an empty pool cannot be funded and is cancelled instead.
 - `commit_pool(pool_hash, pool_size)` — keeper, after funding; `pool_size` must match.
 - `cancel_break` — admin, before funding; `refund_spot` — anyone, pays the spot's owner.
-- Next (waits on the randomness provider decision, A1): `request_randomness` / `settle_randomness`, `claim_free_spot`, the draw. Also open: what happens to buyer-wallet money that is not spent (return path), and the partial-failure policy.
+- `request_randomness` — keeper, after the pool is committed. Asks ORAO for randomness with a seed that commits to the break, the attempt, the eligibility root and the pool hash. The keeper pays ORAO's request fee. If someone already asked ORAO for the same seed, the request is adopted instead of failing. A request that ORAO never answers can be repeated after `randomness_timeout_secs` (at most 5 attempts), but never once it has been answered.
+- `settle_randomness` — anyone, once ORAO has answered: stores the seed of the draw (`sha256("breaks:seed:v1" || ORAO's 64 bytes)`). Final.
+- `set_randomness(program, timeout_secs)` — admin only: which VRF program to use (ORAO's address in production) and the repeat timeout.
+- Next: `claim_free_spot` and the draw itself. Also open: what happens to buyer-wallet money that is not spent (return path), and the partial-failure policy.
 - Draw design note for the next step: draw free winners **without replacement** (after each winner, skip the ranges of earlier winners) instead of "retry with a nonce, give up after 32 tries". The retry rule can fail when one wallet holds almost all the weight, and the pool size is already fixed before the seed exists.
 
 No vault program. Cards pass through the buyer wallet. An on-chain escrow for cards is only added if Phase 0 shows it is possible.
@@ -101,7 +112,7 @@ Rate-limit, dedupe via `bot_posts`, never post before the on-chain event is **fi
 
 ## Repo layout
 ```
-programs/treasury   programs/breaks
+programs/treasury   programs/breaks   programs/mock-orao (test only)
 testkit/            (shared helpers for the on-chain tests)
 keeper/             (jobs, indexer, buyer, bot)
 web/                (Next.js)
@@ -135,7 +146,7 @@ On-chain tests share helpers in `testkit/` (deploy with an upgrade authority, se
    3. Check for a Collector Crypt / Jupiter Gacha API or terms for programmatic purchases.
    4. Check whether our program could verify a pull from Collector Crypt's on-chain accounts. If yes, release funds per verified pull and close the trust gap.
    5. Check whether the card can be held in a program-owned account (only if an on-chain escrow is wanted).
-   6. Pick the VRF provider (A1).
+   6. (done) VRF provider: ORAO.
 1. **Scaffold** (merged) — Anchor workspace (2 programs, placeholder instructions), Next.js app, keeper skeleton (config, job runner, `PackProvider` + mock), DB migration v0. Devnet only.
 2. **Treasury** (initialize, deposit_fees, set_split; merged). No admin-transfer instruction yet: decide whether to add a two-step handover.
 3. **Breaks program** — create/buy/close/commit/fund/cancel/refund with tests and the treasury lock/pay-out (in review). Then randomness + claims (needs A1).
@@ -161,5 +172,5 @@ On-chain tests share helpers in `testkit/` (deploy with an upgrade authority, se
 - Legal review (paid randomized prizes are treated as gambling in Belgium; selling gacha pulls; token/fee structure may raise securities questions; Collector Crypt's terms) — before mainnet.
 
 ## Pending items (need your yes/no)
-- A1 randomness provider (Switchboard out), A2 weight rule (cap vs linear + cluster merge), A4 challenge window. A3 from the earlier review is obsolete (no inventory).
+- A2 weight rule (cap vs linear + cluster merge), A4 challenge window. A1 (randomness provider) is decided: ORAO. A3 from the earlier review is obsolete (no inventory).
 - Repo name for the new project.
