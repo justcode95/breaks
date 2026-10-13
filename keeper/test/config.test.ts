@@ -11,7 +11,15 @@ describe("loadConfig", () => {
       databaseUrl: "postgres://x",
       packProvider: "mock",
       jobTickMs: 5000,
+      commitment: "confirmed",
     });
+  });
+
+  it("reads the keeper key path and the commitment", () => {
+    const c = loadConfig({ ...base, KEEPER_KEYPAIR_PATH: "/secrets/keeper.json", SOLANA_COMMITMENT: "finalized" });
+    expect(c.keeperKeypairPath).toBe("/secrets/keeper.json");
+    expect(c.commitment).toBe("finalized");
+    expect(() => loadConfig({ ...base, SOLANA_COMMITMENT: "processed" })).toThrow(/SOLANA_COMMITMENT/);
   });
 
   it("rejects mainnet until the project rules change", () => {

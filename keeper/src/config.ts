@@ -7,6 +7,10 @@ const schema = z.object({
   DATABASE_URL: z.string().min(1),
   PACK_PROVIDER: z.enum(["mock"]).default("mock"),
   JOB_TICK_MS: z.coerce.number().int().min(100).default(5000),
+  // Path to the keeper's Solana CLI keypair file (a JSON array of bytes). Never put the key itself in the environment.
+  KEEPER_KEYPAIR_PATH: z.string().min(1).optional(),
+  // What counts as landed, for sends and reads. `finalized` is slower and safer.
+  SOLANA_COMMITMENT: z.enum(["confirmed", "finalized"]).default("confirmed"),
 });
 
 export type Config = {
@@ -15,6 +19,8 @@ export type Config = {
   databaseUrl: string;
   packProvider: "mock";
   jobTickMs: number;
+  keeperKeypairPath?: string;
+  commitment: "confirmed" | "finalized";
 };
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -30,5 +36,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     databaseUrl: e.DATABASE_URL,
     packProvider: e.PACK_PROVIDER,
     jobTickMs: e.JOB_TICK_MS,
+    ...(e.KEEPER_KEYPAIR_PATH !== undefined ? { keeperKeypairPath: e.KEEPER_KEYPAIR_PATH } : {}),
+    commitment: e.SOLANA_COMMITMENT,
   };
 }
