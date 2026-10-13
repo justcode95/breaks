@@ -92,6 +92,11 @@ export class RpcChainClient implements ChainClient {
     this.sleep = opts.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   }
 
+  /** The keeper's address: the fee payer and the signer of every transaction. */
+  get keeper(): Address {
+    return this.signer.address;
+  }
+
   /** Checks which network the node is on (devnet only; see `assertCluster`) before handing out a client. */
   static async connect(opts: RpcChainOptions): Promise<RpcChainClient> {
     await assertCluster(opts.rpc, opts.cluster);

@@ -21,6 +21,7 @@ pnpm install
 pnpm typecheck
 pnpm test                    # keeper tests, incl. the DB migrations on an in-memory Postgres
 pnpm --filter web build
+pnpm --filter keeper dev      # run the keeper (needs keeper/.env, see keeper/.env.example; devnet only)
 cargo check --workspace      # Anchor programs, host check only
 ```
 

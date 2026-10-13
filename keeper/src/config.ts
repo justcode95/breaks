@@ -1,16 +1,41 @@
 import { z } from "zod";
+import { ORAO_PROGRAM, type Programs } from "./solana/breaks.js";
+import { type Address, addressToBytes } from "./solana/pubkey.js";
+
+const isAddress = (s: string) => {
+  try {
+    addressToBytes(s);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const address = z.string().refine(isAddress, "not a Solana address (32 bytes, base58)");
 
 // Devnet only (CLAUDE.md guardrails). Adding "mainnet-beta" here is a rule change that needs the owner's sign-off.
 const schema = z.object({
   SOLANA_CLUSTER: z.enum(["devnet", "localnet"]).default("devnet"),
   SOLANA_RPC_URL: z.string().url(),
   DATABASE_URL: z.string().min(1),
+  // Only "mock" exists until Phase 0 shows how Collector Crypt purchases and card transfers work.
   PACK_PROVIDER: z.enum(["mock"]).default("mock"),
+  CARD_TRANSFER: z.enum(["mock"]).default("mock"),
+  // What the mock pack provider charges per pack, in micro-USDC. A pack above a break's cap is not "bought".
+  MOCK_PACK_PRICE: z.coerce.bigint().positive().default(25_000_000n),
+  // How often the runner wakes up, and how often each job runs when it does.
   JOB_TICK_MS: z.coerce.number().int().min(100).default(5000),
+  JOB_INTERVAL_MS: z.coerce.number().int().min(1000).default(10_000),
   // Path to the keeper's Solana CLI keypair file (a JSON array of bytes). Never put the key itself in the environment.
   KEEPER_KEYPAIR_PATH: z.string().min(1).optional(),
   // What counts as landed, for sends and reads. `finalized` is slower and safer.
   SOLANA_COMMITMENT: z.enum(["confirmed", "finalized"]).default("confirmed"),
+  // The deployed programs.
+  BREAKS_PROGRAM_ID: address,
+  TREASURY_PROGRAM_ID: address,
+  // Randomness: the VRF program (must be the one the breaks program is configured with) and ORAO's fee treasury,
+  // which is a field of ORAO's network state. Read it from there and copy it in; the keeper does not guess it.
+  VRF_PROGRAM_ID: address.default(ORAO_PROGRAM),
+  ORAO_TREASURY: address,
 });
 
 export type Config = {
@@ -18,9 +43,14 @@ export type Config = {
   rpcUrl: string;
   databaseUrl: string;
   packProvider: "mock";
+  cardTransfer: "mock";
+  mockPackPrice: bigint;
   jobTickMs: number;
+  jobIntervalMs: number;
   keeperKeypairPath?: string;
   commitment: "confirmed" | "finalized";
+  programs: Programs;
+  vrf: { program: Address; treasury: Address };
 };
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -35,8 +65,13 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     rpcUrl: e.SOLANA_RPC_URL,
     databaseUrl: e.DATABASE_URL,
     packProvider: e.PACK_PROVIDER,
+    cardTransfer: e.CARD_TRANSFER,
+    mockPackPrice: e.MOCK_PACK_PRICE,
     jobTickMs: e.JOB_TICK_MS,
+    jobIntervalMs: e.JOB_INTERVAL_MS,
     ...(e.KEEPER_KEYPAIR_PATH !== undefined ? { keeperKeypairPath: e.KEEPER_KEYPAIR_PATH } : {}),
     commitment: e.SOLANA_COMMITMENT,
+    programs: { breaks: e.BREAKS_PROGRAM_ID, treasury: e.TREASURY_PROGRAM_ID },
+    vrf: { program: e.VRF_PROGRAM_ID, treasury: e.ORAO_TREASURY },
   };
 }

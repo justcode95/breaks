@@ -112,6 +112,41 @@ describe("DrawnBreaks", () => {
     expect(errors).toEqual(["delivery plan refused"]);
   });
 
+  it("records the spots it plans for, once the plan is verified", async () => {
+    const w = await drawn();
+    const { drawn: source, repo } = sourcesOf(w);
+    await source.plansToDeliver();
+    const b = w.chain.breaks.get(7n)!;
+    expect([...repo.spots.values()].map((s) => [s.kind, s.idx, s.wallet, s.paid])).toEqual([
+      ["paid", 0, addr(10), 20_000_000n],
+      ["paid", 1, addr(11), 20_000_000n],
+      ["paid", 2, addr(12), 20_000_000n],
+      ["free", 0, b.freeWinners[0]!.wallet, undefined],
+      ["free", 1, b.freeWinners[1]!.wallet, undefined],
+    ]);
+    // Asking again changes nothing.
+    await source.plansToDeliver();
+    expect(repo.spots.size).toBe(5);
+  });
+
+  it("does not record anything for a plan that is refused", async () => {
+    const w = await drawn();
+    const stranger = world({ cardBase: 150 });
+    await stranger.pullPacks();
+    const { drawn: source, repo, errors } = sourcesOf(w, undefined, stranger.packs);
+    expect(await source.plansToDeliver()).toEqual([]);
+    expect(repo.spots.size).toBe(0);
+    expect(errors).toEqual(["delivery plan refused"]);
+  });
+
+  it("refuses a plan when a spot is already recorded for another wallet", async () => {
+    const w = await drawn();
+    const { drawn: source, repo, errors } = sourcesOf(w);
+    await repo.recordSpots("7", [{ kind: "paid", idx: 1, wallet: addr(99), paid: 20_000_000n }]);
+    expect(await source.plansToDeliver()).toEqual([]);
+    expect(errors).toEqual(["delivery plan refused"]);
+  });
+
   it("marks the break delivered once every card is out", async () => {
     const w = await drawn();
     const { drawn: source, repo } = sourcesOf(w);
@@ -249,6 +284,28 @@ describe("against the real schema", () => {
     }
     await repo.setStatus(id, "delivered");
     expect((await repo.activeBreaks()).find((b) => b.id === id)).toBeUndefined();
+  });
+
+  it("the repo copies spots from the chain, keeps what is there, and refuses a different wallet", async () => {
+    const repo = new SqlBreakRepo(db);
+    const id = await insertBreak(db);
+    const spots = [
+      { kind: "paid" as const, idx: 0, wallet: addr(10), paid: 20_000_000n },
+      { kind: "paid" as const, idx: 1, wallet: addr(11), paid: 20_000_000n },
+      { kind: "free" as const, idx: 0, wallet: addr(50) },
+    ];
+    await repo.recordSpots(id, spots);
+    await repo.recordSpots(id, spots); // again: nothing changes
+    const { rows } = await db.query<{ kind: string; idx: number; wallet: string; paid: string | null }>(
+      "select kind, idx, wallet, paid::text as paid from spots where break_id = $1 order by kind, idx",
+      [id],
+    );
+    expect(rows).toEqual([
+      { kind: "free", idx: 0, wallet: addr(50), paid: null },
+      { kind: "paid", idx: 0, wallet: addr(10), paid: "20000000" },
+      { kind: "paid", idx: 1, wallet: addr(11), paid: "20000000" },
+    ]);
+    await expect(repo.recordSpots(id, [{ kind: "paid", idx: 0, wallet: addr(99), paid: 20_000_000n }])).rejects.toThrow(/is recorded for .* but the chain says/);
   });
 
   it("the schema accepts every status the chain can be in and nothing else", async () => {

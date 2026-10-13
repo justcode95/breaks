@@ -104,7 +104,14 @@ export class DrawnBreaks implements DeliverySource {
       paidSpots.push(decodeSpot(data));
     }
     const cards = (await packs.listForBreak(active.id)).flatMap((p) => (p.status === "pulled" && p.cardMint ? [p.cardMint] : []));
-    return buildDeliveryPlan({ breakId: active.id, buyer, chain: b, paidSpots, cards });
+    const plan = buildDeliveryPlan({ breakId: active.id, buyer, chain: b, paidSpots, cards });
+
+    // Only a verified plan is recorded. Deliveries refer to these rows, and so will the website.
+    await this.deps.repo.recordSpots(active.id, [
+      ...paidSpots.map((s) => ({ kind: "paid" as const, idx: s.index, wallet: s.owner, paid: s.paid })),
+      ...b.freeWinners.slice(0, b.freeWinnerCount).map((w, i) => ({ kind: "free" as const, idx: i, wallet: w.wallet })),
+    ]);
+    return plan;
   }
 
   async report(plan: DeliveryPlan, progress: DeliveryProgress): Promise<void> {
