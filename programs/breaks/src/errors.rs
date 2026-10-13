@@ -38,4 +38,16 @@ pub enum BreaksError {
     PoolSizeMismatch,
     #[msg("This spot was already refunded")]
     AlreadyRefunded,
+    #[msg("The randomness record is missing, not owned by the adapter, or belongs to another request")]
+    InvalidRandomnessRecord,
+    #[msg("The adapter has not produced the randomness yet")]
+    RandomnessNotFulfilled,
+    #[msg("The previous request was already fulfilled: settle it instead of asking again")]
+    AlreadyFulfilled,
+    #[msg("The previous request has not timed out yet")]
+    RequestNotTimedOut,
+    #[msg("Too many randomness requests for this break")]
+    TooManyAttempts,
+    #[msg("The randomness adapter must be a program and the timeout must be positive")]
+    InvalidRandomnessConfig,
 }

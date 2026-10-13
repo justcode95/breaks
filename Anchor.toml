@@ -9,6 +9,8 @@ skip-lint = false
 [programs.devnet]
 treasury = "Bvq3U9fz2MiHkLH8u4zyt6T1bimxnaEuHkZhezNDT5R9"
 breaks = "8tmJjCG3D4TF7oPiPWNoaCjZ4pN2U4H237BSGVw2B8KU"
+# Test-only stand-in for ORAO. Deploy on devnet only, never with real money.
+mock_orao = "8RM7tyH43idAciXbkKPpN2xVUMhkUkeVACSp87WXhT3i"
 
 [provider]
 cluster = "devnet"

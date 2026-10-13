@@ -1,0 +1,26 @@
+[package]
+name = "mock-orao"
+version = "0.1.0"
+description = "TEST ONLY stand-in for the ORAO VRF program (same request_v2 interface and account bytes). Anyone can fulfil. Never use with real money."
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "mock_orao"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+anchor-lang = "1.2.1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

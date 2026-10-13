@@ -22,9 +22,11 @@ custom-panic = []
 [dependencies]
 anchor-lang = "1.2.1"
 anchor-spl = "1.2.1"
+solana-sha256-hasher = { version = "3.1", features = ["sha2"] }
 treasury = { path = "../treasury", features = ["cpi"] }
 
 [dev-dependencies]
+mock-orao = { path = "../mock-orao", features = ["cpi"] }
 litesvm = "0.18"
 litesvm-token = "0.18"
 solana-address = "2.7"

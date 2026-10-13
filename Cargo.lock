@@ -768,8 +768,10 @@ dependencies = [
  "anchor-spl",
  "litesvm",
  "litesvm-token",
+ "mock-orao",
  "solana-address 2.7.0",
  "solana-keypair",
+ "solana-sha256-hasher",
  "solana-signer",
  "testkit",
  "treasury",
@@ -1850,6 +1852,13 @@ dependencies = [
  "keccak",
  "rand_core 0.6.4",
  "zeroize",
+]
+
+[[package]]
+name = "mock-orao"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
 ]
 
 [[package]]

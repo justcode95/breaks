@@ -36,7 +36,8 @@ jobs:
       - run: solana --version
       - run: cargo build-sbf --manifest-path programs/treasury/Cargo.toml
       - run: cargo build-sbf --manifest-path programs/breaks/Cargo.toml
-      - run: cargo test -p treasury -p breaks --locked --no-fail-fast
+      - run: cargo build-sbf --manifest-path programs/mock-orao/Cargo.toml
+      - run: cargo test -p treasury -p breaks -p mock-orao --locked --no-fail-fast
 
   node:
     runs-on: ubuntu-latest
