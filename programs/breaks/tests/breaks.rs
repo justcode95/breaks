@@ -1473,7 +1473,7 @@ fn only_the_keeper_requests_randomness_and_only_once_per_attempt() {
 }
 
 #[test]
-fn the_seed_is_locked_in_by_anyone_once_the_adapter_answers_and_never_changes() {
+fn the_seed_is_locked_in_by_anyone_once_the_vrf_answers_and_never_changes() {
     let mut env = Env::ready();
     let id = committed(&mut env);
     env.request_randomness(id).unwrap();
@@ -1522,7 +1522,10 @@ fn the_request_of_another_break_cannot_settle_this_one() {
     // Each settles with its own.
     env.settle(a).unwrap();
     env.settle(b).unwrap();
-    assert_eq!((env.brk(a).seed, env.brk(b).seed), ([1; 32], [2; 32]));
+    assert_eq!(
+        (env.brk(a).seed, env.brk(b).seed),
+        (draw_seed(&[1; 64]), draw_seed(&[2; 64]))
+    );
 }
 
 #[test]
