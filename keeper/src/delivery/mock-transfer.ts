@@ -17,6 +17,12 @@ const digest = (s: string) => createHash("sha256").update(s).digest("hex");
  * token program). Failures are injected with `queueSubmit`, the same behaviours as `MockPackProvider`.
  */
 export class MockCardTransfer implements CardTransfer {
+  /**
+   * `defaultOwner` answers for a card nobody `give`s: the keeper's mock mode uses the buyer wallet, as if every
+   * pulled card were already in it, so the pretend pack provider and this one need no shared memory.
+   */
+  constructor(private readonly defaultOwner?: () => Promise<Address>) {}
+
   private height = 1_000;
   private seq = 0;
   private readonly owners = new Map<Address, Address>();
@@ -45,7 +51,7 @@ export class MockCardTransfer implements CardTransfer {
   }
 
   async ownerOf(cardMint: Address): Promise<Address | undefined> {
-    return this.owners.get(cardMint);
+    return this.owners.get(cardMint) ?? (await this.defaultOwner?.());
   }
 
   async prepare(request: DeliveryRequest): Promise<PreparedTransfer> {
@@ -61,10 +67,11 @@ export class MockCardTransfer implements CardTransfer {
     if (!p) throw new Error(`mock: unknown transfer ${transfer.signature}`);
     const behavior = this.behaviors.shift() ?? "land";
     const tooLate = this.height > p.expiry;
+    const holder = await this.ownerOf(p.request.cardMint);
     const land = (wanted: Landed["outcome"]) => {
       if (tooLate) return;
       // The token program refuses a transfer from a wallet that does not own the card.
-      const ownsIt = this.owners.get(p.request.cardMint) === p.request.from;
+      const ownsIt = holder === p.request.from;
       const outcome = wanted === "confirmed" && ownsIt ? "confirmed" : "reverted";
       if (outcome === "confirmed") this.owners.set(p.request.cardMint, p.request.recipient);
       this.landed.set(transfer.signature, { request: p.request, outcome });

@@ -5,7 +5,7 @@ import type { Logger } from "../../src/job.js";
 import { MemoryPackStore } from "../../src/packs/store.js";
 import { BreakPipeline, type ActiveBreak, type PipelineDeps } from "../../src/pipeline/pipeline.js";
 import type { EligibilityStore } from "../../src/pipeline/eligibility-store.js";
-import type { BreakRepo, DbBreakStatus } from "../../src/pipeline/repo.js";
+import type { BreakRepo, DbBreakStatus, SpotRecord } from "../../src/pipeline/repo.js";
 import { type BreakAccount, type BreaksConfigAccount, ORAO_PROGRAM, type Programs } from "../../src/solana/breaks.js";
 import { type Address, addressToBytes } from "../../src/solana/pubkey.js";
 import { addr, BUYER } from "./chain.js";
@@ -45,6 +45,15 @@ export class MemoryRepo implements BreakRepo {
   }
   async setStatus(id: string, status: DbBreakStatus): Promise<void> {
     this.statuses.set(id, status);
+  }
+  public spots = new Map<string, SpotRecord>();
+  async recordSpots(breakId: string, spots: readonly SpotRecord[]): Promise<void> {
+    for (const s of spots) {
+      const key = `${breakId}:${s.kind}:${s.idx}`;
+      const known = this.spots.get(key);
+      if (known && known.wallet !== s.wallet) throw new Error(`spot ${key} is recorded for ${known.wallet} but the chain says ${s.wallet}`);
+      this.spots.set(key, known ?? s);
+    }
   }
 }
 
