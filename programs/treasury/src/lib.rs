@@ -6,7 +6,7 @@ pub mod math;
 pub mod state;
 
 use errors::TreasuryError;
-use state::Config;
+use state::{Bucket, Config};
 
 // Placeholder ID. Replace with `anchor keys sync` once the deploy keypair exists.
 declare_id!("Bvq3U9fz2MiHkLH8u4zyt6T1bimxnaEuHkZhezNDT5R9");
@@ -20,8 +20,9 @@ pub const HOLDER_VAULT_SEED: &[u8] = b"holder_vault";
 /// - `subsidy`: tops up paid spots
 /// - `holder`: pays for free holder spots
 ///
-/// Moving money out of the buckets (locking for a break, funding the pack buyer) is part of the
-/// `breaks` program and is added together with it in Phase 3.
+/// Money only leaves the buckets through the `controller` (the `breaks` program's treasury-authority
+/// PDA): it first locks funds for a break, then either pays them out to the pack buyer or unlocks
+/// what was not needed. Locked funds cannot be locked twice.
 #[program]
 pub mod treasury {
     use super::*;
@@ -36,6 +37,9 @@ pub mod treasury {
         config.usdc_mint = ctx.accounts.usdc_mint.key();
         config.subsidy_bps = params.subsidy_bps;
         config.holder_bps = params.holder_bps;
+        config.controller = Pubkey::default();
+        config.locked_subsidy = 0;
+        config.locked_holder = 0;
         config.bump = ctx.bumps.config;
 
         emit!(Initialized {
@@ -99,6 +103,105 @@ pub mod treasury {
         config.holder_bps = holder_bps;
         Ok(())
     }
+
+    /// Admin (multisig) only. Appoints the signer allowed to lock, unlock and pay out funds.
+    pub fn set_controller(ctx: Context<SetController>, controller: Pubkey) -> Result<()> {
+        let config = &mut ctx.accounts.config;
+        emit!(ControllerChanged {
+            admin: ctx.accounts.admin.key(),
+            old_controller: config.controller,
+            controller,
+        });
+        config.controller = controller;
+        Ok(())
+    }
+
+    /// Controller only. Reserves funds for a break; fails if the bucket does not have that much
+    /// unlocked. This is the on-chain funding rule: no break without covered costs.
+    pub fn lock_funds(ctx: Context<ControllerCall>, subsidy: u64, holder: u64) -> Result<()> {
+        let accounts = &mut *ctx.accounts;
+        let config = &mut accounts.config;
+        if subsidy > math::available(accounts.subsidy_vault.amount, config.locked_subsidy)? {
+            return err!(TreasuryError::InsufficientAvailable);
+        }
+        if holder > math::available(accounts.holder_vault.amount, config.locked_holder)? {
+            return err!(TreasuryError::InsufficientAvailable);
+        }
+        config.locked_subsidy = config
+            .locked_subsidy
+            .checked_add(subsidy)
+            .ok_or(TreasuryError::MathOverflow)?;
+        config.locked_holder = config
+            .locked_holder
+            .checked_add(holder)
+            .ok_or(TreasuryError::MathOverflow)?;
+
+        emit!(FundsLocked {
+            subsidy,
+            holder,
+            locked_subsidy: config.locked_subsidy,
+            locked_holder: config.locked_holder,
+        });
+        Ok(())
+    }
+
+    /// Controller only. Gives back locked funds that were not needed; they become available again.
+    pub fn unlock_funds(ctx: Context<ControllerCall>, subsidy: u64, holder: u64) -> Result<()> {
+        let config = &mut ctx.accounts.config;
+        config.locked_subsidy = config
+            .locked_subsidy
+            .checked_sub(subsidy)
+            .ok_or(TreasuryError::InsufficientLocked)?;
+        config.locked_holder = config
+            .locked_holder
+            .checked_sub(holder)
+            .ok_or(TreasuryError::InsufficientLocked)?;
+
+        emit!(FundsUnlocked {
+            subsidy,
+            holder,
+            locked_subsidy: config.locked_subsidy,
+            locked_holder: config.locked_holder,
+        });
+        Ok(())
+    }
+
+    /// Controller only. Pays out of locked funds only, so a payout can never touch money that is
+    /// reserved for another break or still unlocked.
+    pub fn pay_from_locked(ctx: Context<PayFromLocked>, bucket: Bucket, amount: u64) -> Result<()> {
+        let accounts = &mut *ctx.accounts;
+        let config = &mut accounts.config;
+        let (locked, vault) = match bucket {
+            Bucket::Subsidy => (&mut config.locked_subsidy, &accounts.subsidy_vault),
+            Bucket::Holder => (&mut config.locked_holder, &accounts.holder_vault),
+        };
+        *locked = locked.checked_sub(amount).ok_or(TreasuryError::InsufficientLocked)?;
+        let (locked_subsidy, locked_holder) = (config.locked_subsidy, config.locked_holder);
+
+        let bump = [config.bump];
+        let signer_seeds: &[&[&[u8]]] = &[&[CONFIG_SEED, &bump]];
+        token::transfer(
+            CpiContext::new_with_signer(
+                accounts.token_program.key(),
+                Transfer {
+                    from: vault.to_account_info(),
+                    to: accounts.destination.to_account_info(),
+                    authority: config.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            amount,
+        )?;
+
+        emit!(FundsPaid {
+            bucket,
+            amount,
+            destination: accounts.destination.key(),
+            locked_subsidy,
+            locked_holder,
+        });
+        Ok(())
+    }
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
@@ -156,6 +259,39 @@ pub struct SetSplit<'info> {
     pub config: Account<'info, Config>,
 }
 
+#[derive(Accounts)]
+pub struct SetController<'info> {
+    pub admin: Signer<'info>,
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ TreasuryError::Unauthorized)]
+    pub config: Account<'info, Config>,
+}
+
+/// Used by `lock_funds` and `unlock_funds`.
+#[derive(Accounts)]
+pub struct ControllerCall<'info> {
+    pub controller: Signer<'info>,
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = controller @ TreasuryError::Unauthorized)]
+    pub config: Account<'info, Config>,
+    #[account(seeds = [SUBSIDY_VAULT_SEED], bump)]
+    pub subsidy_vault: Account<'info, TokenAccount>,
+    #[account(seeds = [HOLDER_VAULT_SEED], bump)]
+    pub holder_vault: Account<'info, TokenAccount>,
+}
+
+#[derive(Accounts)]
+pub struct PayFromLocked<'info> {
+    pub controller: Signer<'info>,
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = controller @ TreasuryError::Unauthorized)]
+    pub config: Account<'info, Config>,
+    #[account(mut, seeds = [SUBSIDY_VAULT_SEED], bump)]
+    pub subsidy_vault: Account<'info, TokenAccount>,
+    #[account(mut, seeds = [HOLDER_VAULT_SEED], bump)]
+    pub holder_vault: Account<'info, TokenAccount>,
+    #[account(mut, token::mint = config.usdc_mint)]
+    pub destination: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+}
+
 #[event]
 pub struct Initialized {
     pub admin: Pubkey,
@@ -179,4 +315,36 @@ pub struct SplitChanged {
     pub old_holder_bps: u16,
     pub subsidy_bps: u16,
     pub holder_bps: u16,
+}
+
+#[event]
+pub struct ControllerChanged {
+    pub admin: Pubkey,
+    pub old_controller: Pubkey,
+    pub controller: Pubkey,
+}
+
+#[event]
+pub struct FundsLocked {
+    pub subsidy: u64,
+    pub holder: u64,
+    pub locked_subsidy: u64,
+    pub locked_holder: u64,
+}
+
+#[event]
+pub struct FundsUnlocked {
+    pub subsidy: u64,
+    pub holder: u64,
+    pub locked_subsidy: u64,
+    pub locked_holder: u64,
+}
+
+#[event]
+pub struct FundsPaid {
+    pub bucket: Bucket,
+    pub amount: u64,
+    pub destination: Pubkey,
+    pub locked_subsidy: u64,
+    pub locked_holder: u64,
 }

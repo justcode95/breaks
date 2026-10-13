@@ -1,42 +1,31 @@
-//! On-chain tests: the compiled program runs inside LiteSVM, so every case goes through the real
-//! account validation, PDA checks and token CPIs.
+//! On-chain tests for the treasury program (see `testkit` for the shared helpers).
 //!
 //! Needs the SBF build first: `cargo build-sbf --manifest-path programs/treasury/Cargo.toml`
 //! (CI does this). Point `TREASURY_SO` at a different file to test another build.
 
-use anchor_lang::{
-    error::{ErrorCode, ERROR_CODE_OFFSET},
-    solana_program::instruction::Instruction,
-    AnchorDeserialize, Discriminator, InstructionData, ToAccountMetas,
-};
-use base64::Engine;
-use litesvm::{
-    types::{FailedTransactionMetadata, TransactionMetadata},
-    LiteSVM,
-};
+use anchor_lang::{solana_program::instruction::Instruction, InstructionData, ToAccountMetas};
+use litesvm::LiteSVM;
 use litesvm_token::{
     get_spl_account, spl_token::state::Account as TokenAccountState, CreateAssociatedTokenAccount, CreateMint, MintTo,
 };
 use solana_address::Address;
-use solana_instruction_error::InstructionError;
 use solana_keypair::Keypair;
-use solana_message::Message;
 use solana_signer::Signer;
-use solana_transaction::Transaction;
-use solana_transaction_error::TransactionError;
-use treasury::{errors::TreasuryError, state::Config, FeesDeposited, InitializeParams, SplitChanged};
-
-const USDC: u64 = 1_000_000;
-const UPGRADEABLE_LOADER: &str = "BPFLoaderUpgradeab1e11111111111111111111111";
-
-type Sent = Result<TransactionMetadata, FailedTransactionMetadata>;
+use testkit::*;
+use treasury::{
+    errors::TreasuryError,
+    state::{Bucket, Config},
+    ControllerChanged, FeesDeposited, FundsLocked, FundsPaid, FundsUnlocked, InitializeParams, SplitChanged,
+};
 
 struct Env {
     svm: LiteSVM,
     /// Upgrade authority of the program (the Squads multisig in production).
     authority: Keypair,
-    /// Signs `set_split` (also a multisig vault in production).
+    /// Signs `set_split` and `set_controller` (also a multisig vault in production).
     admin: Keypair,
+    /// Stands in for the `breaks` program's treasury-authority PDA.
+    controller: Keypair,
     mint: Address,
     config: Address,
     subsidy_vault: Address,
@@ -56,93 +45,23 @@ fn custom_code(e: TreasuryError) -> u32 {
     ERROR_CODE_OFFSET + e as u32
 }
 
-/// Asserts the transaction failed with exactly this custom (Anchor) error code.
-fn assert_fails_with(result: Sent, code: u32) {
-    match result {
-        Ok(_) => panic!("expected error {code}, but the transaction succeeded"),
-        Err(f) => match f.err {
-            TransactionError::InstructionError(_, InstructionError::Custom(c)) => {
-                assert_eq!(c, code, "wrong error code; logs:\n{}", f.meta.logs.join("\n"))
-            }
-            other => panic!(
-                "expected custom error {code}, got {other:?}; logs:\n{}",
-                f.meta.logs.join("\n")
-            ),
-        },
-    }
-}
-
-fn send(svm: &mut LiteSVM, payer: &Keypair, extra: &[&Keypair], ixs: &[Instruction]) -> Sent {
-    svm.expire_blockhash();
-    let mut signers: Vec<&Keypair> = vec![payer];
-    signers.extend_from_slice(extra);
-    let tx = Transaction::new(
-        &signers,
-        Message::new(ixs, Some(&payer.pubkey())),
-        svm.latest_blockhash(),
-    );
-    svm.send_transaction(tx)
-}
-
-fn find_event<T: AnchorDeserialize + Discriminator>(logs: &[String]) -> Option<T> {
-    logs.iter()
-        .filter_map(|l| l.strip_prefix("Program data: "))
-        .find_map(|b64| {
-            let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
-            let body = bytes.strip_prefix(T::DISCRIMINATOR)?;
-            T::deserialize(&mut &body[..]).ok()
-        })
-}
-
-/// bincode layout of `UpgradeableLoaderState::ProgramData { slot, upgrade_authority_address }`.
-fn programdata_metadata(slot: u64, authority: Option<&Address>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(45);
-    out.extend_from_slice(&3u32.to_le_bytes());
-    out.extend_from_slice(&slot.to_le_bytes());
-    match authority {
-        Some(a) => {
-            out.push(1);
-            out.extend_from_slice(a.as_ref());
-        }
-        None => {
-            out.push(0);
-            out.extend_from_slice(&[0u8; 32]);
-        }
-    }
-    out
-}
-
-fn so_path() -> String {
-    std::env::var("TREASURY_SO")
-        .unwrap_or_else(|_| format!("{}/../../target/deploy/treasury.so", env!("CARGO_MANIFEST_DIR")))
-}
-
 impl Env {
     /// Program deployed (upgrade authority = `authority`), a USDC-like mint created, nothing initialized yet.
     fn new() -> Self {
         let mut svm = LiteSVM::new();
         let authority = Keypair::new();
         let admin = Keypair::new();
-        svm.airdrop(&authority.pubkey(), 100_000_000_000).unwrap();
-        svm.airdrop(&admin.pubkey(), 1_000_000_000).unwrap();
-
-        let path = so_path();
-        let bytes = std::fs::read(&path)
-            .unwrap_or_else(|e| panic!("cannot read {path}: {e}. Build it first with `cargo build-sbf`."));
-        svm.add_program(program_id(), &bytes).unwrap();
-
-        // LiteSVM deploys with no upgrade authority; give the program one like a real deployment has.
-        let loader: Address = UPGRADEABLE_LOADER.parse().unwrap();
-        let programdata = Address::find_program_address(&[program_id().as_ref()], &loader).0;
-        let mut account = svm.get_account(&programdata).expect("programdata account");
-        account.data[..45].copy_from_slice(&programdata_metadata(0, Some(&authority.pubkey())));
-        svm.set_account(programdata, account).unwrap();
-
+        let controller = Keypair::new();
+        for k in [&authority, &admin, &controller] {
+            svm.airdrop(&k.pubkey(), 100_000_000_000).unwrap();
+        }
+        let programdata = deploy(&mut svm, program_id(), "treasury", &authority.pubkey());
         let mint = CreateMint::new(&mut svm, &authority).decimals(6).send().unwrap();
         Env {
             svm,
             authority,
             admin,
+            controller,
             mint,
             config: pda(treasury::CONFIG_SEED),
             subsidy_vault: pda(treasury::SUBSIDY_VAULT_SEED),
@@ -238,19 +157,89 @@ impl Env {
         send(&mut self.svm, signer, &[], &[ix])
     }
 
+    fn set_controller_as(&mut self, signer: &Keypair, controller: Address) -> Sent {
+        let ix = Instruction {
+            program_id: program_id(),
+            accounts: treasury::accounts::SetController {
+                admin: signer.pubkey(),
+                config: self.config,
+            }
+            .to_account_metas(None),
+            data: treasury::instruction::SetController { controller }.data(),
+        };
+        send(&mut self.svm, signer, &[], &[ix])
+    }
+
+    fn lock_as(&mut self, signer: &Keypair, subsidy: u64, holder: u64) -> Sent {
+        let ix = self.controller_ix(
+            &signer.pubkey(),
+            treasury::instruction::LockFunds { subsidy, holder }.data(),
+        );
+        send(&mut self.svm, signer, &[], &[ix])
+    }
+
+    fn unlock_as(&mut self, signer: &Keypair, subsidy: u64, holder: u64) -> Sent {
+        let ix = self.controller_ix(
+            &signer.pubkey(),
+            treasury::instruction::UnlockFunds { subsidy, holder }.data(),
+        );
+        send(&mut self.svm, signer, &[], &[ix])
+    }
+
+    fn controller_ix(&self, controller: &Address, data: Vec<u8>) -> Instruction {
+        Instruction {
+            program_id: program_id(),
+            accounts: treasury::accounts::ControllerCall {
+                controller: *controller,
+                config: self.config,
+                subsidy_vault: self.subsidy_vault,
+                holder_vault: self.holder_vault,
+            }
+            .to_account_metas(None),
+            data,
+        }
+    }
+
+    fn pay_as(&mut self, signer: &Keypair, bucket: Bucket, amount: u64, destination: Address) -> Sent {
+        let ix = Instruction {
+            program_id: program_id(),
+            accounts: treasury::accounts::PayFromLocked {
+                controller: signer.pubkey(),
+                config: self.config,
+                subsidy_vault: self.subsidy_vault,
+                holder_vault: self.holder_vault,
+                destination,
+                token_program: litesvm_token::TOKEN_ID,
+            }
+            .to_account_metas(None),
+            data: treasury::instruction::PayFromLocked { bucket, amount }.data(),
+        };
+        send(&mut self.svm, signer, &[], &[ix])
+    }
+
     fn token_balance(&self, account: &Address) -> u64 {
         get_spl_account::<TokenAccountState>(&self.svm, account).unwrap().amount
     }
 
     fn config(&self) -> Config {
         let data = self.svm.get_account(&self.config).expect("config account").data;
-        Config::deserialize(&mut &data[8..]).unwrap()
+        anchor_lang::AnchorDeserialize::deserialize(&mut &data[8..]).unwrap()
     }
 }
 
 fn initialized() -> Env {
     let mut env = Env::new();
     env.initialize(7_000, 3_000).unwrap();
+    env
+}
+
+/// Initialized, controller appointed, and 100 USDC deposited (70 subsidy / 30 holder).
+fn funded() -> Env {
+    let mut env = initialized();
+    let admin = env.admin.insecure_clone();
+    env.set_controller_as(&admin, env.controller.pubkey()).unwrap();
+    let (wallet, ata) = env.depositor(1_000 * USDC);
+    env.deposit(&wallet, ata, 100 * USDC).unwrap();
     env
 }
 
@@ -570,4 +559,245 @@ fn no_base_unit_is_ever_lost_across_many_deposits_and_split_changes() {
         );
         assert_eq!(env.token_balance(&ata), start - deposited);
     }
+}
+
+// ---------------------------------------------------------------- set_controller
+
+#[test]
+fn a_fresh_treasury_has_no_controller_and_nothing_locked() {
+    let env = initialized();
+    let config = env.config();
+    assert_eq!(config.controller, Address::default());
+    assert_eq!((config.locked_subsidy, config.locked_holder), (0, 0));
+}
+
+#[test]
+fn set_controller_is_admin_only() {
+    let mut env = initialized();
+    let admin = env.admin.insecure_clone();
+    let authority = env.authority.insecure_clone();
+    let target = env.controller.pubkey();
+
+    assert_fails_with(
+        env.set_controller_as(&authority, target),
+        custom_code(TreasuryError::Unauthorized),
+    );
+    assert_eq!(env.config().controller, Address::default());
+
+    let meta = env.set_controller_as(&admin, target).unwrap();
+    assert_eq!(env.config().controller, target);
+    let event: ControllerChanged = find_event(&meta.logs).expect("ControllerChanged event");
+    assert_eq!((event.old_controller, event.controller), (Address::default(), target));
+}
+
+// ---------------------------------------------------------------- lock_funds / unlock_funds
+
+#[test]
+fn lock_reserves_funds_in_each_bucket() {
+    let mut env = funded();
+    let controller = env.controller.insecure_clone();
+    let meta = env.lock_as(&controller, 20 * USDC, 10 * USDC).unwrap();
+    let config = env.config();
+    assert_eq!((config.locked_subsidy, config.locked_holder), (20 * USDC, 10 * USDC));
+    // Locking is bookkeeping; no token moves.
+    assert_eq!(
+        (
+            env.token_balance(&env.subsidy_vault),
+            env.token_balance(&env.holder_vault)
+        ),
+        (70 * USDC, 30 * USDC)
+    );
+    let event: FundsLocked = find_event(&meta.logs).expect("FundsLocked event");
+    assert_eq!((event.subsidy, event.holder), (20 * USDC, 10 * USDC));
+}
+
+#[test]
+fn lock_cannot_exceed_what_is_unlocked_in_either_bucket() {
+    let mut env = funded();
+    let controller = env.controller.insecure_clone();
+    assert_fails_with(
+        env.lock_as(&controller, 70 * USDC + 1, 0),
+        custom_code(TreasuryError::InsufficientAvailable),
+    );
+    assert_fails_with(
+        env.lock_as(&controller, 0, 30 * USDC + 1),
+        custom_code(TreasuryError::InsufficientAvailable),
+    );
+
+    // Exactly everything is fine, and then nothing more is available.
+    env.lock_as(&controller, 70 * USDC, 30 * USDC).unwrap();
+    assert_fails_with(
+        env.lock_as(&controller, 1, 0),
+        custom_code(TreasuryError::InsufficientAvailable),
+    );
+    assert_fails_with(
+        env.lock_as(&controller, 0, 1),
+        custom_code(TreasuryError::InsufficientAvailable),
+    );
+    // A failed lock changes nothing.
+    assert_eq!(
+        (env.config().locked_subsidy, env.config().locked_holder),
+        (70 * USDC, 30 * USDC)
+    );
+}
+
+#[test]
+fn new_deposits_make_more_funds_lockable() {
+    let mut env = funded();
+    let controller = env.controller.insecure_clone();
+    env.lock_as(&controller, 70 * USDC, 30 * USDC).unwrap();
+    let (wallet, ata) = env.depositor(10 * USDC);
+    env.deposit(&wallet, ata, 10 * USDC).unwrap(); // +7 subsidy, +3 holder
+    env.lock_as(&controller, 7 * USDC, 3 * USDC).unwrap();
+}
+
+#[test]
+fn only_the_controller_can_lock_and_unlock() {
+    let mut env = funded();
+    let admin = env.admin.insecure_clone();
+    let stranger = Keypair::new();
+    env.svm.airdrop(&stranger.pubkey(), 1_000_000_000).unwrap();
+    for who in [&admin, &stranger] {
+        assert_fails_with(env.lock_as(who, USDC, 0), custom_code(TreasuryError::Unauthorized));
+        assert_fails_with(env.unlock_as(who, 0, 0), custom_code(TreasuryError::Unauthorized));
+    }
+}
+
+#[test]
+fn lock_fails_while_no_controller_is_set() {
+    let mut env = initialized();
+    let anyone = env.controller.insecure_clone();
+    assert_fails_with(env.lock_as(&anyone, 0, 0), custom_code(TreasuryError::Unauthorized));
+}
+
+#[test]
+fn unlock_frees_funds_again_but_never_more_than_was_locked() {
+    let mut env = funded();
+    let controller = env.controller.insecure_clone();
+    env.lock_as(&controller, 50 * USDC, 20 * USDC).unwrap();
+
+    assert_fails_with(
+        env.unlock_as(&controller, 50 * USDC + 1, 0),
+        custom_code(TreasuryError::InsufficientLocked),
+    );
+    assert_fails_with(
+        env.unlock_as(&controller, 0, 20 * USDC + 1),
+        custom_code(TreasuryError::InsufficientLocked),
+    );
+
+    let meta = env.unlock_as(&controller, 30 * USDC, 20 * USDC).unwrap();
+    assert_eq!(
+        (env.config().locked_subsidy, env.config().locked_holder),
+        (20 * USDC, 0)
+    );
+    let event: FundsUnlocked = find_event(&meta.logs).expect("FundsUnlocked event");
+    assert_eq!((event.locked_subsidy, event.locked_holder), (20 * USDC, 0));
+
+    // The freed part can be locked again.
+    env.lock_as(&controller, 50 * USDC, 30 * USDC).unwrap();
+}
+
+// ---------------------------------------------------------------- pay_from_locked
+
+#[test]
+fn pay_moves_locked_funds_to_the_destination_and_shrinks_the_lock() {
+    let mut env = funded();
+    let controller = env.controller.insecure_clone();
+    let (_buyer, buyer_ata) = env.depositor(0);
+    env.lock_as(&controller, 40 * USDC, 15 * USDC).unwrap();
+
+    let meta = env.pay_as(&controller, Bucket::Subsidy, 25 * USDC, buyer_ata).unwrap();
+    assert_eq!(env.token_balance(&buyer_ata), 25 * USDC);
+    assert_eq!(env.token_balance(&env.subsidy_vault), 45 * USDC);
+    assert_eq!(
+        (env.config().locked_subsidy, env.config().locked_holder),
+        (15 * USDC, 15 * USDC)
+    );
+    let event: FundsPaid = find_event(&meta.logs).expect("FundsPaid event");
+    assert_eq!(
+        (event.bucket, event.amount, event.destination),
+        (Bucket::Subsidy, 25 * USDC, buyer_ata)
+    );
+
+    env.pay_as(&controller, Bucket::Holder, 15 * USDC, buyer_ata).unwrap();
+    assert_eq!(env.token_balance(&buyer_ata), 40 * USDC);
+    assert_eq!(env.token_balance(&env.holder_vault), 15 * USDC);
+    assert_eq!(
+        (env.config().locked_subsidy, env.config().locked_holder),
+        (15 * USDC, 0)
+    );
+}
+
+#[test]
+fn pay_cannot_touch_funds_that_are_not_locked() {
+    let mut env = funded();
+    let controller = env.controller.insecure_clone();
+    let (_buyer, buyer_ata) = env.depositor(0);
+    env.lock_as(&controller, 10 * USDC, 0).unwrap();
+
+    // Plenty of money in the vault, but only 10 is locked.
+    assert_fails_with(
+        env.pay_as(&controller, Bucket::Subsidy, 10 * USDC + 1, buyer_ata),
+        custom_code(TreasuryError::InsufficientLocked),
+    );
+    assert_fails_with(
+        env.pay_as(&controller, Bucket::Holder, 1, buyer_ata),
+        custom_code(TreasuryError::InsufficientLocked),
+    );
+    assert_eq!(env.token_balance(&buyer_ata), 0);
+    assert_eq!(env.token_balance(&env.subsidy_vault), 70 * USDC);
+}
+
+#[test]
+fn only_the_controller_can_pay_out() {
+    let mut env = funded();
+    let controller = env.controller.insecure_clone();
+    let admin = env.admin.insecure_clone();
+    let (thief, thief_ata) = env.depositor(0);
+    env.lock_as(&controller, 10 * USDC, 10 * USDC).unwrap();
+
+    for who in [&admin, &thief] {
+        assert_fails_with(
+            env.pay_as(who, Bucket::Subsidy, USDC, thief_ata),
+            custom_code(TreasuryError::Unauthorized),
+        );
+    }
+    assert_eq!(env.token_balance(&thief_ata), 0);
+}
+
+#[test]
+fn pay_rejects_a_destination_of_another_mint() {
+    let mut env = funded();
+    let controller = env.controller.insecure_clone();
+    let authority = env.authority.insecure_clone();
+    let other_mint = CreateMint::new(&mut env.svm, &authority).decimals(6).send().unwrap();
+    let other_ata = CreateAssociatedTokenAccount::new(&mut env.svm, &authority, &other_mint)
+        .send()
+        .unwrap();
+    env.lock_as(&controller, 10 * USDC, 0).unwrap();
+    assert_fails_with(
+        env.pay_as(&controller, Bucket::Subsidy, USDC, other_ata),
+        ErrorCode::ConstraintTokenMint as u32,
+    );
+}
+
+#[test]
+fn locks_pay_outs_and_deposits_never_create_or_destroy_value() {
+    let mut env = funded();
+    let controller = env.controller.insecure_clone();
+    let (_buyer, buyer_ata) = env.depositor(0);
+    let total = |env: &Env| {
+        env.token_balance(&env.subsidy_vault) + env.token_balance(&env.holder_vault) + env.token_balance(&buyer_ata)
+    };
+
+    assert_eq!(total(&env), 100 * USDC);
+    env.lock_as(&controller, 30 * USDC, 12 * USDC).unwrap();
+    env.pay_as(&controller, Bucket::Subsidy, 11 * USDC, buyer_ata).unwrap();
+    env.pay_as(&controller, Bucket::Holder, 12 * USDC, buyer_ata).unwrap();
+    env.unlock_as(&controller, 19 * USDC, 0).unwrap();
+    assert_eq!(total(&env), 100 * USDC);
+    assert_eq!((env.config().locked_subsidy, env.config().locked_holder), (0, 0));
+    // What is left in the buckets is exactly what is lockable.
+    env.lock_as(&controller, 70 * USDC - 11 * USDC, 30 * USDC - 12 * USDC)
+        .unwrap();
 }

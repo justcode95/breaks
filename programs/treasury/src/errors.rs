@@ -12,4 +12,8 @@ pub enum TreasuryError {
     ZeroAmount,
     #[msg("Arithmetic overflow")]
     MathOverflow,
+    #[msg("Not enough unlocked funds in the bucket")]
+    InsufficientAvailable,
+    #[msg("Amount exceeds what is locked in the bucket")]
+    InsufficientLocked,
 }

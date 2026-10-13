@@ -1,0 +1,19 @@
+[package]
+name = "testkit"
+version = "0.1.0"
+description = "Shared helpers for the on-chain (LiteSVM) tests. Not a program."
+edition = "2021"
+publish = false
+
+[dependencies]
+anchor-lang = "1.2.1"
+base64 = "0.22"
+litesvm = "0.18"
+litesvm-token = "0.18"
+solana-address = "2.7"
+solana-instruction-error = "2.5"
+solana-keypair = "3.1"
+solana-message = "4.2"
+solana-signer = "3"
+solana-transaction = { version = "4.1", features = ["verify"] }
+solana-transaction-error = "3.4"
