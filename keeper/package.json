@@ -11,6 +11,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@noble/curves": "^2.4.0",
+    "@scure/base": "^2.4.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
