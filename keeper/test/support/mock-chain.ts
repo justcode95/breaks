@@ -24,8 +24,9 @@ import {
 } from "../../src/solana/breaks.js";
 import { Reader } from "../../src/solana/codec.js";
 import { type Instruction, instructionDiscriminator } from "../../src/solana/instruction.js";
-import { type Address, addressToBytes, associatedTokenAddress } from "../../src/solana/pubkey.js";
-import { encodeBreak, encodeBreaksConfig, encodeRequest, encodeSpot } from "./accounts.js";
+import { type Address, addressFromBytes, addressToBytes, associatedTokenAddress } from "../../src/solana/pubkey.js";
+import { type TreasuryConfig, treasuryAddresses } from "../../src/solana/treasury.js";
+import { encodeBreak, encodeBreaksConfig, encodeRequest, encodeSpot, encodeTokenAccount, encodeTreasuryConfig } from "./accounts.js";
 
 /** What happens to the next `sendAndConfirm`. */
 export type SendBehavior =
@@ -60,6 +61,24 @@ export class MockChain implements ChainClient {
   public readonly tokenAccounts = new Set<Address>();
   /** Any other account the test wants the chain to have (a token mint, say). */
   public readonly accounts = new Map<Address, Uint8Array>();
+  /**
+   * The treasury: the two buckets' vault balances and what is locked for breaks. Only `create_break` (which locks)
+   * and `fund_purchases` (which pays out and unlocks) touch it, following programs/treasury/src/lib.rs.
+   */
+  public readonly treasury = {
+    config: {
+      admin: addressFromBytes(new Uint8Array(32).fill(0xd1)),
+      usdcMint: addressFromBytes(new Uint8Array(32).fill(0xd2)),
+      controller: addressFromBytes(new Uint8Array(32).fill(0xd3)),
+      subsidyBps: 7_000,
+      holderBps: 3_000,
+      lockedSubsidy: 0n,
+      lockedHolder: 0n,
+      bump: 255,
+    } as TreasuryConfig,
+    subsidyVault: 0n,
+    holderVault: 0n,
+  };
   /** Every transaction that was applied, in order, by instruction name. */
   public readonly applied: string[] = [];
 
@@ -89,6 +108,10 @@ export class MockChain implements ChainClient {
     const spot = this.spots.get(address);
     if (spot) return encodeSpot(spot);
     if (this.tokenAccounts.has(address)) return new Uint8Array(165);
+    const t = treasuryAddresses(this.programs.treasury);
+    if (address === t.config) return encodeTreasuryConfig({ ...this.treasury.config, usdcMint: this.config.usdcMint });
+    if (address === t.subsidyVault) return encodeTokenAccount({ mint: this.config.usdcMint, owner: t.config, amount: this.treasury.subsidyVault });
+    if (address === t.holderVault) return encodeTokenAccount({ mint: this.config.usdcMint, owner: t.config, amount: this.treasury.holderVault });
     const extra = this.accounts.get(address);
     if (extra) return extra;
     const request = this.requests.get(address);
@@ -121,6 +144,8 @@ export class MockChain implements ChainClient {
     return {
       breaks: new Map([...this.breaks].map(([k, v]) => [k, structuredClone(v)] as const)),
       requests: new Map([...this.requests].map(([k, v]) => [k, structuredClone(v)] as const)),
+      config: { ...this.config },
+      treasury: { config: { ...this.treasury.config }, subsidyVault: this.treasury.subsidyVault, holderVault: this.treasury.holderVault },
     };
   }
 
@@ -129,6 +154,10 @@ export class MockChain implements ChainClient {
     for (const [k, v] of s.breaks) this.breaks.set(k, v);
     this.requests.clear();
     for (const [k, v] of s.requests) this.requests.set(k, v);
+    this.config = s.config;
+    this.treasury.config = s.treasury.config;
+    this.treasury.subsidyVault = s.treasury.subsidyVault;
+    this.treasury.holderVault = s.treasury.holderVault;
   }
 
   private breakAt(address: Address): BreakAccount {
@@ -144,11 +173,14 @@ export class MockChain implements ChainClient {
     this.require(ix.programId === this.programs.breaks, `the model only knows the breaks program, not ${ix.programId}`);
     const disc = hex(ix.data.subarray(0, 8));
     const args = new Reader(ix.data.subarray(8));
-    const name = ["close_break", "commit_eligibility", "fund_purchases", "commit_pool", "request_randomness", "settle_randomness", "claim_free_spot"].find(
+    const name = ["create_break", "close_break", "commit_eligibility", "fund_purchases", "commit_pool", "request_randomness", "settle_randomness", "claim_free_spot"].find(
       (n) => hex(instructionDiscriminator(n)) === disc,
     );
     if (!name) throw new Error(`the mock chain does not model instruction ${disc}`);
     switch (name) {
+      case "create_break":
+        this.createBreak(ix, args);
+        break;
       case "close_break":
         this.closeBreak(ix);
         break;
@@ -177,6 +209,75 @@ export class MockChain implements ChainClient {
   private requireKeeper(ix: Instruction, index: number) {
     const keeper = ix.accounts[index];
     this.require(!!keeper?.isSigner && keeper.pubkey === this.config.keeper, "Unauthorized");
+  }
+
+  // programs/breaks/src/lifecycle.rs (`CreateBreak::handle`) and math.rs (`creation_locks`); the escrow account and the
+  // rent are not modelled
+  private createBreak(ix: Instruction, args: Reader) {
+    this.requireKeeper(ix, 0);
+    const paidSpots = args.u16();
+    const freeSpots = args.u16();
+    const spotPrice = args.u64();
+    const maxPackPrice = args.u64();
+    const packMachine = args.fixed(32);
+    const opensAt = args.i64();
+    const closesAt = args.i64();
+    const key = (i: number) => (ix.accounts[i] as Instruction["accounts"][number]).pubkey;
+    const t = treasuryAddresses(this.programs.treasury);
+
+    this.require(key(1) === configAddress(this.programs), "ConstraintSeeds");
+    const id = this.config.nextBreakId;
+    // The break account is a PDA of the next id: an id that is no longer next is refused (this is what makes a resend safe).
+    this.require(key(2) === breakAddress(this.programs, id), "ConstraintSeeds");
+    this.require(key(3) === this.config.usdcMint, "ConstraintAddress");
+    this.require(key(6) === t.config && key(7) === t.subsidyVault && key(8) === t.holderVault && key(9) === this.programs.treasury, "ConstraintSeeds");
+
+    this.require(!this.config.paused, "Paused");
+    this.require(paidSpots >= 1 && paidSpots <= this.config.maxPaidSpots && freeSpots <= this.config.maxFreeSpots, "InvalidSpotCounts");
+    this.require(spotPrice > 0n && maxPackPrice > 0n, "InvalidPrice");
+    const window = closesAt - opensAt;
+    this.require(closesAt > this.unixTime && window >= this.config.minWindowSecs && window <= this.config.maxWindowSecs, "InvalidWindow");
+    this.require(spotPrice <= maxPackPrice, "SpotPriceAboveMaxPackPrice");
+
+    const lockSubsidy = BigInt(paidSpots) * (maxPackPrice - spotPrice);
+    const lockHolder = BigInt(freeSpots) * maxPackPrice;
+    // The funding rule (treasury lock_funds): each bucket must have that much unlocked.
+    this.require(lockSubsidy <= this.treasury.subsidyVault - this.treasury.config.lockedSubsidy, "InsufficientAvailable");
+    this.require(lockHolder <= this.treasury.holderVault - this.treasury.config.lockedHolder, "InsufficientAvailable");
+    this.treasury.config.lockedSubsidy += lockSubsidy;
+    this.treasury.config.lockedHolder += lockHolder;
+
+    this.config.nextBreakId = id + 1n;
+    this.breaks.set(id, {
+      id,
+      status: "Open",
+      paidSpots,
+      freeSpots,
+      spotPrice,
+      maxPackPrice,
+      packMachine,
+      opensAt,
+      closesAt,
+      spotsSold: 0,
+      lockedSubsidy: lockSubsidy,
+      lockedHolder: lockHolder,
+      eligibilityRoot: new Uint8Array(32),
+      eligibilityTotalWeight: 0n,
+      eligibilityCount: 0,
+      eligibilityInputsHash: new Uint8Array(32),
+      poolSize: 0,
+      packBudget: 0n,
+      poolHash: new Uint8Array(32),
+      randomnessAttempt: 0,
+      randomnessRequestId: new Uint8Array(32),
+      randomnessRequestedAt: 0n,
+      seed: new Uint8Array(32),
+      seededAt: 0n,
+      freeWinnerCount: 0,
+      freeWinners: Array.from({ length: 16 }, () => ({ wallet: "11111111111111111111111111111111", start: 0n, weight: 0n })),
+      bump: 254,
+      escrowBump: 253,
+    });
   }
 
   // programs/breaks/src/lifecycle.rs
@@ -216,6 +317,17 @@ export class MockChain implements ChainClient {
     this.require(poolSize > 0, "EmptyPool");
     b.poolSize = poolSize;
     b.packBudget = BigInt(poolSize) * b.maxPackPrice;
+    // The pack budget leaves the treasury's locked funds and what was not needed is unlocked. A break that was not
+    // created through `create_break` (the test fixtures) holds no locks and leaves the treasury alone.
+    if (b.lockedSubsidy > 0n || b.lockedHolder > 0n) {
+      const fromSubsidy = BigInt(b.spotsSold) * (b.maxPackPrice - b.spotPrice);
+      const fromHolder = BigInt(drawnFree) * b.maxPackPrice;
+      this.require(fromSubsidy <= b.lockedSubsidy && fromHolder <= b.lockedHolder, "InsufficientLocked");
+      this.treasury.subsidyVault -= fromSubsidy;
+      this.treasury.holderVault -= fromHolder;
+      this.treasury.config.lockedSubsidy -= b.lockedSubsidy;
+      this.treasury.config.lockedHolder -= b.lockedHolder;
+    }
     b.lockedSubsidy = 0n;
     b.lockedHolder = 0n;
     b.status = "Funded";

@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { ORAO_PROGRAM, type Programs } from "./solana/breaks.js";
+import { type BreakTemplate } from "./scheduler/policy.js";
+import { packMachineBytes } from "./scheduler/machine.js";
 import { type Address, addressToBytes } from "./solana/pubkey.js";
 
 const isAddress = (s: string) => {
@@ -12,8 +14,17 @@ const isAddress = (s: string) => {
 };
 const address = z.string().refine(isAddress, "not a Solana address (32 bytes, base58)");
 
+const isMachine = (s: string) => {
+  try {
+    packMachineBytes(s);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 // Devnet only (CLAUDE.md guardrails). Adding "mainnet-beta" here is a rule change that needs the owner's sign-off.
-const schema = z.object({
+const shape = z.object({
   SOLANA_CLUSTER: z.enum(["devnet", "localnet"]).default("devnet"),
   SOLANA_RPC_URL: z.string().url(),
   DATABASE_URL: z.string().min(1),
@@ -55,6 +66,23 @@ const schema = z.object({
   // which is a field of ORAO's network state. Read it from there and copy it in; the keeper does not guess it.
   VRF_PROGRAM_ID: address.default(ORAO_PROGRAM),
   ORAO_TREASURY: address,
+  // The break the scheduler creates when the treasury can pay for its worst case. The numbers are open decisions
+  // (CLAUDE.md), so none has a default. Prices are micro-USDC. The program checks them against its own limits too.
+  BREAK_AUTO_CREATE: z.enum(["true", "false"]).default("true").transform((v) => v === "true"),
+  BREAK_PAID_SPOTS: z.coerce.number().int().min(1).max(65_535),
+  BREAK_FREE_SPOTS: z.coerce.number().int().min(0).max(16),
+  BREAK_SPOT_PRICE: z.coerce.bigint().positive(),
+  BREAK_MAX_PACK_PRICE: z.coerce.bigint().positive(),
+  // Text of up to 32 bytes, or 0x and 64 hex digits for a raw 32-byte id. Committed on-chain for the whole break.
+  BREAK_PACK_MACHINE: z.string().refine(isMachine, "not a machine label (1 to 32 plain text bytes, or 0x and 64 hex digits)"),
+  // How long the sale and the TWAB window last.
+  BREAK_WINDOW_SECS: z.coerce.number().int().min(60),
+});
+
+const schema = shape.superRefine((e, ctx) => {
+  if (e.BREAK_SPOT_PRICE > e.BREAK_MAX_PACK_PRICE) {
+    ctx.addIssue({ code: "custom", path: ["BREAK_SPOT_PRICE"], message: "must not be above BREAK_MAX_PACK_PRICE (a markup is not supported)" });
+  }
 });
 
 export type Config = {
@@ -72,6 +100,7 @@ export type Config = {
   vrf: { program: Address; treasury: Address };
   eligibility: { minTwab: bigint; capPerWallet?: bigint; settleSecs: number };
   indexer: { mint: Address; intervalSecs: number; lagSecs: number; callsPerRun: number; pageSize: number; concurrency: number };
+  scheduler: { enabled: boolean; template: BreakTemplate };
 };
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -106,6 +135,17 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       callsPerRun: e.INDEXER_CALLS_PER_RUN,
       pageSize: e.INDEXER_PAGE_SIZE,
       concurrency: e.INDEXER_CONCURRENCY,
+    },
+    scheduler: {
+      enabled: e.BREAK_AUTO_CREATE,
+      template: {
+        paidSpots: e.BREAK_PAID_SPOTS,
+        freeSpots: e.BREAK_FREE_SPOTS,
+        spotPrice: e.BREAK_SPOT_PRICE,
+        maxPackPrice: e.BREAK_MAX_PACK_PRICE,
+        packMachine: packMachineBytes(e.BREAK_PACK_MACHINE),
+        windowSecs: BigInt(e.BREAK_WINDOW_SECS),
+      },
     },
   };
 }
