@@ -99,7 +99,9 @@ export class MockChain implements ChainClient {
     // All instructions or none, like a transaction.
     const snapshot = this.snapshot();
     try {
-      for (const ix of instructions) this.apply(ix);
+      const names = instructions.map((ix) => this.apply(ix));
+      // Only what succeeded counts as applied.
+      this.applied.push(...names);
     } catch (err) {
       this.restore(snapshot);
       if (err instanceof Revert) return { outcome: "failed", reason: err.message, signature };
@@ -131,7 +133,7 @@ export class MockChain implements ChainClient {
     if (!cond) throw new Revert(reason);
   }
 
-  private apply(ix: Instruction) {
+  private apply(ix: Instruction): string {
     this.require(ix.programId === this.programs.breaks, `the model only knows the breaks program, not ${ix.programId}`);
     const disc = hex(ix.data.subarray(0, 8));
     const args = new Reader(ix.data.subarray(8));
@@ -139,17 +141,21 @@ export class MockChain implements ChainClient {
       (n) => hex(instructionDiscriminator(n)) === disc,
     );
     if (!name) throw new Error(`the mock chain does not model instruction ${disc}`);
-    this.applied.push(name);
     switch (name) {
       case "commit_pool":
-        return this.commitPool(ix, args);
+        this.commitPool(ix, args);
+        break;
       case "request_randomness":
-        return this.requestRandomness(ix);
+        this.requestRandomness(ix);
+        break;
       case "settle_randomness":
-        return this.settleRandomness(ix);
+        this.settleRandomness(ix);
+        break;
       case "claim_free_spot":
-        return this.claimFreeSpot(ix, args);
+        this.claimFreeSpot(ix, args);
+        break;
     }
+    return name;
   }
 
   private requireKeeper(ix: Instruction, index: number) {
