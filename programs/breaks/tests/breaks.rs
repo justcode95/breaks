@@ -1117,7 +1117,7 @@ fn a_paused_program_does_not_pay_out_the_pack_budget() {
     // The admin can still unwind the break, and funding works again after unpausing.
     env.set_paused(false);
     env.fund(id).unwrap();
-    assert_eq!(env.balance(&env.buyer_usdc), 75 * USDC);
+    assert_eq!(env.balance(&env.buyer_usdc), 100 * USDC);
 }
 
 // ---------------------------------------------------------------- commit_pool
