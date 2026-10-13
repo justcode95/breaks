@@ -29,6 +29,8 @@ export interface Programs {
 export const ORAO_PROGRAM: Address = "VRFzZoJdhFWL8rkvu87LpKM3RbcVezpMEc6X5GVDr7y";
 
 export const MAX_FREE_SPOTS = 16;
+/** The program allows this many randomness requests per break (the first plus repeats). */
+export const MAX_RANDOMNESS_ATTEMPTS = 5;
 export const MAX_PROOF_STEPS = 40;
 
 // ---------------------------------------------------------------- addresses
@@ -367,7 +369,8 @@ export type BreakStatus =
   | "Drawn"
   | "Cancelled";
 
-const STATUSES: readonly BreakStatus[] = [
+/** In the order of the program's enum, which is what the status byte means. */
+export const BREAK_STATUSES: readonly BreakStatus[] = [
   "Open",
   "Closed",
   "EligibilityCommitted",
@@ -421,7 +424,7 @@ export function decodeBreak(data: Uint8Array): BreakAccount {
   const r = accountReader(data, "Break");
   const id = r.u64();
   const statusIndex = r.u8();
-  const status = STATUSES[statusIndex];
+  const status = BREAK_STATUSES[statusIndex];
   if (!status) throw new RangeError(`unknown break status ${statusIndex}`);
   return {
     id,
