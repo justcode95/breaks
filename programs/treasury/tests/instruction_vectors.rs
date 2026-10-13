@@ -153,6 +153,29 @@ fn treasury_instruction_vectors() {
         ),
     );
 
+    // An SPL token account as the token program writes it: the keeper reads the vaults' balances from these.
+    let vault = {
+        use anchor_spl::token::spl_token::state::{Account, AccountState};
+        use solana_program_pack::Pack;
+        let account = Account {
+            mint,
+            owner: controller,
+            amount: 123_456_789_012,
+            delegate: None.into(),
+            state: AccountState::Initialized,
+            is_native: None.into(),
+            delegated_amount: 0,
+            close_authority: None.into(),
+        };
+        let mut bytes = vec![0u8; Account::LEN];
+        Account::pack(account, &mut bytes).unwrap();
+        value_case(
+            "spl.account.TokenAccount",
+            &format!("{{ \"data\": \"{}\" }}", hex(&bytes)),
+            &format!("{{ \"mint\": \"{mint}\", \"owner\": \"{controller}\", \"amount\": \"123456789012\" }}"),
+        )
+    };
+
     check_vectors(
         concat!(env!("CARGO_MANIFEST_DIR"), "/instruction-vectors.json"),
         &format!("{{ \"treasury\": \"{}\" }}", treasury::ID),
@@ -166,6 +189,7 @@ fn treasury_instruction_vectors() {
             pay(Bucket::Subsidy, "Subsidy"),
             pay(Bucket::Holder, "Holder"),
             config_account,
+            vault,
         ],
     );
 }
