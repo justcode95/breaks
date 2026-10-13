@@ -47,22 +47,25 @@ A Solana memecoin whose trading fees fund group "breaks" of Collector Crypt gach
 
 ### 1. On-chain programs (`programs/`)
 **`treasury`**
-- `initialize(config)` — admin = Squads multisig.
+- `initialize(config)` — admin = Squads multisig; only the program's upgrade authority can call it.
 - `deposit_fees(amount)` — splits into `subsidy` / `holder` buckets by config ratio.
 - `set_split(subsidy_bps, holder_bps)` — admin only.
-- Read-only balances for the website.
+- `set_controller(controller)` — admin only. The controller is the `breaks` program's `treasury_authority` PDA.
+- `lock_funds` / `unlock_funds` / `pay_from_locked` — controller only. Locking is how the on-chain funding rule works (the treasury refuses unless the bucket has that much unlocked). Pay-outs can only come out of locked funds, so they never touch money reserved for another break.
+- Read-only balances for the website: the two vault balances and `locked_subsidy` / `locked_holder` in the config account.
 
-**`breaks`**
-- `create_break(params)` — keeper/admin; checks the funding rule; locks the worst-case amount from the buckets.
-- `buy_spot(break_id)` — USDC into escrow; records a spot PDA.
-- `close_break(break_id)` — after `closes_at`; fixes the filled paid spots.
-- `commit_eligibility(break_id, root, total_weight, entry_count, inputs_hash)` — keeper.
-- `fund_purchases(break_id)` — releases the pack budget (`pool_size × max_pack_price` at most) to the buyer wallet. **This is the step users trust.**
-- `commit_pool(break_id, pool_hash, pool_size)` — keeper, after the pulls.
-- `request_randomness(break_id)` / `settle_randomness(break_id)` — settle is permissionless; re-request only if unfulfilled after a timeout, never after a fulfilled seed.
-- `claim_free_spot(break_id, index, leaf, proof)` — permissionless; unclaimed after N hours → the spot is dropped.
-- `cancel_break` — full refunds, allowed before `fund_purchases` only. Admin: `pause`, config updates. All admin = multisig.
-- Unspent buyer-wallet funds return to the treasury or to refunds for any spot that could not be bought.
+**`breaks`** (built: everything up to the pool commit; the rest is marked "next")
+- `initialize(params)` — upgrade authority only. Config: admin, keeper, buyer wallet, window and spot limits, pause.
+- `set_keeper`, `set_buyer`, `set_paused` — admin only. Pausing stops new breaks, new spots and `fund_purchases`; cancel and refunds always work.
+- `create_break(params)` — keeper; locks `paid_spots × (max_pack_price − spot_price)` of subsidy and `free_spots × max_pack_price` of holder funds in the treasury (the funding rule). `spot_price ≤ max_pack_price` is enforced: a markup is not supported yet.
+- `buy_spot(index)` — USDC into the break's escrow; one spot account per spot, `index` must be the next free one.
+- `close_break` — anyone, after `closes_at`.
+- `commit_eligibility(root, total_weight, entry_count, inputs_hash)` — keeper, after close.
+- `fund_purchases` — keeper. Pays `pool_size × max_pack_price` to the buyer wallet (escrow + locked subsidy + locked holder funds) and returns the unused locks. The destination is fixed to the configured buyer wallet. **This is the step users trust.** `pool_size` = sold paid spots + `min(free_spots, entry_count)`; an empty pool cannot be funded and is cancelled instead.
+- `commit_pool(pool_hash, pool_size)` — keeper, after funding; `pool_size` must match.
+- `cancel_break` — admin, before funding; `refund_spot` — anyone, pays the spot's owner.
+- Next (waits on the randomness provider decision, A1): `request_randomness` / `settle_randomness`, `claim_free_spot`, the draw. Also open: what happens to buyer-wallet money that is not spent (return path), and the partial-failure policy.
+- Draw design note for the next step: draw free winners **without replacement** (after each winner, skip the ranges of earlier winners) instead of "retry with a nonce, give up after 32 tries". The retry rule can fail when one wallet holds almost all the weight, and the pool size is already fixed before the seed exists.
 
 No vault program. Cards pass through the buyer wallet. An on-chain escrow for cards is only added if Phase 0 shows it is possible.
 
@@ -99,6 +102,7 @@ Rate-limit, dedupe via `bot_posts`, never post before the on-chain event is **fi
 ## Repo layout
 ```
 programs/treasury   programs/breaks
+testkit/            (shared helpers for the on-chain tests)
 keeper/             (jobs, indexer, buyer, bot)
 web/                (Next.js)
 db/                 (migrations)
@@ -118,7 +122,9 @@ cargo check --workspace      # Anchor programs, host check only
 ```
 CI (`.github/workflows/ci.yml`) runs the same on every pull request and on pushes to main.
 
-**Program tests:** each program has pure-logic unit tests (`cargo test -p treasury --lib`, runs anywhere) and on-chain tests in `programs/<name>/tests/` that run the compiled program inside LiteSVM. The on-chain tests need `target/deploy/<name>.so` from `cargo build-sbf --manifest-path programs/<name>/Cargo.toml`; without it they fail on purpose.
+**Program tests:** each program has pure-logic unit tests (`cargo test -p treasury -p breaks --lib`, runs anywhere) and on-chain tests in `programs/<name>/tests/` that run the compiled program inside LiteSVM. The on-chain tests need `target/deploy/<name>.so` from `cargo build-sbf --manifest-path programs/<name>/Cargo.toml`; without it they fail on purpose.
+
+On-chain tests share helpers in `testkit/` (deploy with an upgrade authority, send, error and event assertions, clock). Both programs' tests need both `.so` files, so build both before `cargo test`.
 
 **Toolchain limit in cloud sessions:** the Solana/Anchor binaries could not be downloaded there (release.anza.xyz and GitHub release downloads were blocked by the network policy), so `cargo build-sbf` and the on-chain tests run in CI (job `programs`), not in the session. Read CI results with the GitHub Actions tools. CI also runs on pushes to `claude/**` branches so work can be verified without opening a pull request. Do not claim on-chain behavior is tested until that job is green.
 
@@ -130,9 +136,9 @@ CI (`.github/workflows/ci.yml`) runs the same on every pull request and on pushe
    4. Check whether our program could verify a pull from Collector Crypt's on-chain accounts. If yes, release funds per verified pull and close the trust gap.
    5. Check whether the card can be held in a program-owned account (only if an on-chain escrow is wanted).
    6. Pick the VRF provider (A1).
-1. **Scaffold** (done, in review) — Anchor workspace (2 programs, placeholder instructions), Next.js app, keeper skeleton (config, job runner, `PackProvider` + mock), DB migration v0. Devnet only.
-2. **Treasury** (initialize, deposit_fees, set_split; done, in review). Outflows from the buckets (lock for a break, fund the pack buyer) are designed with the `breaks` program in Phase 3. No admin-transfer instruction yet: decide in Phase 3 whether to add a two-step handover.
-3. **Breaks program** — create/buy/close/fund/cancel with tests. Then randomness + claims + pool commit.
+1. **Scaffold** (merged) — Anchor workspace (2 programs, placeholder instructions), Next.js app, keeper skeleton (config, job runner, `PackProvider` + mock), DB migration v0. Devnet only.
+2. **Treasury** (initialize, deposit_fees, set_split; merged). No admin-transfer instruction yet: decide whether to add a two-step handover.
+3. **Breaks program** — create/buy/close/commit/fund/cancel/refund with tests and the treasury lock/pay-out (in review). Then randomness + claims (needs A1).
 4. **Keeper** — indexer, TWAB, eligibility, scheduler, pack buyer, delivery, pipeline.
 5. **Website** — live break, dashboard, transparency + verify tool.
 6. **X bot.**
