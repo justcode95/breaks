@@ -29,6 +29,12 @@ export interface VerifyInput {
   cards: string;
   /** Values from the break's account to compare with; leave a field empty to skip it. */
   expected: { root: string; totalWeight: string; entryCount: string; poolHash: string };
+  /**
+   * The free-spot winners recorded on the break's account (when it was loaded from the chain). Each is compared with
+   * the winner this draw gives at the same place. `complete` says the draw is finished (status `Drawn`), so that no
+   * winner may be missing.
+   */
+  onChain?: { winners: { wallet: string; start: bigint; weight: bigint }[]; complete: boolean };
 }
 
 export interface Check {
@@ -67,6 +73,8 @@ export interface Verified {
   /** Present when cards were given (there is one card per spot). */
   assignment?: SpotCard[];
   checks: Check[];
+  /** Things worth saying that are not a match or a difference. */
+  notes: string[];
 }
 
 export type VerifyResult = Verified | { ok: false; errors: string[] };
@@ -237,6 +245,23 @@ export function verifyDraw(input: VerifyInput): VerifyResult {
     else wanted.push({ label: "Pool hash", expected: toHex(want.pool), actual: "no cards given", matches: false });
   }
 
+  const notes: string[] = [];
+  // Asking before the list is pasted is the usual way to see "differs" for the root: say why.
+  if (leaves.length === 0 && wanted.some((c) => ["Eligibility root", "Total weight", "Eligible wallets"].includes(c.label) && !c.matches)) {
+    notes.push("The eligibility list is empty, so these inputs commit to the zero root: paste the published list to compare it.");
+  }
+  const recorded = input.onChain?.winners ?? [];
+  for (const [i, r] of recorded.entries()) {
+    const label = `Winner ${i + 1} recorded on chain`;
+    const w = winners[i];
+    if (w) same(label, `${r.wallet} · range starts at ${r.start} · weight ${r.weight}`, `${w.wallet} · range starts at ${w.start} · weight ${w.weight}`);
+    else wanted.push({ label, expected: `${r.wallet} · range starts at ${r.start} · weight ${r.weight}`, actual: "no such winner in this draw", matches: false });
+  }
+  if (input.onChain) {
+    if (input.onChain.complete) same("Winners recorded on chain", String(recorded.length), String(winners.length));
+    else if (recorded.length < winners.length) notes.push(`Only ${recorded.length} of ${winners.length} winners are recorded on the break so far; the rest are claimed one at a time.`);
+  }
+
   return {
     ok: true,
     seed: { hex: toHex(seed), derived },
@@ -245,6 +270,7 @@ export function verifyDraw(input: VerifyInput): VerifyResult {
     ...(pool ? { poolHash: pool } : {}),
     ...(assigned ? { assignment: assigned } : {}),
     checks: wanted,
+    notes,
   };
 }
 
