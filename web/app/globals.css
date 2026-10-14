@@ -1283,3 +1283,36 @@ dd {
     margin-left: 0;
   }
 }
+
+/* the buy card: gold like the main button, with the price big enough to read at a glance */
+.buy {
+  border-color: var(--gold);
+  box-shadow: var(--plate), 0 0 0 4px rgb(255 201 60 / 0.16);
+}
+
+.buy-price {
+  margin: 0.2rem 0 0.3rem;
+}
+
+.buy-price .amount {
+  margin-right: 0.3rem;
+  color: var(--gold-hi);
+  font-size: 2.3rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.buy-progress {
+  font-weight: 800;
+}
+
+.buy .actions {
+  margin: 1rem 0 0;
+}
+
+.buy-result.good {
+  padding: 0.7rem 1rem;
+  border-radius: 1rem;
+  background: var(--live-bg);
+  color: var(--live-fg);
+}

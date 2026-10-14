@@ -218,6 +218,15 @@ describe("the break page", () => {
   };
   const text = (html: string) => html.replace(/<[^>]*>/g, " ").replace(/&amp;/g, "&").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
 
+  it("puts what it is given for the buy card after the figures and before the spots, and nothing without it", () => {
+    const loaded: Loaded = { number: 8, break: account({ status: "Open", spotsSold: 3 }), paidOwners: owners, notes: [] };
+    const withSlot = renderToStaticMarkup(createElement(BreakDetails, { loaded, now: CLOSES - 600, readAt: CLOSES - 690, program: PROGRAM, refresh: () => {}, buy: createElement("section", { id: "buy-slot" }, "BUY HERE") }));
+    const at = (needle: string) => withSlot.indexOf(needle);
+    expect(at("BUY HERE")).toBeGreaterThan(at("Closes in"));
+    expect(at("BUY HERE")).toBeLessThan(at("The spots"));
+    expect(page({ status: "Open" })).not.toContain("BUY HERE");
+  });
+
   it("shows a drawn break with everything the chain holds", () => {
     const html = page({ status: "Drawn", freeWinners: [SAMPLE.freeWinners[0] as FreeWinner, { ...(SAMPLE.freeWinners[1] as FreeWinner), weight: 600n }], eligibilityTotalWeight: 1200n });
     const t = text(html);

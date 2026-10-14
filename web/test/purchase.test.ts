@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { type Address, TOKEN_PROGRAM, associatedTokenAddress, breakAddress, configAddress } from "../lib/chain/address";
 import { buySpotInstruction } from "../lib/chain/buy";
 import { GENESIS_HASHES } from "../lib/chain/cluster";
-import { BREAKS_ERRORS, type PurchaseResult, type PurchaseStep, SPOT_ACCOUNT_BYTES, buySpot, describeTransactionError } from "../lib/chain/purchase";
+import { BREAKS_ERRORS, type PurchaseResult, type PurchaseStep, SIGNATURE_FEE_LAMPORTS, SPOT_ACCOUNT_BYTES, buySpot, describeTransactionError, loadSaleTerms } from "../lib/chain/purchase";
 import { buildTransaction } from "../lib/chain/transaction";
 import { fromHex } from "../lib/draw/bytes";
 import { type BreakFields, type ConfigFields, type Served, breakFieldsFromVector, configFieldsFromVector, encodeBreak, encodeConfig, encodeTokenAccount } from "./support/accounts";
@@ -175,10 +175,24 @@ describe("buying a spot", () => {
     expect(rentCalls.sort()).toEqual([0, SPOT_ACCOUNT_BYTES]);
   });
 
+  it("says in words, and with one full stop, when the node cannot be read for the checks", async () => {
+    const r = await run({ node: { failing: ["getBalance"] } });
+    expect(r.result.kind).toBe("refused");
+    const reason = (r.result as { reason: string }).reason;
+    expect(reason).toBe("Could not check the purchase, so nothing was sent: the node refused the request: getBalance is failing.");
+    expect(r.wallet.sendCalls).toHaveLength(0);
+    // A node's own sentence may already end in a full stop.
+    const stopped = (await run({ node: { failing: ["getBalance"], failMessage: "Try later." } })).result as { reason: string };
+    expect(stopped.reason).toBe("Could not check the purchase, so nothing was sent: the node refused the request: Try later.");
+  });
+
   it("says the wallet declined, with a warning to look at its history first, when the wallet fails or gives nothing back", async () => {
     const declined = async (wallet: Setup["wallet"]) => (await run({ wallet })).result as { kind: string; reason: string };
     const rejected = await declined({ send: async () => Promise.reject(new Error("User rejected the request.")) });
-    expect(rejected).toEqual({ kind: "declined", reason: "Pretend did not send the transaction: User rejected the request.. If you approved it, check your wallet's history before trying again." });
+    // A wallet's own sentence already ends in a full stop; one that does not gets one. Never two.
+    expect(rejected).toEqual({ kind: "declined", reason: "Pretend did not send the transaction: User rejected the request. If you approved it, check your wallet's history before trying again." });
+    const closed = await declined({ send: async () => Promise.reject(new Error("the window was closed")) });
+    expect(closed.reason).toBe("Pretend did not send the transaction: the window was closed. If you approved it, check your wallet's history before trying again.");
     expect((await declined({ send: async () => [] })).reason).toContain("did not give back a transaction signature");
     expect((await declined({ send: async () => [{ signature: new Uint8Array(10) }] })).reason).toContain("did not give back a transaction signature");
     const noSend = await declined({ only: ["connect"] });
@@ -223,7 +237,10 @@ describe("waiting for the network", () => {
     // With a node that fails all that time, it says so as well.
     const down = await run({ node: { statuses: ["fail"] }, timeoutMs: 3000 });
     expect(down.result).toMatchObject({ kind: "unconfirmed" });
-    expect((down.result as { reason: string }).reason).toContain("The last attempt to ask the network failed");
+    expect((down.result as { reason: string }).reason).toContain("The last attempt to ask the network failed: the node answered 503.");
+    expect((down.result as { reason: string }).reason).not.toContain("..");
+    const polite = await run({ node: { failing: ["getSignatureStatuses"], failMessage: "Try later." }, timeoutMs: 3000 });
+    expect((polite.result as { reason: string }).reason.endsWith("The last attempt to ask the network failed: the node refused the request: Try later.")).toBe(true);
   });
 
   it("says nothing was bought once the chain is past the last block the transaction could land in", async () => {
@@ -282,5 +299,52 @@ describe("the size of a spot account", () => {
   it("is the size of the Rust program's own sample Spot account", () => {
     const data = named("breaks.account.Spot").inputs.data as string;
     expect(fromHex(data).length).toBe(SPOT_ACCOUNT_BYTES);
+  });
+});
+
+describe("the terms shown before a purchase", () => {
+  const terms = (script: Partial<NodeScript> = {}, w: Parameters<typeof world>[0] = {}) => {
+    const node = rpcNode({ accounts: world(w), ...script });
+    return { node, result: loadSaleTerms({ rpcUrl: "http://node.test", program: PROGRAM, fetch: node.fetchFn }) };
+  };
+
+  it("are whether sales are paused and the SOL a purchase costs next to its USDC: the rent of a spot account and the fee", async () => {
+    const { node, result } = terms({ rent: { spot: 1_308_480, bare: 890_880 } });
+    expect(await result).toEqual({ paused: false, solCost: 1_308_480n + SIGNATURE_FEE_LAMPORTS });
+    // The rent asked about is that of a spot account, and the config is read at the commitment a purchase reads it at.
+    const rent = node.calls.filter((c) => c.method === "getMinimumBalanceForRentExemption");
+    expect(rent.map((c) => c.params)).toEqual([[SPOT_ACCOUNT_BYTES]]);
+    const read = node.calls.find((c) => c.method === "getMultipleAccounts");
+    expect(read?.params[0]).toEqual([configAddress(PROGRAM)]);
+    expect((read?.params[1] as { commitment: string }).commitment).toBe("confirmed");
+  });
+
+  it("follow the rent the node names", async () => {
+    expect((await terms({ rent: { spot: 2_000_000, bare: 1 } }).result).solCost).toBe(2_005_000n);
+  });
+
+  it("say when the admin has paused sales", async () => {
+    expect((await terms({}, { config: { paused: true } }).result).paused).toBe(true);
+    expect((await terms({}, { config: { paused: false } }).result).paused).toBe(false);
+  });
+
+  it("are refused, in words, when the config is missing, is not the program's, or cannot be read", async () => {
+    const missing = world();
+    missing.delete(configAddress(PROGRAM));
+    await expect(loadSaleTerms({ rpcUrl: "http://node.test", program: PROGRAM, fetch: rpcNode({ accounts: missing }).fetchFn })).rejects.toThrow("has not been set up on this network");
+
+    const foreign = world();
+    foreign.set(configAddress(PROGRAM), { data: encodeConfig(CONFIG), owner: fill(9) });
+    await expect(loadSaleTerms({ rpcUrl: "http://node.test", program: PROGRAM, fetch: rpcNode({ accounts: foreign }).fetchFn })).rejects.toThrow("not owned by the breaks program");
+
+    const garbage = world();
+    garbage.set(configAddress(PROGRAM), { data: new Uint8Array(5), owner: PROGRAM });
+    await expect(loadSaleTerms({ rpcUrl: "http://node.test", program: PROGRAM, fetch: rpcNode({ accounts: garbage }).fetchFn })).rejects.toThrow("The config account could not be read");
+  });
+
+  it("are refused, in words, when the node fails or gives no usable rent", async () => {
+    await expect(terms({ failing: ["getMultipleAccounts"] }).result).rejects.toThrow("getMultipleAccounts is failing");
+    await expect(terms({ failing: ["getMinimumBalanceForRentExemption"] }).result).rejects.toThrow("getMinimumBalanceForRentExemption is failing");
+    await expect(terms({ rent: { spot: -1, bare: 0 } }).result).rejects.toThrow("Could not read the sale terms: the node did not give the rent of a spot account");
   });
 });

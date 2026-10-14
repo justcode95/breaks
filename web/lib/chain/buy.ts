@@ -72,3 +72,14 @@ export function checkAfford(price: bigint, balance: bigint | null): AffordCheck 
   if (balance < price) return { ok: false, reason: `A spot costs ${money(price)} USDC and this wallet has ${money(balance)}.` };
   return { ok: true };
 }
+
+/** A transaction signature is 64 bytes, which is 64 to 88 base58 characters. */
+const SIGNATURE_TEXT = /^[1-9A-HJ-NP-Za-km-z]{64,88}$/;
+
+/**
+ * Where a transaction can be looked at on the devnet explorer, or `undefined` unless the text is a plausible signature. The
+ * signature came from a wallet, so it is checked before it goes into a link.
+ */
+export function explorerTxUrl(signature: string): string | undefined {
+  return SIGNATURE_TEXT.test(signature) ? `https://explorer.solana.com/tx/${signature}?cluster=devnet` : undefined;
+}
