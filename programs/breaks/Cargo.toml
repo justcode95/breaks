@@ -28,8 +28,9 @@ draw-core = { path = "../../draw-core" }
 
 [dev-dependencies]
 mock-orao = { path = "../mock-orao", features = ["cpi"] }
-litesvm = "0.18"
+litesvm = { version = "0.18", features = ["precompiles"] }
 litesvm-token = "0.18"
+solana-account = "4.7"
 solana-address = "2.7"
 solana-keypair = "3.1"
 solana-signer = "3"

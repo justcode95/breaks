@@ -38,6 +38,26 @@ jobs:
       - run: cargo build-sbf --manifest-path programs/breaks/Cargo.toml
       - run: cargo build-sbf --manifest-path programs/mock-orao/Cargo.toml
       - run: cargo test -p treasury -p breaks -p mock-orao -p draw-core --locked --no-fail-fast
+      # The breaks program against ORAO's real program and network state, dumped from devnet. When
+      # devnet cannot be read, the dump of the last good run (kept in the cache) is used, with a warning.
+      - uses: actions/cache@v4
+        with:
+          path: orao-dump
+          key: orao-dump-${{ github.run_id }}
+          restore-keys: orao-dump-
+      - name: Dump ORAO from devnet
+        run: |
+          if scripts/dump-orao.sh orao-dump-new; then
+            rm -rf orao-dump
+            mv orao-dump-new orao-dump
+          elif [ -f orao-dump/orao_vrf.so ] && [ -f orao-dump/network_state.bin ]; then
+            echo "::warning::devnet could not be read; testing against the dump of an earlier run"
+          else
+            echo "::error::devnet could not be read and there is no earlier dump"
+            exit 1
+          fi
+      - name: Test the breaks program against the real ORAO
+        run: cargo test -p breaks --test real_orao --locked -- --ignored
 
   node:
     runs-on: ubuntu-latest

@@ -2100,6 +2100,7 @@ name = "orao-fixtures"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "ed25519-dalek",
  "orao-solana-vrf",
 ]
 
