@@ -4,9 +4,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { TreasuryDetails } from "../app/treasury/details";
-import { type Address, configAddress, vaultAddress } from "../lib/chain/address";
+import { type Address, TOKEN_PROGRAM, configAddress, vaultAddress } from "../lib/chain/address";
 import { LoadError } from "../lib/chain/load";
-import { TOKEN_PROGRAM, type Treasury, decodeTokenAccount, decodeTreasuryConfig, loadTreasury, noController } from "../lib/chain/treasury";
+import { type Treasury, decodeTokenAccount, decodeTreasuryConfig, loadTreasury, noController } from "../lib/chain/treasury";
 import { fromHex, toHex } from "../lib/draw/bytes";
 import { type Served, type TreasuryConfigFields, encodeTokenAccount, encodeTreasuryConfig, fakeNode, treasuryConfigFieldsFromVector } from "./support/accounts";
 

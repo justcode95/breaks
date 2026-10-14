@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { loadBreak } from "../../../lib/chain/load";
 import { PUBLISHED_SETUP, SETUP } from "../../../lib/site";
+import { BuyPanel } from "./buy-panel";
 import { BreakDetails, type Loaded } from "./details";
 
-type State = { state: "loading" } | { state: "error"; message: string } | { state: "loaded"; loaded: Loaded; readAt: number };
+/** `refreshError` is why the last read failed, while the break read before is still on show. */
+type State = { state: "loading" } | { state: "error"; message: string } | { state: "loaded"; loaded: Loaded; readAt: number; refreshError?: string };
 
 const nowSecs = () => Math.floor(Date.now() / 1000);
 
@@ -13,16 +15,26 @@ export function BreakView({ number }: { number: number }) {
   const [view, setView] = useState<State>({ state: "loading" });
   const [now, setNow] = useState(nowSecs);
 
+  // Reads the break and shows it, without taking the page away: a purchase in progress lives on this page and must not be lost
+  // to a refresh. Throws when the read fails, for whoever is following a purchase.
+  const reload = useCallback(async (): Promise<Loaded> => {
+    if (SETUP.kind !== "on") throw new Error("This site is not set up to read the chain.");
+    const loaded = await loadBreak({ ...SETUP.config, number });
+    setView({ state: "loaded", loaded, readAt: nowSecs() });
+    return loaded;
+  }, [number]);
+
   const load = useCallback(async () => {
     if (SETUP.kind !== "on") return;
-    setView({ state: "loading" });
+    // Only a page that has nothing to show yet is replaced by "Reading…"; a break already on show stays while it is read again.
+    setView((v) => (v.state === "loaded" ? v : { state: "loading" }));
     try {
-      const loaded = await loadBreak({ ...SETUP.config, number });
-      setView({ state: "loaded", loaded, readAt: nowSecs() });
+      await reload();
     } catch (err) {
-      setView({ state: "error", message: err instanceof Error ? err.message : String(err) });
+      const message = err instanceof Error ? err.message : String(err);
+      setView((v) => (v.state === "loaded" ? { ...v, refreshError: message } : { state: "error", message }));
     }
-  }, [number]);
+  }, [reload]);
 
   useEffect(() => {
     // Loading starts the moment the page opens; a reply for a page that is already gone is thrown away by React.
@@ -51,7 +63,20 @@ export function BreakView({ number }: { number: number }) {
               </div>
             </>
           )}
-          {view.state === "loaded" && <BreakDetails loaded={view.loaded} now={now} readAt={view.readAt} program={SETUP.config.breaksProgram} refresh={() => void load()} publishedUrl={PUBLISHED_SETUP.kind === "on" ? PUBLISHED_SETUP.config.baseUrl : undefined} />}
+          {view.state === "loaded" && (
+            <>
+              <BreakDetails
+                loaded={view.loaded}
+                now={now}
+                readAt={view.readAt}
+                program={SETUP.config.breaksProgram}
+                refresh={() => void load()}
+                publishedUrl={PUBLISHED_SETUP.kind === "on" ? PUBLISHED_SETUP.config.baseUrl : undefined}
+                buy={<BuyPanel b={view.loaded.break} number={number} now={now} config={SETUP.config} reload={reload} />}
+              />
+              {view.refreshError && <p className="problem">Could not read the break again: {view.refreshError}</p>}
+            </>
+          )}
         </div>
       )}
     </>

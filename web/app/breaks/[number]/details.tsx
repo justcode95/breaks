@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 import { breakAddress } from "../../../lib/chain/address";
 import type { Loaded } from "../../../lib/chain/load";
 import { duration, expectedWinners, machineLabel, money, percent, share, spotSlots, stageLabel, steps, tone, utcTime } from "../../../lib/chain/view";
@@ -14,7 +15,8 @@ function Hex({ bytes }: { bytes: Uint8Array }) {
 
 const ZERO = (bytes: Uint8Array) => bytes.every((b) => b === 0);
 
-export function BreakDetails({ loaded, now, readAt, program, refresh, publishedUrl }: { loaded: Loaded; now: number; readAt: number; program: string; refresh: () => void; publishedUrl?: string }) {
+/** `buy` is the place for the buy card, which needs a wallet and so is not part of this pure page. */
+export function BreakDetails({ loaded, now, readAt, program, refresh, publishedUrl, buy }: { loaded: Loaded; now: number; readAt: number; program: string; refresh: () => void; publishedUrl?: string; buy?: ReactNode }) {
   const b = loaded.break;
   const cancelled = b.status === "Cancelled";
   const list = steps(b, now);
@@ -76,6 +78,8 @@ export function BreakDetails({ loaded, now, readAt, program, refresh, publishedU
           {sale.sub && <div className="sub">{sale.sub}</div>}
         </div>
       </div>
+
+      {buy}
 
       {!cancelled && spotSlots(b) && (
         <section className="card">

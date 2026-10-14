@@ -8,7 +8,7 @@ import { SpotSlots } from "../app/breaks/slots";
 import { type BreakAccount, type BreakStatus, type FreeWinner, decodeBreak } from "../lib/chain/accounts";
 import { breakAddress } from "../lib/chain/address";
 import type { Loaded } from "../lib/chain/load";
-import { MAX_DRAWN_SPOTS, duration, expectedWinners, headline, machineLabel, money, percent, share, spotSlots, steps, tone, utcTime } from "../lib/chain/view";
+import { MAX_DRAWN_SPOTS, sol, duration, expectedWinners, headline, machineLabel, money, percent, share, spotSlots, steps, tone, utcTime } from "../lib/chain/view";
 import { toHex } from "../lib/draw/bytes";
 import { type BreakFields, breakFieldsFromVector, encodeBreak } from "./support/accounts";
 
@@ -109,6 +109,18 @@ describe("the progress bar and the badge colour", () => {
   });
 });
 
+describe("SOL amounts", () => {
+  it("reads lamports as SOL, to the digits that matter", () => {
+    expect(sol(0n)).toBe("0 SOL");
+    expect(sol(1n)).toBe("0.000000001 SOL");
+    expect(sol(5_000n)).toBe("0.000005 SOL");
+    expect(sol(1_320_000n)).toBe("0.00132 SOL");
+    expect(sol(1_000_000_000n)).toBe("1 SOL");
+    expect(sol(1_500_000_000n)).toBe("1.5 SOL");
+    expect(sol(12_345_678_901n)).toBe("12.345678901 SOL");
+  });
+});
+
 describe("the spots drawn as coins", () => {
   const kinds = (over: Partial<BreakFields>) => (spotSlots(account(over)) ?? []).map((s) => `${s.kind[0]}${s.taken ? "+" : "-"}`).join(" ");
 
@@ -205,6 +217,15 @@ describe("the break page", () => {
     return renderToStaticMarkup(createElement(BreakDetails, { loaded, now, readAt: now - 90, program: PROGRAM, refresh: () => {} }));
   };
   const text = (html: string) => html.replace(/<[^>]*>/g, " ").replace(/&amp;/g, "&").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
+
+  it("puts what it is given for the buy card after the figures and before the spots, and nothing without it", () => {
+    const loaded: Loaded = { number: 8, break: account({ status: "Open", spotsSold: 3 }), paidOwners: owners, notes: [] };
+    const withSlot = renderToStaticMarkup(createElement(BreakDetails, { loaded, now: CLOSES - 600, readAt: CLOSES - 690, program: PROGRAM, refresh: () => {}, buy: createElement("section", { id: "buy-slot" }, "BUY HERE") }));
+    const at = (needle: string) => withSlot.indexOf(needle);
+    expect(at("BUY HERE")).toBeGreaterThan(at("Closes in"));
+    expect(at("BUY HERE")).toBeLessThan(at("The spots"));
+    expect(page({ status: "Open" })).not.toContain("BUY HERE");
+  });
 
   it("shows a drawn break with everything the chain holds", () => {
     const html = page({ status: "Drawn", freeWinners: [SAMPLE.freeWinners[0] as FreeWinner, { ...(SAMPLE.freeWinners[1] as FreeWinner), weight: 600n }], eligibilityTotalWeight: 1200n });
