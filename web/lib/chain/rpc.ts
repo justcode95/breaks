@@ -1,4 +1,4 @@
-// Reads accounts from a Solana node (JSON-RPC `getMultipleAccounts`) from the browser.
+// Reads from a Solana node (JSON-RPC) from the browser: the accounts the pages show, and the few other facts a purchase needs.
 
 import { base64 } from "@scure/base";
 import type { Address } from "./address";
@@ -15,28 +15,20 @@ export class RpcFailure extends Error {
   }
 }
 
-/** The most addresses the node takes in one `getMultipleAccounts`. */
-const BATCH = 100;
-
-/**
- * The accounts at `addresses`, in order; `null` for one that does not exist. Read at `finalized`, so what comes back
- * cannot roll back.
- */
-export async function getAccounts(opts: { url: string; addresses: readonly Address[]; fetch?: typeof fetch; timeoutMs?: number }): Promise<(RpcAccount | null)[]> {
-  const out: (RpcAccount | null)[] = [];
-  for (let i = 0; i < opts.addresses.length; i += BATCH) {
-    out.push(...(await batch(opts, opts.addresses.slice(i, i + BATCH))));
-  }
-  return out;
+export interface RpcOptions {
+  url: string;
+  fetch?: typeof fetch;
+  timeoutMs?: number;
 }
 
-async function batch(opts: { url: string; fetch?: typeof fetch; timeoutMs?: number }, addresses: readonly Address[]): Promise<(RpcAccount | null)[]> {
+/** One JSON-RPC call. Says in words what went wrong: the node is unreachable, answers badly, or refuses the request. */
+export async function rpc<T>(opts: RpcOptions, method: string, params: readonly unknown[]): Promise<T> {
   let res: Response;
   try {
     res = await (opts.fetch ?? fetch)(opts.url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getMultipleAccounts", params: [addresses, { encoding: "base64", commitment: "finalized" }] }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
       signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
     });
   } catch (err) {
@@ -44,14 +36,34 @@ async function batch(opts: { url: string; fetch?: typeof fetch; timeoutMs?: numb
   }
   if (!res.ok) throw new RpcFailure(`the node answered ${res.status}`);
 
-  let body: { error?: { message?: unknown }; result?: { value?: ({ data?: unknown; owner?: unknown } | null)[] } };
+  let body: { error?: { message?: unknown }; result?: unknown };
   try {
     body = await res.json();
   } catch {
     throw new RpcFailure("the node's answer was not JSON");
   }
   if (body.error) throw new RpcFailure(`the node refused the request: ${String(body.error.message ?? "no reason given").slice(0, 200)}`);
-  const value = body.result?.value;
+  return body.result as T;
+}
+
+/** The most addresses the node takes in one `getMultipleAccounts`. */
+const BATCH = 100;
+
+/**
+ * The accounts at `addresses`, in order; `null` for one that does not exist. Read at `finalized` unless told otherwise, so
+ * what comes back cannot roll back.
+ */
+export async function getAccounts(opts: RpcOptions & { addresses: readonly Address[]; commitment?: "finalized" | "confirmed" }): Promise<(RpcAccount | null)[]> {
+  const out: (RpcAccount | null)[] = [];
+  for (let i = 0; i < opts.addresses.length; i += BATCH) {
+    out.push(...(await batch(opts, opts.addresses.slice(i, i + BATCH))));
+  }
+  return out;
+}
+
+async function batch(opts: RpcOptions & { commitment?: "finalized" | "confirmed" }, addresses: readonly Address[]): Promise<(RpcAccount | null)[]> {
+  const result = await rpc<{ value?: ({ data?: unknown; owner?: unknown } | null)[] }>(opts, "getMultipleAccounts", [addresses, { encoding: "base64", commitment: opts.commitment ?? "finalized" }]);
+  const value = result?.value;
   if (!Array.isArray(value) || value.length !== addresses.length) throw new RpcFailure("the node's answer did not have one entry per account");
   return value.map((v) => {
     if (v === null) return null;

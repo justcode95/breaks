@@ -14,6 +14,14 @@ export function money(micro: bigint): string {
   return fraction === "" ? `$${whole}` : `$${whole}.${fraction.padEnd(2, "0")}`;
 }
 
+/** Lamports as SOL, to the digits that matter: `1_320_000` is "0.00132 SOL", `1_000_000_000` is "1 SOL". */
+export function sol(lamports: bigint): string {
+  const unit = 1_000_000_000n;
+  const whole = (lamports / unit).toString();
+  const fraction = (lamports % unit).toString().padStart(9, "0").replace(/0+$/, "");
+  return `${fraction === "" ? whole : `${whole}.${fraction}`} SOL`;
+}
+
 /** "2026-10-14 09:00 UTC". Times on the account are seconds since 1970. */
 export function utcTime(secs: bigint): string {
   const ms = Number(secs) * 1000;
