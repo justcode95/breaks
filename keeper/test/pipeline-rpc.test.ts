@@ -1,7 +1,8 @@
 import { Transaction } from "@solana/web3.js";
 import { describe, expect, it } from "vitest";
 import { RpcChainClient } from "../src/pipeline/rpc-chain.js";
-import { ORAO_PROGRAM, requestAddress } from "../src/solana/breaks.js";
+import { OraoVrf } from "../src/pipeline/vrf.js";
+import { ORAO_PROGRAM, oraoNetworkState, requestAddress } from "../src/solana/breaks.js";
 import type { Instruction } from "../src/solana/instruction.js";
 import { signerFromSecretKey } from "../src/solana/keypair.js";
 import { RpcClient } from "../src/solana/rpc.js";
@@ -11,6 +12,8 @@ import type { SchedulerStore } from "../src/scheduler/store.js";
 import type { BreakAccount } from "../src/solana/breaks.js";
 import { FeeSweeper } from "../src/sweep/sweeper.js";
 import type { SweepStore } from "../src/sweep/store.js";
+import { encodeNetworkState } from "./support/accounts.js";
+import { addr } from "./support/chain.js";
 import { FakeNode } from "./support/fake-node.js";
 import { ANSWER, KEEPER, PROGRAMS, world } from "./support/world.js";
 
@@ -71,6 +74,21 @@ describe("the pipeline through the real RPC client", () => {
     // Each of those was a distinct transaction the node accepted, and none was executed twice.
     expect(w.chain.applied).toEqual(["commit_pool", "request_randomness", "settle_randomness", "claim_free_spot", "claim_free_spot"]);
     expect(node.sent.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it("reads ORAO's treasury from its network state through the client and sends the request to it", async () => {
+    const { w, client, signer } = await connected();
+    await w.pullPacks();
+    // ORAO's authority moves the treasury: the request still goes to the right one.
+    w.chain.accounts.set(
+      oraoNetworkState(ORAO_PROGRAM),
+      encodeNetworkState({ authority: addr(0xa0), treasury: addr(0x99), requestFee: 1_500_000n, fulfillmentAuthorities: [], numReceived: 1n }),
+    );
+    const pipe = w.pipeline({ chain: client, keeper: signer.address, vrf: new OraoVrf(client, ORAO_PROGRAM) });
+    const r = await pipe.advance(w.active);
+    expect(r.sent.map((x) => x.step)).toEqual(["commit_pool", "request_randomness"]);
+    expect(r.problem).toBeUndefined();
+    expect(w.chain.applied).toEqual(["commit_pool", "request_randomness"]);
   });
 
   it("reports a step the program refuses as failed, with the node's reason", async () => {

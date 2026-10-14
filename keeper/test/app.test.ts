@@ -3,20 +3,20 @@ import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { beforeAll, describe, expect, it } from "vitest";
-import { type AppConfig, buildJobs, checkSchema, sqlFromPool, verifyKeeperIdentity, verifyMint } from "../src/app.js";
+import { type AppConfig, RANDOMNESS_REQUEST_RENT, buildJobs, checkSchema, sqlFromPool, verifyKeeperIdentity, verifyMint } from "../src/app.js";
 import { assignCards } from "../src/draw/pool.js";
 import { createRunner } from "../src/job.js";
-import { ORAO_PROGRAM, requestAddress } from "../src/solana/breaks.js";
+import { ORAO_PROGRAM, oraoNetworkState, requestAddress } from "../src/solana/breaks.js";
 import { addressFromBytes, addressToBytes, associatedTokenAddress } from "../src/solana/pubkey.js";
 import { addr } from "./support/chain.js";
 import { insertBreak, migratedDb } from "./support/db.js";
 import { packMachineBytes } from "../src/scheduler/machine.js";
 import { MINT, TokenLedger } from "./support/token-ledger.js";
-import { ANSWER, KEEPER, PROGRAMS, logger, world } from "./support/world.js";
+import { ANSWER, KEEPER, ORAO_TREASURY, PROGRAMS, logger, world } from "./support/world.js";
 
 const config: AppConfig = {
   programs: PROGRAMS,
-  vrf: { program: ORAO_PROGRAM, treasury: addr(0xa2) },
+  vrf: { program: ORAO_PROGRAM },
   packProvider: "mock",
   cardTransfer: "mock",
   mockPackPrice: 25_000_000n,
@@ -133,6 +133,37 @@ describe("verifyMint", () => {
   it("is checked before any job is built", async () => {
     const w = world();
     await expect(buildJobs({ ...config, indexer: { ...config.indexer, mint: addr(0xc2) } }, { sql: shared, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log: logger().log })).rejects.toThrow(/TOKEN_MINT/);
+  });
+});
+
+describe("the report on ORAO at startup", () => {
+  it("says what ORAO charges and where it goes", async () => {
+    const w = world();
+    const { log, infos, errors } = logger();
+    const seen: unknown[] = [];
+    await buildJobs(config, { sql: shared, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log: { info: (m, e) => (infos.push(m), m === "ORAO VRF" && seen.push(e)), error: log.error } });
+    expect(seen).toEqual([{ program: ORAO_PROGRAM, requestFee: "1500000", treasury: ORAO_TREASURY, oracles: 2, tokenFeeConfigured: false }]);
+    expect(errors).toEqual([]);
+  });
+
+  it("warns when the keeper cannot pay for a request: ORAO's fee plus the rent of the request account", async () => {
+    for (const [lamports, warned] of [[RANDOMNESS_REQUEST_RENT + 1_500_000n - 1n, true], [RANDOMNESS_REQUEST_RENT + 1_500_000n, false]] as const) {
+      const w = world();
+      w.chain.solBalances.set(KEEPER, lamports);
+      const logs: [string, Record<string, unknown> | undefined][] = [];
+      await buildJobs(config, { sql: shared, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log: { info() {}, error: (m, e) => logs.push([m, e]) } });
+      expect(logs.length === 1, String(lamports)).toBe(warned);
+      if (warned) expect(logs[0]).toEqual(["the keeper wallet cannot pay for a randomness request: top it up with SOL", { keeper: KEEPER, lamports: String(lamports), needed: String(RANDOMNESS_REQUEST_RENT + 1_500_000n) }]);
+    }
+  });
+
+  it("reports a network state it cannot read without refusing to start", async () => {
+    const w = world();
+    w.chain.accounts.delete(oraoNetworkState(ORAO_PROGRAM));
+    const { log, errors } = logger();
+    const jobs = await buildJobs(config, { sql: shared, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log });
+    expect(jobs.length).toBeGreaterThan(0);
+    expect(errors).toEqual(["cannot read ORAO's network state; randomness requests will wait until it can be read"]);
   });
 });
 

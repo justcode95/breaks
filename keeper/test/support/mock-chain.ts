@@ -18,11 +18,13 @@ import {
   breakAddress,
   configAddress,
   drawSeed,
+  oraoNetworkState,
   requestAddress,
   requestId,
   spotAddress,
 } from "../../src/solana/breaks.js";
 import { Reader } from "../../src/solana/codec.js";
+import { decodeNetworkState } from "../../src/solana/orao.js";
 import { type Instruction, instructionDiscriminator } from "../../src/solana/instruction.js";
 import { type Address, addressFromBytes, addressToBytes, associatedTokenAddress } from "../../src/solana/pubkey.js";
 import { type TreasuryConfig, treasuryAddresses } from "../../src/solana/treasury.js";
@@ -393,10 +395,21 @@ export class MockChain implements ChainClient, WalletReader {
   // programs/breaks/src/draw.rs
   private requestRandomness(ix: Instruction) {
     this.requireKeeper(ix, 0);
-    const [, , breakMeta, vrfProgram, , , requestMeta, previousMeta] = ix.accounts;
+    const [, , breakMeta, vrfProgram, networkStateMeta, treasuryMeta, requestMeta, previousMeta] = ix.accounts;
     const b = this.breakAt((breakMeta as Instruction["accounts"][number]).pubkey);
     const vrf = this.config.randomnessProgram;
     this.require((vrfProgram as Instruction["accounts"][number]).pubkey === vrf, "InvalidRandomnessRecord");
+
+    // What ORAO's own `request_v2` checks: the network state is its PDA, and the treasury is the one that state names
+    // (the SOL treasury, or the token treasury when a token fee is configured). Only when the test gave the chain a state.
+    const networkStateAddress = oraoNetworkState(vrf);
+    const networkState = this.accounts.get(networkStateAddress);
+    if (networkState) {
+      this.require((networkStateMeta as Instruction["accounts"][number]).pubkey === networkStateAddress, "ConstraintSeeds");
+      const state = decodeNetworkState(networkState);
+      const given = (treasuryMeta as Instruction["accounts"][number]).pubkey;
+      this.require(given === state.treasury || given === state.tokenFee?.treasury, "UnknownTreasuryGiven");
+    }
 
     let attempt: number;
     if (b.status === "PoolCommitted") {
