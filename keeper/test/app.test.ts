@@ -7,7 +7,7 @@ import { type AppConfig, buildJobs, checkSchema, sqlFromPool, verifyKeeperIdenti
 import { assignCards } from "../src/draw/pool.js";
 import { createRunner } from "../src/job.js";
 import { ORAO_PROGRAM, requestAddress } from "../src/solana/breaks.js";
-import { addressFromBytes, addressToBytes } from "../src/solana/pubkey.js";
+import { addressFromBytes, addressToBytes, associatedTokenAddress } from "../src/solana/pubkey.js";
 import { addr } from "./support/chain.js";
 import { insertBreak, migratedDb } from "./support/db.js";
 import { packMachineBytes } from "../src/scheduler/machine.js";
@@ -23,6 +23,7 @@ const config: AppConfig = {
   jobIntervalMs: 1000,
   eligibility: { minTwab: 1n, settleSecs: 120 },
   indexer: { mint: MINT, intervalSecs: 900, lagSecs: 120, callsPerRun: 1000, pageSize: 100, concurrency: 4 },
+  sweep: { enabled: false, swapProvider: "none", policy: { keepLamports: 1_000_000_000n, minLamports: 100_000_000n, maxLamports: 10_000_000_000n, slippageBps: 50, minDeposit: 1_000_000n } },
   scheduler: {
     enabled: true,
     template: { paidSpots: 3, freeSpots: 2, spotPrice: 20_000_000n, maxPackPrice: 25_000_000n, packMachine: packMachineBytes("pokemon-25"), windowSecs: 21_600n },
@@ -77,6 +78,7 @@ describe("checkSchema", () => {
       "indexer_state.indexed_until is missing (migration 0005)",
       "published_documents.sha256 is missing (migration 0005)",
       "indexed_accounts.until_sig is missing (migration 0006)",
+      "fee_swaps.signature is missing (migration 0007)",
       "breaks.status does not accept 'drawn' (migration 0004)",
       "balance_events is not unique per owner (migration 0006)",
     ]);
@@ -130,25 +132,25 @@ describe("verifyMint", () => {
 
   it("is checked before any job is built", async () => {
     const w = world();
-    await expect(buildJobs({ ...config, indexer: { ...config.indexer, mint: addr(0xc2) } }, { sql: shared, chain: w.chain, reader: quietNode(), keeper: KEEPER, log: logger().log })).rejects.toThrow(/TOKEN_MINT/);
+    await expect(buildJobs({ ...config, indexer: { ...config.indexer, mint: addr(0xc2) } }, { sql: shared, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log: logger().log })).rejects.toThrow(/TOKEN_MINT/);
   });
 });
 
 describe("buildJobs", () => {
   it("refuses a database that is not ready, before any job exists", async () => {
     const w = world();
-    await expect(buildJobs(config, { sql: new PGlite(), chain: w.chain, reader: quietNode(), keeper: KEEPER, log: logger().log })).rejects.toThrow(/the database is not ready: table breaks is missing/);
+    await expect(buildJobs(config, { sql: new PGlite(), chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log: logger().log })).rejects.toThrow(/the database is not ready: table breaks is missing/);
   });
 
   it("refuses the wrong key", async () => {
     const w = world();
-    await expect(buildJobs(config, { sql: shared, chain: w.chain, reader: quietNode(), keeper: addr(99), log: logger().log })).rejects.toThrow(/expects/);
+    await expect(buildJobs(config, { sql: shared, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: addr(99), log: logger().log })).rejects.toThrow(/expects/);
   });
 
   it("still builds the jobs when the program is not initialized yet, and says so", async () => {
     const w = world();
     const { log, errors } = logger();
-    const jobs = await buildJobs({ ...config, programs: { breaks: addr(1), treasury: addr(2) } }, { sql: shared, chain: w.chain, reader: quietNode(), keeper: KEEPER, log });
+    const jobs = await buildJobs({ ...config, programs: { breaks: addr(1), treasury: addr(2) } }, { sql: shared, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log });
     expect(jobs.map((j) => j.name)).toEqual(["indexer", "scheduler", "pipeline", "pack-buyer", "delivery"]);
     expect(errors).toEqual(["the breaks program is not initialized on this cluster; breaks will be reported as problems until it is"]);
   });
@@ -156,7 +158,7 @@ describe("buildJobs", () => {
   it("says that the providers are mocks", async () => {
     const w = world();
     const { log, infos } = logger();
-    await buildJobs(config, { sql: shared, chain: w.chain, reader: quietNode(), keeper: KEEPER, log });
+    await buildJobs(config, { sql: shared, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log });
     expect(infos).toContain("MOCK pack provider and MOCK card transfer: no real packs are bought and no real cards move");
   });
 });
@@ -175,7 +177,7 @@ describe("the jobs, run by the real runner", () => {
       await db.query("insert into twab_snapshots (break_id, wallet, twab, weight, eligible) values ($1, $2, $3, $3, true)", [id, addressOf(leaf.wallet), leaf.weight]);
     }
 
-    const jobs = await buildJobs(config, { sql: db, chain: w.chain, reader: quietNode(), keeper: KEEPER, log, now: w.clock.now });
+    const jobs = await buildJobs(config, { sql: db, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log, now: w.clock.now });
     let clock = 1_800_040_000_000;
     const runner = createRunner(jobs, { now: () => new Date(clock), log });
     const tick = async () => {
@@ -263,7 +265,7 @@ describe("the jobs, from an open break", () => {
     const id = await insertBreak(db);
     await db.query("update breaks set onchain_id = 8, status = 'open' where id = $1::bigint", [id]);
 
-    const jobs = await buildJobs({ ...config, eligibility: { minTwab: 1n, settleSecs: 120 } }, { sql: db, chain: w.chain, reader: ledger, keeper: KEEPER, log, now: w.clock.now });
+    const jobs = await buildJobs({ ...config, eligibility: { minTwab: 1n, settleSecs: 120 } }, { sql: db, chain: w.chain, reader: ledger, wallets: w.chain, keeper: KEEPER, log, now: w.clock.now });
     let clock = 1_800_040_000_000;
     const runner = createRunner(jobs, { now: () => new Date(clock), log });
     const status = async () => (await db.query<{ status: string }>("select status from breaks where id = $1::bigint", [id])).rows[0]?.status;
@@ -331,7 +333,7 @@ describe("the jobs, from an empty chain", () => {
     for (const [i, h] of holders.entries()) ledger.mintTo(h, BigInt((i + 1) * 1000));
     const wallets = holders.map((h) => h.wallet);
 
-    const jobs = await buildJobs(config, { sql: db, chain: w.chain, reader: ledger, keeper: KEEPER, log, now: () => new Date(clock) });
+    const jobs = await buildJobs(config, { sql: db, chain: w.chain, reader: ledger, wallets: w.chain, keeper: KEEPER, log, now: () => new Date(clock) });
     const runner = createRunner(jobs, { now: () => new Date(clock), log });
     const status = async () => (await db.query<{ status: string }>("select status from breaks where onchain_id = 0")).rows[0]?.status;
     const tick = async () => {
@@ -380,6 +382,51 @@ describe("the jobs, from an empty chain", () => {
     expect(new Set(winners).size).toBe(2);
     const delivered = await db.query<{ status: string }>("select d.status from deliveries d join breaks b on b.id = d.break_id where b.onchain_id = 0");
     expect(delivered.rows).toHaveLength(5);
+  });
+});
+
+describe("the jobs, with the fee sweep", () => {
+  it("deposit the USDC in the keeper's wallet into the treasury, and then the scheduler can create the break", async () => {
+    const db = shared;
+    const w = world({ status: "Open", id: 8n });
+    const { log, errors, infos } = logger();
+    w.chain.breaks.clear();
+    w.chain.spots.clear();
+    w.chain.config.nextBreakId = 0n;
+    // An empty treasury and $200 of fees that were paid to the keeper's wallet.
+    w.chain.treasury.subsidyVault = 0n;
+    w.chain.treasury.holderVault = 0n;
+    w.chain.giveUsdc(KEEPER, 200_000_000n);
+    await db.exec("truncate breaks, indexed_accounts, balance_events, indexer_state, fee_swaps, treasury_events cascade");
+
+    const on = { ...config, sweep: { ...config.sweep, enabled: true } };
+    const jobs = await buildJobs(on, { sql: db, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log, now: w.clock.now });
+    expect(jobs.map((j) => j.name)).toEqual(["indexer", "scheduler", "fee-sweep", "pipeline", "pack-buyer", "delivery"]);
+    expect(infos).toContain("fee sweep on, without a swap provider: USDC in the keeper's wallet is deposited into the treasury");
+
+    let clock = Number(w.chain.unixTime) * 1000;
+    const runner = createRunner(jobs, { now: () => new Date(clock), log });
+    for (let i = 0; i < 4; i++) {
+      w.chain.unixTime = BigInt(Math.floor(clock / 1000));
+      await runner.tick();
+      clock += 1000;
+    }
+
+    // The deposit came first (the scheduler had nothing to work with), then the break.
+    expect(w.chain.applied).toEqual(["deposit_fees", "create_break"]);
+    expect(errors).toEqual([]);
+    // $200 split 70/30, then the break's worst case ($15 subsidy, $50 holders) is locked.
+    expect(w.chain.treasury).toMatchObject({ subsidyVault: 140_000_000n, holderVault: 60_000_000n });
+    expect(w.chain.treasury.config).toMatchObject({ lockedSubsidy: 15_000_000n, lockedHolder: 50_000_000n });
+    expect(w.chain.usdc.get(associatedTokenAddress(KEEPER, w.chain.config.usdcMint))?.amount).toBe(0n);
+    const ledger = await db.query<{ kind: string; asset: string; amount: string }>("select kind, asset, amount::text from treasury_events");
+    expect(ledger.rows).toEqual([{ kind: "deposit", asset: "USDC", amount: "200000000" }]);
+  });
+
+  it("builds no sweep job while the sweep is off", async () => {
+    const w = world();
+    const jobs = await buildJobs(config, { sql: shared, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log: logger().log });
+    expect(jobs.map((j) => j.name)).not.toContain("fee-sweep");
   });
 });
 

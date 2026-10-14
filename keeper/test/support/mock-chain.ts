@@ -26,6 +26,7 @@ import { Reader } from "../../src/solana/codec.js";
 import { type Instruction, instructionDiscriminator } from "../../src/solana/instruction.js";
 import { type Address, addressFromBytes, addressToBytes, associatedTokenAddress } from "../../src/solana/pubkey.js";
 import { type TreasuryConfig, treasuryAddresses } from "../../src/solana/treasury.js";
+import type { WalletReader } from "../../src/sweep/wallet.js";
 import { encodeBreak, encodeBreaksConfig, encodeRequest, encodeSpot, encodeTokenAccount, encodeTreasuryConfig } from "./accounts.js";
 
 /** What happens to the next `sendAndConfirm`. */
@@ -49,7 +50,7 @@ interface Request {
 
 const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
 
-export class MockChain implements ChainClient {
+export class MockChain implements ChainClient, WalletReader {
   /** Chain clock, unix seconds. */
   public unixTime = 1_800_030_000n;
   public readonly breaks = new Map<bigint, BreakAccount>();
@@ -59,6 +60,10 @@ export class MockChain implements ChainClient {
   public sendCalls = 0;
   /** Accounts that exist and hold some data (the buyer wallet's USDC account, for `fund_purchases`). */
   public readonly tokenAccounts = new Set<Address>();
+  /** SOL held by wallets, in lamports. */
+  public readonly solBalances = new Map<Address, bigint>();
+  /** USDC token accounts by address: who owns them and what they hold. */
+  public readonly usdc = new Map<Address, { owner: Address; amount: bigint }>();
   /** Any other account the test wants the chain to have (a token mint, say). */
   public readonly accounts = new Map<Address, Uint8Array>();
   /**
@@ -102,7 +107,21 @@ export class MockChain implements ChainClient {
     return this.requests.get(address);
   }
 
+  /** The wallet's USDC account (the associated one), created with this much if it does not exist. */
+  giveUsdc(owner: Address, amount: bigint): Address {
+    const ata = associatedTokenAddress(owner, this.config.usdcMint);
+    const have = this.usdc.get(ata);
+    this.usdc.set(ata, { owner, amount: (have?.amount ?? 0n) + amount });
+    return ata;
+  }
+
+  async lamports(address: Address): Promise<bigint> {
+    return this.solBalances.get(address) ?? 0n;
+  }
+
   async getAccountData(address: Address): Promise<Uint8Array | undefined> {
+    const token = this.usdc.get(address);
+    if (token) return encodeTokenAccount({ mint: this.config.usdcMint, owner: token.owner, amount: token.amount });
     if (address === configAddress(this.programs)) return encodeBreaksConfig(this.config);
     for (const [id, b] of this.breaks) if (address === breakAddress(this.programs, id)) return encodeBreak(b);
     const spot = this.spots.get(address);
@@ -145,6 +164,7 @@ export class MockChain implements ChainClient {
       breaks: new Map([...this.breaks].map(([k, v]) => [k, structuredClone(v)] as const)),
       requests: new Map([...this.requests].map(([k, v]) => [k, structuredClone(v)] as const)),
       config: { ...this.config },
+      usdc: new Map([...this.usdc].map(([k, v]) => [k, { ...v }] as const)),
       treasury: { config: { ...this.treasury.config }, subsidyVault: this.treasury.subsidyVault, holderVault: this.treasury.holderVault },
     };
   }
@@ -155,6 +175,8 @@ export class MockChain implements ChainClient {
     this.requests.clear();
     for (const [k, v] of s.requests) this.requests.set(k, v);
     this.config = s.config;
+    this.usdc.clear();
+    for (const [k, v] of s.usdc) this.usdc.set(k, v);
     this.treasury.config = s.treasury.config;
     this.treasury.subsidyVault = s.treasury.subsidyVault;
     this.treasury.holderVault = s.treasury.holderVault;
@@ -169,8 +191,32 @@ export class MockChain implements ChainClient {
     if (!cond) throw new Revert(reason);
   }
 
+  // programs/treasury/src/lib.rs `deposit_fees` and math.rs `split`: the subsidy bucket gets floor(amount * bps / 10000),
+  // the holder bucket the rest.
+  private depositFees(ix: Instruction, args: Reader) {
+    const key = (i: number) => (ix.accounts[i] as Instruction["accounts"][number]).pubkey;
+    const t = treasuryAddresses(this.programs.treasury);
+    const amount = args.u64();
+    this.require(amount > 0n, "ZeroAmount");
+    this.require(!!ix.accounts[0]?.isSigner, "AccountNotSigner");
+    this.require(key(2) === t.config && key(3) === t.subsidyVault && key(4) === t.holderVault, "ConstraintSeeds");
+    const from = this.usdc.get(key(1));
+    this.require(!!from && from.owner === key(0), "ConstraintTokenOwner");
+    this.require(from.amount >= amount, "InsufficientFunds");
+    const toSubsidy = (amount * BigInt(this.treasury.config.subsidyBps)) / 10_000n;
+    from.amount -= amount;
+    this.treasury.subsidyVault += toSubsidy;
+    this.treasury.holderVault += amount - toSubsidy;
+  }
+
   private apply(ix: Instruction): string {
-    this.require(ix.programId === this.programs.breaks, `the model only knows the breaks program, not ${ix.programId}`);
+    if (ix.programId === this.programs.treasury) {
+      const disc = hex(ix.data.subarray(0, 8));
+      this.require(disc === hex(instructionDiscriminator("deposit_fees")), "the model only knows deposit_fees of the treasury program");
+      this.depositFees(ix, new Reader(ix.data.subarray(8)));
+      return "deposit_fees";
+    }
+    this.require(ix.programId === this.programs.breaks, `the model only knows the breaks and treasury programs, not ${ix.programId}`);
     const disc = hex(ix.data.subarray(0, 8));
     const args = new Reader(ix.data.subarray(8));
     const name = ["create_break", "close_break", "commit_eligibility", "fund_purchases", "commit_pool", "request_randomness", "settle_randomness", "claim_free_spot"].find(

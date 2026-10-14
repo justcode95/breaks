@@ -2,6 +2,7 @@ import pg from "pg";
 import { buildJobs, sqlFromPool } from "./app.js";
 import { loadConfig } from "./config.js";
 import { RpcTokenReader } from "./indexer/reader.js";
+import { RpcWalletReader } from "./sweep/wallet.js";
 import { createRunner, type Logger } from "./job.js";
 import { connectFromConfig } from "./pipeline/rpc-chain.js";
 import { startLoop } from "./run.js";
@@ -27,8 +28,10 @@ async function main() {
   }
 
   // The same node the chain client just checked (devnet only), read through plain JSON-RPC.
-  const reader = new RpcTokenReader(new RpcClient({ url: config.rpcUrl }), { concurrency: config.indexer.concurrency });
-  const jobs = await buildJobs(config, { sql: sqlFromPool(pool), chain, reader, keeper: chain.keeper, log });
+  const rpc = new RpcClient({ url: config.rpcUrl });
+  const reader = new RpcTokenReader(rpc, { concurrency: config.indexer.concurrency });
+  const wallets = new RpcWalletReader(rpc, config.commitment);
+  const jobs = await buildJobs(config, { sql: sqlFromPool(pool), chain, reader, wallets, keeper: chain.keeper, log });
   const runner = createRunner(jobs, { now: () => new Date(), log });
   log.info("keeper started", { cluster: config.cluster, keeper: chain.keeper, jobs: jobs.map((j) => j.name) });
   const loop = startLoop(runner, config.jobTickMs, log);

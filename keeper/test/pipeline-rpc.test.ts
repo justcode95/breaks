@@ -9,6 +9,8 @@ import { packMachineBytes } from "../src/scheduler/machine.js";
 import { BreakScheduler } from "../src/scheduler/scheduler.js";
 import type { SchedulerStore } from "../src/scheduler/store.js";
 import type { BreakAccount } from "../src/solana/breaks.js";
+import { FeeSweeper } from "../src/sweep/sweeper.js";
+import type { SweepStore } from "../src/sweep/store.js";
 import { FakeNode } from "./support/fake-node.js";
 import { ANSWER, KEEPER, PROGRAMS, world } from "./support/world.js";
 
@@ -143,5 +145,34 @@ describe("the scheduler through the real RPC client", () => {
     expect(r).toMatchObject({ kind: "failed", breakId: 8n });
     expect((r as { reason: string }).reason).toMatch(/InsufficientAvailable/);
     expect(w.chain.breaks.has(8n)).toBe(false);
+  });
+});
+
+describe("the fee sweep through the real RPC client", () => {
+  it("deposits USDC into the treasury with a real signed transaction that the program model accepts", async () => {
+    const { w, client, signer, node } = await connected();
+    w.chain.giveUsdc(signer.address, 1_000_001n);
+    const events: unknown[] = [];
+    const store = { recordEvent: async (e: unknown) => void events.push(e) } as unknown as SweepStore;
+    const sweeper = new FeeSweeper({
+      chain: client,
+      treasuryProgram: PROGRAMS.treasury,
+      wallet: signer.address,
+      wallets: w.chain,
+      store,
+      policy: { keepLamports: 0n, minLamports: 1n, maxLamports: 1n, slippageBps: 0, minDeposit: 1n },
+    });
+
+    const r = await sweeper.run();
+    expect(r.deposit).toMatchObject({ kind: "deposited", amount: 1_000_001n });
+    expect(w.chain.applied).toEqual(["deposit_fees"]);
+    expect(node.sent).toHaveLength(1);
+    expect(w.chain.treasury.subsidyVault).toBe(700_000n);
+    expect(w.chain.treasury.holderVault).toBe(300_001n);
+    expect(events).toHaveLength(1);
+
+    // Nothing left: a second run sends nothing.
+    expect((await sweeper.run()).deposit.kind).toBe("none");
+    expect(node.sent).toHaveLength(1);
   });
 });

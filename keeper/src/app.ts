@@ -1,11 +1,12 @@
 // Wires the jobs together: which stores, which providers, which chain. `index.ts` only starts it.
 //
-// Five jobs, each idempotent and each starting from what it reads, never from a shared in-memory state:
+// Up to six jobs, each idempotent and each starting from what it reads, never from a shared in-memory state:
 //   pipeline   - the on-chain steps (commit_pool, randomness, free-spot claims) and the status mirror
 //   pack-buyer - buys the packs of funded breaks
 //   delivery   - sends the cards of drawn breaks
 //   indexer    - reads every transfer of the token into `balance_events` and says how far it got (`indexer_state`)
 //   scheduler  - creates the next break when the treasury can pay for its worst case, and copies breaks from the chain
+//   fee-sweep  - (only when SWEEP_ENABLED) deposits the USDC in the keeper's wallet into the treasury, and swaps fee SOL to USDC when a swapper exists
 
 import type { Config } from "./config.js";
 import { Deliverer, deliveryJob } from "./delivery/deliverer.js";
@@ -16,6 +17,9 @@ import type { TokenReader } from "./indexer/reader.js";
 import { SqlIndexStore } from "./indexer/store.js";
 import { BreakScheduler, schedulerJob } from "./scheduler/scheduler.js";
 import { SqlSchedulerStore } from "./scheduler/store.js";
+import { FeeSweeper, feeSweepJob } from "./sweep/sweeper.js";
+import { SqlSweepStore } from "./sweep/store.js";
+import type { WalletReader } from "./sweep/wallet.js";
 import { SqlDeliveryStore } from "./delivery/sql-store.js";
 import type { Job, Logger } from "./job.js";
 import { PackBuyer, packBuyerJob } from "./packs/buyer.js";
@@ -58,6 +62,7 @@ export async function checkSchema(sql: Sql): Promise<string[]> {
     ["indexer_state", "indexed_until", "0005"],
     ["published_documents", "sha256", "0005"],
     ["indexed_accounts", "until_sig", "0006"],
+    ["fee_swaps", "signature", "0007"],
   ];
   for (const [table, column, migration] of columns) {
     const ok = await have(
@@ -117,17 +122,19 @@ export interface AppDeps {
   chain: ChainClient;
   /** Reads token history from a node (finalized data only). */
   reader: TokenReader;
+  /** Reads a wallet's SOL balance (for the fee sweep). */
+  wallets: WalletReader;
   /** The keeper's address (the key `chain` signs with). */
   keeper: Address;
   log: Logger;
   now?: () => Date;
 }
 
-export type AppConfig = Pick<Config, "programs" | "vrf" | "packProvider" | "cardTransfer" | "mockPackPrice" | "jobIntervalMs" | "eligibility" | "indexer" | "scheduler">;
+export type AppConfig = Pick<Config, "programs" | "vrf" | "packProvider" | "cardTransfer" | "mockPackPrice" | "jobIntervalMs" | "eligibility" | "indexer" | "scheduler" | "sweep">;
 
 /** Checks the database and the key, then builds the jobs. Throws, before any job runs, if something is not ready. */
 export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]> {
-  const { sql, chain, reader, keeper, log } = deps;
+  const { sql, chain, reader, wallets, keeper, log } = deps;
   const now = deps.now ?? (() => new Date());
 
   const problems = await checkSchema(sql);
@@ -198,9 +205,23 @@ export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]
     enabled: config.scheduler.enabled,
     now,
   });
+  const jobs: Job[] = [indexerJob({ indexer, intervalMs, log }), schedulerJob({ scheduler, intervalMs })];
+  if (config.sweep.enabled) {
+    // No swapper exists yet (Jupiter is a mainnet service): the sweep deposits USDC that is already in the keeper's wallet.
+    log.info("fee sweep on, without a swap provider: USDC in the keeper's wallet is deposited into the treasury", { wallet: keeper });
+    const sweeper = new FeeSweeper({
+      chain,
+      treasuryProgram: config.programs.treasury,
+      wallet: keeper,
+      wallets,
+      store: new SqlSweepStore(sql),
+      policy: config.sweep.policy,
+      now,
+    });
+    jobs.push(feeSweepJob({ sweeper, intervalMs }));
+  }
   return [
-    indexerJob({ indexer, intervalMs, log }),
-    schedulerJob({ scheduler, intervalMs }),
+    ...jobs,
     pipelineJob({ pipeline, repo, intervalMs }),
     packBuyerJob({ buyer: new PackBuyer({ provider, store: packs, log }), source: new FundedBreaks(sourceDeps), intervalMs }),
     deliveryJob({
