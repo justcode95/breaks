@@ -103,6 +103,10 @@ const shape = z.object({
   SWEEP_MAX_LAMPORTS: z.coerce.bigint().positive().default(10_000_000_000n),
   SWEEP_SLIPPAGE_BPS: z.coerce.number().int().min(0).max(1_000).default(50),
   SWEEP_MIN_USDC_PER_SOL: z.coerce.bigint().positive().optional(),
+  // Where the public lists (each break's eligible wallets and its cards) are written, as files named by the hashes the
+  // chain committed (docs/PUBLISHED.md). Serve the directory over https. Off without it.
+  PUBLISH_DIR: z.string().min(1).optional(),
+  PUBLISH_INTERVAL_SECS: z.coerce.number().int().min(10).default(60),
   // The X bot. Off until it is turned on. `log` only writes what it would post to the log (a dry run, no account
   // needed); `x` posts to X as the account the four X_* credentials belong to.
   BOT_ENABLED: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
@@ -167,6 +171,8 @@ export type Config = {
   indexer: { mint: Address; intervalSecs: number; lagSecs: number; callsPerRun: number; pageSize: number; concurrency: number };
   scheduler: { enabled: boolean; template: BreakTemplate };
   sweep: { enabled: boolean; swapProvider: "none"; policy: SweepPolicy };
+  /** Where the public lists are written; the job is only built when `dir` is set. */
+  publish: { dir?: string; intervalSecs: number };
   bot: {
     enabled: boolean;
     poster: "log" | "x";
@@ -235,6 +241,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         minDeposit: e.SWEEP_MIN_DEPOSIT,
       },
     },
+    publish: { ...(e.PUBLISH_DIR !== undefined ? { dir: e.PUBLISH_DIR } : {}), intervalSecs: e.PUBLISH_INTERVAL_SECS },
     bot: {
       enabled: e.BOT_ENABLED,
       poster: e.BOT_POSTER,

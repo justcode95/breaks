@@ -1,14 +1,19 @@
 import { readFileSync, readdirSync } from "node:fs";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { beforeAll, describe, expect, it } from "vitest";
 import { type AppConfig, RANDOMNESS_REQUEST_RENT, buildJobs, checkSchema, sqlFromPool, verifyKeeperIdentity, verifyMint } from "../src/app.js";
+import { toHex } from "../src/draw/bytes.js";
 import { assignCards } from "../src/draw/pool.js";
+import { Tree } from "../src/draw/tree.js";
 import { createRunner } from "../src/job.js";
-import { ORAO_PROGRAM, oraoNetworkState, requestAddress } from "../src/solana/breaks.js";
+import { ORAO_PROGRAM, breakAddress, oraoNetworkState, requestAddress } from "../src/solana/breaks.js";
 import { addressFromBytes, addressToBytes, associatedTokenAddress } from "../src/solana/pubkey.js";
-import { ScriptedPoster } from "./support/bot.js";
+import { encodeBreak } from "./support/accounts.js";
+import { ScriptedPoster, brk } from "./support/bot.js";
 import { addr } from "./support/chain.js";
 import { insertBreak, migratedDb } from "./support/db.js";
 import { packMachineBytes } from "../src/scheduler/machine.js";
@@ -25,6 +30,7 @@ const config: AppConfig = {
   eligibility: { minTwab: 1n, settleSecs: 120 },
   indexer: { mint: MINT, intervalSecs: 900, lagSecs: 120, callsPerRun: 1000, pageSize: 100, concurrency: 4 },
   sweep: { enabled: false, swapProvider: "none", policy: { keepLamports: 1_000_000_000n, minLamports: 100_000_000n, maxLamports: 10_000_000_000n, slippageBps: 50, minDeposit: 1_000_000n } },
+  publish: { intervalSecs: 60 },
   bot: {
     enabled: false,
     poster: "log",
@@ -468,6 +474,61 @@ describe("the jobs, with the fee sweep", () => {
     const w = world();
     const jobs = await buildJobs(config, { sql: shared, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log: logger().log });
     expect(jobs.map((j) => j.name)).not.toContain("fee-sweep");
+  });
+});
+
+describe("the jobs, with the lists published as files", () => {
+  const on = (over: Partial<AppConfig["publish"]> = {}): AppConfig => ({ ...config, publish: { ...config.publish, dir: "/nonexistent/published", ...over } });
+
+  it("builds the publish job only when a directory is named", async () => {
+    const w = world({ status: "Open", id: 8n });
+    const without = await buildJobs(config, { sql: shared, chain: w.chain, finalized: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log: logger().log });
+    expect(without.map((j) => j.name)).not.toContain("publish");
+    const { log, infos } = logger();
+    const jobs = await buildJobs(on({ intervalSecs: 45 }), { sql: shared, chain: w.chain, finalized: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log });
+    expect(jobs.map((j) => j.name)).toEqual(["indexer", "scheduler", "publish", "pipeline", "pack-buyer", "delivery"]);
+    expect(jobs.find((j) => j.name === "publish")?.intervalMs).toBe(45_000);
+    expect(infos).toContain("publishing eligibility lists and card pools as files");
+  });
+
+  it("needs a chain reader at the finalized commitment: nothing is published against a commitment that could roll back", async () => {
+    const w = world({ status: "Open", id: 8n });
+    await expect(buildJobs(on(), { sql: shared, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log: logger().log })).rejects.toThrow(/needs a chain reader at the finalized commitment/);
+  });
+
+  it("publishes from the finalized view only: a break the confirmed view shows but the finalized one does not is not published", async () => {
+    await shared.exec("truncate packs, twab_snapshots, eligibility_lists, breaks cascade");
+    const leaf = { wallet: addressToBytes(addr(31)), weight: 7n };
+    const tree = Tree.build([leaf]);
+    const breakId = await insertBreak(shared);
+    await shared.query("update breaks set onchain_id = 31, status = 'eligibility_committed' where id = $1::bigint", [breakId]);
+    await shared.query("insert into twab_snapshots (break_id, wallet, twab, weight, eligible) values ($1::bigint, $2, 7, 7, true)", [breakId, addr(31)]);
+    await shared.query(
+      "insert into eligibility_lists (break_id, root, total_weight, entry_count, inputs_hash, list_uri, inputs_uri) values ($1::bigint, decode($2, 'hex'), 7, 1, decode($3, 'hex'), 'db:x', 'db:y')",
+      [breakId, toHex(tree.root.hash), "11".repeat(32)],
+    );
+    const account = encodeBreak(brk({ id: 31n, status: "EligibilityCommitted", eligibilityRoot: tree.root.hash, eligibilityTotalWeight: 7n, eligibilityCount: 1 }));
+    const finalized = { getAccountData: async (a: string) => (a === breakAddress(PROGRAMS, 31n) ? account : undefined) };
+    const w = world({ status: "Open", id: 8n }); // its chain knows nothing of break 31
+    const dir = await mkdtemp(join(tmpdir(), "app-publish-"));
+    try {
+      const { log, errors } = logger();
+      const jobs = await buildJobs(on({ dir }), { sql: shared, chain: w.chain, finalized, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log });
+      await jobs.find((j) => j.name === "publish")!.run({ now: w.clock.now, log });
+      expect(errors).toEqual([]);
+      expect(await readdir(join(dir, "eligibility"))).toEqual([`${toHex(tree.root.hash)}.json`]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does nothing, and reports no problem, while no break has a committed list", async () => {
+    await shared.exec("truncate breaks cascade");
+    const w = world({ status: "Open", id: 8n });
+    const { log, errors } = logger();
+    const jobs = await buildJobs(on(), { sql: shared, chain: w.chain, finalized: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log });
+    await jobs.find((j) => j.name === "publish")!.run({ now: w.clock.now, log });
+    expect(errors).toEqual([]);
   });
 });
 
