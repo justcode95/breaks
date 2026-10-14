@@ -3,6 +3,7 @@ import { breakAddress } from "../../../lib/chain/address";
 import type { Loaded } from "../../../lib/chain/load";
 import { duration, expectedWinners, headline, machineLabel, money, share, steps, utcTime } from "../../../lib/chain/view";
 import { toHex } from "../../../lib/draw/bytes";
+import { publishedFileUrl, whatIsNeeded } from "../../../lib/published";
 
 export type { Loaded };
 
@@ -12,7 +13,7 @@ function Hex({ bytes }: { bytes: Uint8Array }) {
 
 const ZERO = (bytes: Uint8Array) => bytes.every((b) => b === 0);
 
-export function BreakDetails({ loaded, now, readAt, program, refresh }: { loaded: Loaded; now: number; readAt: number; program: string; refresh: () => void }) {
+export function BreakDetails({ loaded, now, readAt, program, refresh, publishedUrl }: { loaded: Loaded; now: number; readAt: number; program: string; refresh: () => void; publishedUrl?: string }) {
   const b = loaded.break;
   const cancelled = b.status === "Cancelled";
   const list = steps(b, now);
@@ -21,6 +22,14 @@ export function BreakDetails({ loaded, now, readAt, program, refresh }: { loaded
   const poolCommitted = ["PoolCommitted", "RandomnessRequested", "Settled", "Drawn"].includes(b.status);
   const seeded = b.status === "Settled" || b.status === "Drawn";
   const left = b.paidSpots - b.spotsSold;
+  // The keeper's published files for this break, named by the hashes above; only the ones that exist by now.
+  const needed = whatIsNeeded(b);
+  const published = publishedUrl
+    ? [
+        needed.list ? { label: "Eligible wallets", href: publishedFileUrl(publishedUrl, "eligibility", toHex(b.eligibilityRoot)) } : undefined,
+        needed.cards ? { label: "Cards", href: publishedFileUrl(publishedUrl, "pool", toHex(b.poolHash)) } : undefined,
+      ].filter((l): l is { label: string; href: string } => l?.href !== undefined)
+    : [];
 
   return (
     <>
@@ -78,6 +87,20 @@ export function BreakDetails({ loaded, now, readAt, program, refresh }: { loaded
               <>
                 <dt>Pool hash</dt>
                 <dd><Hex bytes={b.poolHash} /></dd>
+              </>
+            )}
+            {published.length > 0 && (
+              <>
+                <dt>Published lists</dt>
+                <dd>
+                  {published.map((l, i) => (
+                    <span key={l.label}>
+                      {i > 0 && " · "}
+                      <a href={l.href}>{l.label}</a>
+                    </span>
+                  ))}
+                  <span className="hint block">Each file is named by the hash above: check it against that hash rather than trusting where it is hosted.</span>
+                </dd>
               </>
             )}
             {seeded && !ZERO(b.seed) && (

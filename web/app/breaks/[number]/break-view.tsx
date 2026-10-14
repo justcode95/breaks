@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { loadBreak } from "../../../lib/chain/load";
-import { SETUP } from "../../../lib/site";
+import { PUBLISHED_SETUP, SETUP } from "../../../lib/site";
 import { BreakDetails, type Loaded } from "./details";
 
 type State = { state: "loading" } | { state: "error"; message: string } | { state: "loaded"; loaded: Loaded; readAt: number };
@@ -51,7 +51,7 @@ export function BreakView({ number }: { number: number }) {
               </div>
             </>
           )}
-          {view.state === "loaded" && <BreakDetails loaded={view.loaded} now={now} readAt={view.readAt} program={SETUP.config.breaksProgram} refresh={() => void load()} />}
+          {view.state === "loaded" && <BreakDetails loaded={view.loaded} now={now} readAt={view.readAt} program={SETUP.config.breaksProgram} refresh={() => void load()} publishedUrl={PUBLISHED_SETUP.kind === "on" ? PUBLISHED_SETUP.config.baseUrl : undefined} />}
         </div>
       )}
     </>

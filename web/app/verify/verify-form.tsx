@@ -3,10 +3,11 @@
 import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import { inputFromBreak, loadBreak } from "../../lib/chain/load";
 import { emptyInput, exampleInput } from "../../lib/example";
-import { SETUP } from "../../lib/site";
+import { NOT_PUBLISHED, type Provenance, applyLoad, loadPublishedLists } from "../../lib/published";
+import { PUBLISHED_SETUP, SETUP } from "../../lib/site";
 import { type VerifyInput, type VerifyResult, verifyDraw } from "../../lib/verify";
 
-type Loading = { state: "idle" } | { state: "loading" } | { state: "error"; message: string } | { state: "loaded"; number: number; status: string; winners: number; notes: string[] };
+type Loading = { state: "idle" } | { state: "loading" } | { state: "error"; message: string } | { state: "loaded"; number: number; status: string; winners: number; notes: string[]; stillToPaste: string[] };
 
 type Expected = VerifyInput["expected"];
 
@@ -23,13 +24,19 @@ function Field(props: { id: string; label: string; hint: ReactNode; children: Re
 }
 
 export function VerifyForm() {
-  const [input, setInput] = useState<VerifyInput>(emptyInput());
+  // The form's text, and which fields hold text read from the published files (typing in one makes it the person's own).
+  const [form, setForm] = useState<{ input: VerifyInput; provenance: Provenance }>({ input: emptyInput(), provenance: NOT_PUBLISHED });
+  const input = form.input;
   const [result, setResult] = useState<VerifyResult | undefined>();
   const [number, setNumber] = useState("");
   const [loading, setLoading] = useState<Loading>({ state: "idle" });
 
-  const set = (patch: Partial<VerifyInput>) => setInput((i) => ({ ...i, ...patch }));
-  const setExpected = (patch: Partial<Expected>) => setInput((i) => ({ ...i, expected: { ...i.expected, ...patch } }));
+  const set = (patch: Partial<VerifyInput>) =>
+    setForm((f) => ({
+      input: { ...f.input, ...patch },
+      provenance: { holders: f.provenance.holders && patch.holders === undefined, cards: f.provenance.cards && patch.cards === undefined },
+    }));
+  const setExpected = (patch: Partial<Expected>) => setForm((f) => ({ ...f, input: { ...f.input, expected: { ...f.input.expected, ...patch } } }));
   const submit = (e: FormEvent) => {
     e.preventDefault();
     setResult(verifyDraw(input));
@@ -41,9 +48,11 @@ export function VerifyForm() {
     try {
       const loaded = await loadBreak({ ...SETUP.config, number: Number(text.trim() === "" ? Number.NaN : text) });
       const { patch, onChain, notes } = inputFromBreak(loaded);
-      // The eligibility list and the cards are not on chain: whatever was pasted stays.
-      setInput((i) => ({ ...i, ...patch, onChain }));
-      setLoading({ state: "loaded", number: loaded.number, status: loaded.break.status, winners: onChain.winners.length, notes });
+      // The eligibility list and the cards are not on chain: they are read from the published files when the site knows
+      // where those are (each checked against the chain's commitment), and otherwise whatever was pasted stays.
+      const published = await loadPublishedLists({ ...(PUBLISHED_SETUP.kind === "on" ? { baseUrl: PUBLISHED_SETUP.config.baseUrl } : {}), break: loaded.break });
+      setForm((f) => applyLoad(f.input, f.provenance, { patch, onChain }, published));
+      setLoading({ state: "loaded", number: loaded.number, status: loaded.break.status, winners: onChain.winners.length, notes: [...notes, ...published.notes], stillToPaste: published.stillToPaste });
     } catch (err) {
       setLoading({ state: "error", message: err instanceof Error ? err.message : String(err) });
     }
@@ -57,7 +66,7 @@ export function VerifyForm() {
     // Once, when the page opens.
   }, []);
   const reset = (next: VerifyInput) => {
-    setInput(next);
+    setForm({ input: next, provenance: NOT_PUBLISHED });
     setResult(undefined);
     setLoading({ state: "idle" });
   };
@@ -73,7 +82,10 @@ export function VerifyForm() {
             <>
               <p className="hint">
                 Fills in the seed, the free spots, the paid spots' wallets, the values to compare with and the winners recorded on the break, read from the chain
-                (finalized). Only the break number is sent to the node. The eligibility list and the cards are published off chain, so paste those yourself.
+                (finalized). Only the break number is sent to the node.{" "}
+                {PUBLISHED_SETUP.kind === "on"
+                  ? "The eligibility list and the cards are read from the published files and checked against the chain; if they cannot be read, paste them."
+                  : "The eligibility list and the cards are published off chain, so paste those yourself."}
               </p>
               <div className="inline">
                 <label htmlFor="number">Break number</label>
@@ -87,7 +99,7 @@ export function VerifyForm() {
                 {loading.state === "loaded" && (
                   <>
                     <p>
-                      Loaded break #{loading.number} ({loading.status}); {loading.winners} {loading.winners === 1 ? "winner is" : "winners are"} recorded on it. Still to paste: the eligibility list and the cards.
+                      Loaded break #{loading.number} ({loading.status}); {loading.winners} {loading.winners === 1 ? "winner is" : "winners are"} recorded on it.{loading.stillToPaste.length > 0 && ` Still to paste: ${loading.stillToPaste.join(" and ")}.`}
                     </p>
                     {loading.notes.length > 0 && (
                       <ul>

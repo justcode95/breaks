@@ -57,6 +57,31 @@ Numbers that can exceed 2^53 (weights) are decimal strings.
 The site's "Verify a draw" page recomputes the draw from these (its own implementation of the tree and the hash, not the
 keeper's).
 
+## How the website reads them
+
+Set `NEXT_PUBLIC_PUBLISHED_URL` when the site is built to the folder the files are served from (https, or http on this
+machine only; no login, query or fragment in it). When a person loads a break on the "Verify a draw" page, the page
+fetches `<folder>/eligibility/<root>.json` once a list is committed, and `<folder>/pool/<pool hash>.json` once the seed
+is final, **using the root and the pool hash it just read from the break's account**. It then checks each file before
+using it:
+
+- the file is the kind and version it expects, and the root or pool hash inside is the one it is named after;
+- every wallet is a Solana address, every weight a whole number from 1 to 2^64 − 1, no wallet twice, in the tree's order;
+- the wallets and weights, hashed with the page's own tree, give the committed root; their sum is the committed total
+  weight and their number the committed count (for the cards: the committed pool hash and the committed number of cards);
+- the file is not larger than 25 MB.
+
+A file that fails any of these is not used: the page says why, in words, and leaves the list or the cards to be pasted. A
+file that is missing, or a host that cannot be reached, is said the same way. Reading the files never stops the break
+from loading. Text read from the files is replaced when another break is loaded; text a person typed is left alone.
+
+The only thing a request contains is the file's name (a hash from the chain): no cookies, no `Referer`, no credentials.
+The break's page links the same files.
+
+`docs/published-example/` holds a small list and pool made by the keeper's own code. The keeper's tests pin them, and the
+website's tests read and check them, so the two sides cannot drift apart on the format. Regenerate them with
+`UPDATE_PUBLISHED_EXAMPLE=1 pnpm --filter keeper test` if the format ever changes on purpose.
+
 ## Not published yet
 
 - The exact balance-event text that `inputs_hash` commits to, and every wallet's TWAB and why a wallet is out (they are in
