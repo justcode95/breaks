@@ -4555,6 +4555,7 @@ dependencies = [
  "litesvm-token",
  "solana-address 2.7.0",
  "solana-keypair",
+ "solana-program-pack",
  "solana-signer",
  "testkit",
 ]

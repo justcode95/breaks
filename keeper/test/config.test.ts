@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
+import { packMachineBytes } from "../src/scheduler/machine.js";
 import { ORAO_PROGRAM } from "../src/solana/breaks.js";
 import { addr } from "./support/chain.js";
 
@@ -13,6 +14,12 @@ const base = {
   ORAO_TREASURY: addr(0xa2),
   MIN_TWAB: "1000000000000",
   TOKEN_MINT: addr(0xb1),
+  BREAK_PAID_SPOTS: "10",
+  BREAK_FREE_SPOTS: "2",
+  BREAK_SPOT_PRICE: "20000000",
+  BREAK_MAX_PACK_PRICE: "25000000",
+  BREAK_PACK_MACHINE: "pokemon-25",
+  BREAK_WINDOW_SECS: "43200",
 };
 
 describe("loadConfig", () => {
@@ -31,7 +38,33 @@ describe("loadConfig", () => {
       vrf: { program: ORAO_PROGRAM, treasury: addr(0xa2) },
       eligibility: { minTwab: 1_000_000_000_000n, settleSecs: 120 },
       indexer: { mint: addr(0xb1), intervalSecs: 900, lagSecs: 120, callsPerRun: 60, pageSize: 25, concurrency: 4 },
+      scheduler: {
+        enabled: true,
+        template: { paidSpots: 10, freeSpots: 2, spotPrice: 20_000_000n, maxPackPrice: 25_000_000n, packMachine: packMachineBytes("pokemon-25"), windowSecs: 43_200n },
+      },
     });
+  });
+
+  it("reads the break the scheduler creates and can be told not to create any", () => {
+    const c = loadConfig({ ...base, BREAK_AUTO_CREATE: "false", BREAK_PACK_MACHINE: `0x${"ab".repeat(32)}`, BREAK_FREE_SPOTS: "0" });
+    expect(c.scheduler.enabled).toBe(false);
+    expect(c.scheduler.template.packMachine).toEqual(new Uint8Array(32).fill(0xab));
+    expect(c.scheduler.template.freeSpots).toBe(0);
+    expect(loadConfig({ ...base, BREAK_AUTO_CREATE: "true" }).scheduler.enabled).toBe(true);
+    expect(() => loadConfig({ ...base, BREAK_AUTO_CREATE: "yes" })).toThrow(/BREAK_AUTO_CREATE/);
+  });
+
+  it("refuses a break the program could never accept", () => {
+    expect(() => loadConfig({ ...base, BREAK_PAID_SPOTS: "0" })).toThrow(/BREAK_PAID_SPOTS/);
+    expect(() => loadConfig({ ...base, BREAK_FREE_SPOTS: "17" })).toThrow(/BREAK_FREE_SPOTS/);
+    expect(() => loadConfig({ ...base, BREAK_SPOT_PRICE: "0" })).toThrow(/BREAK_SPOT_PRICE/);
+    expect(() => loadConfig({ ...base, BREAK_MAX_PACK_PRICE: "-5" })).toThrow(/BREAK_MAX_PACK_PRICE/);
+    expect(() => loadConfig({ ...base, BREAK_SPOT_PRICE: "25000001" })).toThrow(/BREAK_SPOT_PRICE.*BREAK_MAX_PACK_PRICE/);
+    expect(loadConfig({ ...base, BREAK_SPOT_PRICE: "25000000" }).scheduler.template.spotPrice).toBe(25_000_000n);
+    expect(() => loadConfig({ ...base, BREAK_WINDOW_SECS: "10" })).toThrow(/BREAK_WINDOW_SECS/);
+    expect(() => loadConfig({ ...base, BREAK_PACK_MACHINE: "" })).toThrow(/BREAK_PACK_MACHINE/);
+    expect(() => loadConfig({ ...base, BREAK_PACK_MACHINE: "x".repeat(33) })).toThrow(/BREAK_PACK_MACHINE/);
+    expect(() => loadConfig({ ...base, BREAK_PACK_MACHINE: "0x1234" })).toThrow(/BREAK_PACK_MACHINE/);
   });
 
   it("reads the indexer settings and refuses values that would make it unsafe or useless", () => {
@@ -74,9 +107,9 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, CARD_TRANSFER: "collector-crypt" })).toThrow(/CARD_TRANSFER/);
   });
 
-  it("requires an RPC url, a database url, both program ids, ORAO's treasury, the minimum TWAB and the token", () => {
+  it("requires an RPC url, a database url, both program ids, ORAO's treasury, the minimum TWAB, the token and the break to create", () => {
     expect(() => loadConfig({})).toThrow(/SOLANA_RPC_URL.*DATABASE_URL|DATABASE_URL.*SOLANA_RPC_URL/);
-    for (const key of ["BREAKS_PROGRAM_ID", "TREASURY_PROGRAM_ID", "ORAO_TREASURY", "MIN_TWAB", "TOKEN_MINT"] as const) {
+    for (const key of ["BREAKS_PROGRAM_ID", "TREASURY_PROGRAM_ID", "ORAO_TREASURY", "MIN_TWAB", "TOKEN_MINT", "BREAK_PAID_SPOTS", "BREAK_FREE_SPOTS", "BREAK_SPOT_PRICE", "BREAK_MAX_PACK_PRICE", "BREAK_PACK_MACHINE", "BREAK_WINDOW_SECS"] as const) {
       const { [key]: _removed, ...rest } = base;
       expect(() => loadConfig(rest)).toThrow(new RegExp(key));
     }

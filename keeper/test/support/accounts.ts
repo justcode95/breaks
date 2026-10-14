@@ -12,7 +12,9 @@ import {
   type RequestState,
   type SpotAccount,
 } from "../../src/solana/breaks.js";
+import type { TreasuryConfig } from "../../src/solana/treasury.js";
 import type { Address } from "../../src/solana/pubkey.js";
+import { addressToBytes } from "../../src/solana/pubkey.js";
 import { concat } from "../../src/draw/bytes.js";
 
 const withDiscriminator = (name: string, w: Writer) => concat(accountDiscriminator(name), w.finish());
@@ -82,4 +84,30 @@ export function encodeRequest(client: Address, seed: Uint8Array, state: RequestS
   if (state.state === "pending") w.u32(0);
   else w.fixed(state.randomness, 64);
   return concat(REQUEST_DISCRIMINATOR, w.finish());
+}
+
+/** The treasury program's `Config` account. */
+export function encodeTreasuryConfig(c: TreasuryConfig): Uint8Array {
+  return withDiscriminator(
+    "Config",
+    new Writer()
+      .address(c.admin)
+      .address(c.usdcMint)
+      .address(c.controller)
+      .u16(c.subsidyBps)
+      .u16(c.holderBps)
+      .u64(c.lockedSubsidy)
+      .u64(c.lockedHolder)
+      .u8(c.bump),
+  );
+}
+
+/** An initialized SPL token account (165 bytes): mint at 0, owner at 32, amount at 64, state at 108. */
+export function encodeTokenAccount(a: { mint: Address; owner: Address; amount: bigint }): Uint8Array {
+  const data = new Uint8Array(165);
+  data.set(addressToBytes(a.mint), 0);
+  data.set(addressToBytes(a.owner), 32);
+  new DataView(data.buffer).setBigUint64(64, a.amount, true);
+  data[108] = 1;
+  return data;
 }

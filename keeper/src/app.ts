@@ -1,11 +1,11 @@
 // Wires the jobs together: which stores, which providers, which chain. `index.ts` only starts it.
 //
-// Four jobs, each idempotent and each starting from what it reads, never from a shared in-memory state:
+// Five jobs, each idempotent and each starting from what it reads, never from a shared in-memory state:
 //   pipeline   - the on-chain steps (commit_pool, randomness, free-spot claims) and the status mirror
 //   pack-buyer - buys the packs of funded breaks
 //   delivery   - sends the cards of drawn breaks
 //   indexer    - reads every transfer of the token into `balance_events` and says how far it got (`indexer_state`)
-// Creating a break (the scheduler) is not built yet: until it is, a break has to be created by hand.
+//   scheduler  - creates the next break when the treasury can pay for its worst case, and copies breaks from the chain
 
 import type { Config } from "./config.js";
 import { Deliverer, deliveryJob } from "./delivery/deliverer.js";
@@ -14,6 +14,8 @@ import { MockCardTransfer } from "./delivery/mock-transfer.js";
 import { indexerJob, TokenIndexer } from "./indexer/indexer.js";
 import type { TokenReader } from "./indexer/reader.js";
 import { SqlIndexStore } from "./indexer/store.js";
+import { BreakScheduler, schedulerJob } from "./scheduler/scheduler.js";
+import { SqlSchedulerStore } from "./scheduler/store.js";
 import { SqlDeliveryStore } from "./delivery/sql-store.js";
 import type { Job, Logger } from "./job.js";
 import { PackBuyer, packBuyerJob } from "./packs/buyer.js";
@@ -121,7 +123,7 @@ export interface AppDeps {
   now?: () => Date;
 }
 
-export type AppConfig = Pick<Config, "programs" | "vrf" | "packProvider" | "cardTransfer" | "mockPackPrice" | "jobIntervalMs" | "eligibility" | "indexer">;
+export type AppConfig = Pick<Config, "programs" | "vrf" | "packProvider" | "cardTransfer" | "mockPackPrice" | "jobIntervalMs" | "eligibility" | "indexer" | "scheduler">;
 
 /** Checks the database and the key, then builds the jobs. Throws, before any job runs, if something is not ready. */
 export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]> {
@@ -187,8 +189,18 @@ export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]
       pageSize: config.indexer.pageSize,
     },
   });
+  const scheduler = new BreakScheduler({
+    chain,
+    programs: config.programs,
+    keeper,
+    store: new SqlSchedulerStore(sql),
+    template: config.scheduler.template,
+    enabled: config.scheduler.enabled,
+    now,
+  });
   return [
     indexerJob({ indexer, intervalMs, log }),
+    schedulerJob({ scheduler, intervalMs }),
     pipelineJob({ pipeline, repo, intervalMs }),
     packBuyerJob({ buyer: new PackBuyer({ provider, store: packs, log }), source: new FundedBreaks(sourceDeps), intervalMs }),
     deliveryJob({

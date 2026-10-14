@@ -10,6 +10,7 @@ import { ORAO_PROGRAM, requestAddress } from "../src/solana/breaks.js";
 import { addressFromBytes, addressToBytes } from "../src/solana/pubkey.js";
 import { addr } from "./support/chain.js";
 import { insertBreak, migratedDb } from "./support/db.js";
+import { packMachineBytes } from "../src/scheduler/machine.js";
 import { MINT, TokenLedger } from "./support/token-ledger.js";
 import { ANSWER, KEEPER, PROGRAMS, logger, world } from "./support/world.js";
 
@@ -22,6 +23,10 @@ const config: AppConfig = {
   jobIntervalMs: 1000,
   eligibility: { minTwab: 1n, settleSecs: 120 },
   indexer: { mint: MINT, intervalSecs: 900, lagSecs: 120, callsPerRun: 1000, pageSize: 100, concurrency: 4 },
+  scheduler: {
+    enabled: true,
+    template: { paidSpots: 3, freeSpots: 2, spotPrice: 20_000_000n, maxPackPrice: 25_000_000n, packMachine: packMachineBytes("pokemon-25"), windowSecs: 21_600n },
+  },
 };
 
 /** A node that has seen no transactions of the token. */
@@ -144,7 +149,7 @@ describe("buildJobs", () => {
     const w = world();
     const { log, errors } = logger();
     const jobs = await buildJobs({ ...config, programs: { breaks: addr(1), treasury: addr(2) } }, { sql: shared, chain: w.chain, reader: quietNode(), keeper: KEEPER, log });
-    expect(jobs.map((j) => j.name)).toEqual(["indexer", "pipeline", "pack-buyer", "delivery"]);
+    expect(jobs.map((j) => j.name)).toEqual(["indexer", "scheduler", "pipeline", "pack-buyer", "delivery"]);
     expect(errors).toEqual(["the breaks program is not initialized on this cluster; breaks will be reported as problems until it is"]);
   });
 
@@ -298,6 +303,83 @@ describe("the jobs, from an open break", () => {
     const delivered = await db.query<{ status: string }>("select status from deliveries where break_id = $1::bigint", [id]);
     expect(delivered.rows).toHaveLength(5);
     expect(delivered.rows.every((r) => r.status === "confirmed")).toBe(true);
+  });
+});
+
+describe("the jobs, from an empty chain", () => {
+  it("create the break from the treasury, index the holders, close it, fund it, buy, draw and deliver", async () => {
+    const db = shared;
+    const w = world({ status: "Open", id: 8n });
+    const { log, errors } = logger();
+
+    // A chain with no break yet and a treasury that can pay for the worst case of one: 3 paid spots topped up by $5
+    // each, 2 free spots at $25 each.
+    w.chain.breaks.clear();
+    w.chain.spots.clear();
+    w.chain.config.nextBreakId = 0n;
+    w.chain.treasury.subsidyVault = 15_000_000n;
+    w.chain.treasury.holderVault = 50_000_000n;
+
+    let clock = Number(w.chain.unixTime) * 1000;
+    const startSecs = clock / 1000;
+    await db.exec("truncate breaks, indexed_accounts, balance_events, indexer_state cascade");
+    await db.query("delete from exclusions");
+    // Six real holders, each with a different balance that they held long before the break.
+    const ledger = new TokenLedger(startSecs - 5000);
+    const holders = [1, 2, 3, 4, 5, 6].map((n) => ledger.holder(`holder${n}`));
+    ledger.at(startSecs - 4000);
+    for (const [i, h] of holders.entries()) ledger.mintTo(h, BigInt((i + 1) * 1000));
+    const wallets = holders.map((h) => h.wallet);
+
+    const jobs = await buildJobs(config, { sql: db, chain: w.chain, reader: ledger, keeper: KEEPER, log, now: () => new Date(clock) });
+    const runner = createRunner(jobs, { now: () => new Date(clock), log });
+    const status = async () => (await db.query<{ status: string }>("select status from breaks where onchain_id = 0")).rows[0]?.status;
+    const tick = async () => {
+      w.chain.unixTime = BigInt(Math.floor(clock / 1000));
+      await runner.tick();
+      clock += 1000;
+    };
+
+    // 1. The scheduler creates the break, and the next run copies it into the database.
+    await tick();
+    expect(w.chain.applied).toEqual(["create_break"]);
+    await tick();
+    expect(await status()).toBe("open");
+    const created = w.chain.breaks.get(0n)!;
+    expect(created).toMatchObject({ paidSpots: 3, freeSpots: 2, lockedSubsidy: 15_000_000n, lockedHolder: 50_000_000n, closesAt: created.opensAt + 21_600n });
+    expect(w.chain.treasury.config).toMatchObject({ lockedSubsidy: 15_000_000n, lockedHolder: 50_000_000n });
+
+    // 2. People buy the three paid spots (the web app does this on-chain; the model has no buy_spot).
+    for (let i = 0; i < 3; i++) w.chain.addSpot({ breakId: 0n, index: i, owner: addr(10 + i), paid: 20_000_000n, refunded: false, bump: 255 });
+    created.spotsSold = 3;
+
+    // 3. The sale ends and time passes until the indexer has read past the window; everything else follows.
+    clock = (Number(created.closesAt) + 120 + 120 + 10) * 1000;
+    for (let i = 0; i < 40 && (await status()) !== "delivered"; i++) {
+      await tick();
+      const b = w.chain.breaks.get(0n)!;
+      if (b.status === "RandomnessRequested") w.chain.fulfill(requestAddress(ORAO_PROGRAM, b.randomnessRequestId), ANSWER);
+    }
+    expect(await status()).toBe("delivered");
+    expect(errors).toEqual([]);
+
+    // One break only: the funds are used up (the pack budget was paid out) and nothing else was created.
+    expect(w.chain.applied.filter((x) => x === "create_break")).toHaveLength(1);
+    expect(w.chain.breaks.size).toBe(1);
+    expect(w.chain.treasury.config).toMatchObject({ lockedSubsidy: 0n, lockedHolder: 0n });
+    expect(w.chain.treasury).toMatchObject({ subsidyVault: 0n, holderVault: 0n });
+
+    // The database row is the chain's, with the creation transaction.
+    const row = (await db.query<{ create_tx: string | null; pack_machine: string; paid_spots: number }>("select create_tx, pack_machine, paid_spots from breaks where onchain_id = 0")).rows[0]!;
+    expect(row).toEqual({ create_tx: "mock-tx-1", pack_machine: "pokemon-25", paid_spots: 3 });
+
+    // The free winners are two of the holders the indexer read, and every card went out.
+    const b = w.chain.breaks.get(0n)!;
+    const winners = b.freeWinners.slice(0, 2).map((x) => x.wallet);
+    expect(winners.every((x) => wallets.includes(x))).toBe(true);
+    expect(new Set(winners).size).toBe(2);
+    const delivered = await db.query<{ status: string }>("select d.status from deliveries d join breaks b on b.id = d.break_id where b.onchain_id = 0");
+    expect(delivered.rows).toHaveLength(5);
   });
 });
 
