@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { BreakRow } from "../../lib/chain/list";
-import { money, stageLabel, utcTime } from "../../lib/chain/view";
+import { money, stageLabel, tone, utcTime } from "../../lib/chain/view";
+import { SpotSlots } from "./slots";
 
 /** The breaks as a table, in the order given (newest first). */
 export function BreakRows({ rows, now }: { rows: BreakRow[]; now: number }) {
@@ -25,7 +26,9 @@ export function BreakRows({ rows, now }: { rows: BreakRow[]; now: number }) {
               <th scope="row">
                 <Link href={`/breaks/${number}`}>Break #{number}</Link>
               </th>
-              <td>{stageLabel(b, now)}</td>
+              <td>
+                <span className={`badge ${tone(b, now)}`}>{stageLabel(b, now)}</span>
+              </td>
               <td>
                 {b.spotsSold} of {b.paidSpots}
               </td>
@@ -40,15 +43,23 @@ export function BreakRows({ rows, now }: { rows: BreakRow[]; now: number }) {
   );
 }
 
-/** One line about the newest break, for the home page. */
+/** The newest break, for the home page: its number and stage, then what is sold. */
 export function LatestSummary({ latest, total, now }: { latest: BreakRow | undefined; total: number; now: number }) {
   if (!latest) return <p>No break has been made yet. The first one opens by itself when the reserve can pay for it.</p>;
   const b = latest.break;
   return (
-    <p>
-      <Link href={`/breaks/${latest.number}`}>Break #{latest.number}</Link>: <strong>{stageLabel(b, now)}</strong>. {b.spotsSold} of {b.paidSpots} paid spots sold at {money(b.spotPrice)}, plus {b.freeSpots} free{" "}
-      {b.freeSpots === 1 ? "spot" : "spots"} for holders.{" "}
-      {total > 1 && <Link href="/breaks">All {total} breaks</Link>}
-    </p>
+    <>
+      <p>
+        <Link href={`/breaks/${latest.number}`}>
+          <strong>Break #{latest.number}</strong>
+        </Link>
+        <span className={`badge ${tone(b, now)}`}>{stageLabel(b, now)}</span>
+      </p>
+      <SpotSlots b={b} />
+      <p>
+        {b.spotsSold} of {b.paidSpots} paid spots sold at {money(b.spotPrice)}, plus {b.freeSpots} free {b.freeSpots === 1 ? "spot" : "spots"} for holders.{" "}
+        {total > 1 && <Link href="/breaks">All {total} breaks</Link>}
+      </p>
+    </>
   );
 }
