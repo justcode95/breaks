@@ -268,6 +268,8 @@ describe("BreakPipeline: randomness", () => {
       expect(steps(r)).toEqual(["commit_pool"]);
       expect(r.problem).toMatch(/network state .* does not exist on this cluster/);
       expect(w.chain.applied).toEqual(["commit_pool"]);
+      // It is an expected, explainable condition, reported once as a problem; not an unexpected failure logged as such.
+      expect(w.errors).toEqual([]);
       // and once ORAO's state is there, the request goes out
       w.chain.accounts.set(oraoNetworkState(ORAO_PROGRAM), encodeNetworkState({ authority: addr(0xa0), treasury: addr(0xa2), requestFee: 1n, fulfillmentAuthorities: [], numReceived: 0n }));
       expect(steps(await w.pipeline({ vrf: orao(w) }).advance(w.active))).toEqual(["request_randomness"]);
