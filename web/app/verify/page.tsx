@@ -12,8 +12,8 @@ export default function VerifyPage() {
       <h1>Verify a draw</h1>
       <p>
         Every break's free spots and cards are given out by a fixed recipe over a random seed. Paste the published inputs
-        here and your browser recomputes the winners and who gets which card. Nothing you paste leaves this page, and
-        nothing is trusted: the answer comes only from the inputs.
+        here (or load a break from the chain) and your browser recomputes the winners and who gets which card. Nothing you
+        paste leaves this page, and nothing is trusted: the answer comes only from the inputs.
       </p>
       <details>
         <summary>What this checks, and what it does not</summary>
@@ -25,7 +25,8 @@ export default function VerifyPage() {
           </li>
           <li>
             That the inputs are the ones the break committed to: compare the root, the total weight, the number of wallets
-            and the pool hash with the values on the break's account (the optional fields below do this for you).
+            and the pool hash with the values on the break's account, and the winners with the ones recorded on it
+            (loading the break from the chain fills these in, and the page compares them for you).
           </li>
           <li>
             Not checked here: that the seed really is what ORAO produced for this break, that the eligibility list follows

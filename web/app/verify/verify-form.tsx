@@ -1,8 +1,15 @@
 "use client";
 
 import { type FormEvent, type ReactNode, useState } from "react";
+import { inputFromBreak, loadBreak } from "../../lib/chain/load";
+import { chainSetup } from "../../lib/config";
 import { emptyInput, exampleInput } from "../../lib/example";
 import { type VerifyInput, type VerifyResult, verifyDraw } from "../../lib/verify";
+
+// The `NEXT_PUBLIC_` values have to be written out like this for the build to put them into the page.
+const SETUP = chainSetup({ rpcUrl: process.env.NEXT_PUBLIC_SOLANA_RPC_URL, program: process.env.NEXT_PUBLIC_BREAKS_PROGRAM_ID });
+
+type Loading = { state: "idle" } | { state: "loading" } | { state: "error"; message: string } | { state: "loaded"; number: number; status: string; winners: number; notes: string[] };
 
 type Expected = VerifyInput["expected"];
 
@@ -21,6 +28,8 @@ function Field(props: { id: string; label: string; hint: ReactNode; children: Re
 export function VerifyForm() {
   const [input, setInput] = useState<VerifyInput>(emptyInput());
   const [result, setResult] = useState<VerifyResult | undefined>();
+  const [number, setNumber] = useState("");
+  const [loading, setLoading] = useState<Loading>({ state: "idle" });
 
   const set = (patch: Partial<VerifyInput>) => setInput((i) => ({ ...i, ...patch }));
   const setExpected = (patch: Partial<Expected>) => setInput((i) => ({ ...i, expected: { ...i.expected, ...patch } }));
@@ -28,10 +37,67 @@ export function VerifyForm() {
     e.preventDefault();
     setResult(verifyDraw(input));
   };
+  const load = async () => {
+    if (SETUP.kind !== "on") return;
+    setLoading({ state: "loading" });
+    setResult(undefined);
+    try {
+      const loaded = await loadBreak({ ...SETUP.config, number: Number(number.trim() === "" ? Number.NaN : number) });
+      const { patch, onChain, notes } = inputFromBreak(loaded);
+      // The eligibility list and the cards are not on chain: whatever was pasted stays.
+      setInput((i) => ({ ...i, ...patch, onChain }));
+      setLoading({ state: "loaded", number: loaded.number, status: loaded.break.status, winners: onChain.winners.length, notes });
+    } catch (err) {
+      setLoading({ state: "error", message: err instanceof Error ? err.message : String(err) });
+    }
+  };
+  const reset = (next: VerifyInput) => {
+    setInput(next);
+    setResult(undefined);
+    setLoading({ state: "idle" });
+  };
 
   return (
     <>
       <form onSubmit={submit} noValidate>
+        <fieldset>
+          <legend>Load a break from the chain</legend>
+          {SETUP.kind === "off" && <p className="hint">This site is not set up to read the chain yet, so paste the inputs below.</p>}
+          {SETUP.kind === "problem" && <p className="hint" role="alert">The site's chain settings are wrong: {SETUP.problem}</p>}
+          {SETUP.kind === "on" && (
+            <>
+              <p className="hint">
+                Fills in the seed, the free spots, the paid spots' wallets, the values to compare with and the winners recorded on the break, read from the chain
+                (finalized). Only the break number is sent to the node. The eligibility list and the cards are published off chain, so paste those yourself.
+              </p>
+              <div className="inline">
+                <label htmlFor="number">Break number</label>
+                <input id="number" type="number" min={1} value={number} onChange={(e) => setNumber(e.target.value)} />
+                <button type="button" onClick={load} disabled={loading.state === "loading"}>
+                  {loading.state === "loading" ? "Loading…" : "Load from the chain"}
+                </button>
+              </div>
+              <div aria-live="polite">
+                {loading.state === "error" && <p className="problem">{loading.message}</p>}
+                {loading.state === "loaded" && (
+                  <>
+                    <p>
+                      Loaded break #{loading.number} ({loading.status}); {loading.winners} {loading.winners === 1 ? "winner is" : "winners are"} recorded on it. Still to paste: the eligibility list and the cards.
+                    </p>
+                    {loading.notes.length > 0 && (
+                      <ul>
+                        {loading.notes.map((n) => (
+                          <li key={n}>{n}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
+                )}
+              </div>
+            </>
+          )}
+        </fieldset>
+
         <Field id="seed" label="Seed" hint="The draw seed on the break's account (64 hex digits), or ORAO's randomness for the request (128 hex digits); the seed is derived from it.">
           <input id="seed" className="mono" aria-describedby="seed-hint" value={input.seed} onChange={(e) => set({ seed: e.target.value })} spellCheck={false} autoComplete="off" />
         </Field>
@@ -76,20 +142,14 @@ export function VerifyForm() {
           <button
             type="button"
             className="secondary"
-            onClick={() => {
-              setInput(exampleInput());
-              setResult(undefined);
-            }}
+            onClick={() => reset(exampleInput())}
           >
             Load an example
           </button>
           <button
             type="button"
             className="secondary"
-            onClick={() => {
-              setInput(emptyInput());
-              setResult(undefined);
-            }}
+            onClick={() => reset(emptyInput())}
           >
             Clear
           </button>
@@ -125,6 +185,14 @@ function Result({ result }: { result: VerifyResult }) {
             ? `Every value you gave matches (${result.checks.length} checked).`
             : `${mismatch.length} of ${result.checks.length} values you gave do NOT match what these inputs produce.`}
         </div>
+      )}
+
+      {result.notes.length > 0 && (
+        <ul className="notes">
+          {result.notes.map((n) => (
+            <li key={n}>{n}</li>
+          ))}
+        </ul>
       )}
 
       <h3>Seed</h3>

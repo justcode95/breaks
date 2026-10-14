@@ -247,3 +247,32 @@ dd {
     grid-template-columns: 1fr;
   }
 }
+
+.inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.inline label {
+  display: inline;
+}
+
+.inline input[type="number"] {
+  width: 7rem;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.problem {
+  color: var(--bad-fg);
+  font-weight: 600;
+}
+
+.notes li {
+  margin: 0.25rem 0;
+}

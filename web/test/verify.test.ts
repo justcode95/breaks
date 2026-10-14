@@ -209,6 +209,21 @@ describe("comparing with the break's account", () => {
   });
 });
 
+describe("asking before the list is pasted", () => {
+  it("says why the root differs instead of only saying that it does", () => {
+    const base = exampleInput();
+    const r = ok(verifyDraw({ ...base, holders: "", freeSpots: "0", paidOwners: "", cards: "", expected: { root: "ab".repeat(32), totalWeight: "130", entryCount: "6", poolHash: "" } }));
+    expect(r.checks.map((c) => c.matches)).toEqual([false, false, false]);
+    expect(r.notes).toEqual(["The eligibility list is empty, so these inputs commit to the zero root: paste the published list to compare it."]);
+  });
+
+  it("stays quiet when an empty list is what was committed", () => {
+    const r = ok(verifyDraw({ ...exampleInput(), holders: "", freeSpots: "0", paidOwners: "", cards: "", expected: { root: "0".repeat(64), totalWeight: "0", entryCount: "0", poolHash: "" } }));
+    expect(r.checks.every((c) => c.matches)).toBe(true);
+    expect(r.notes).toEqual([]);
+  });
+});
+
 describe("a long list of mistakes", () => {
   it("shows the first dozen and counts the rest", () => {
     const holders = Array.from({ length: 30 }, () => "bad line").join("\n");
