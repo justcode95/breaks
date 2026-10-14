@@ -225,13 +225,16 @@ fn request_state(env: &Env, seed: &[u8; 32]) -> RequestState {
     parse_request(&account.data, seed).unwrap()
 }
 
-/// The transaction must have failed. The error and the program logs go to the test output
-/// (`--nocapture`), so a refusal can be checked for being the right one.
-fn refused(result: Sent, what: &str) -> litesvm::types::FailedTransactionMetadata {
+/// The transaction must have failed with exactly this error (as `{:?}` prints it, with the number
+/// of the failing instruction) and the program logs must say `log`. A refusal for another reason
+/// than the intended one would make a test about a refusal pass for nothing.
+fn refused(result: Sent, what: &str, error: &str, log: &str) -> litesvm::types::FailedTransactionMetadata {
     match result {
         Ok(_) => panic!("{what}: expected a refusal, but the transaction succeeded"),
         Err(failed) => {
-            println!("--- {what}: {:?}\n{}", failed.err, failed.meta.logs.join("\n"));
+            let logs = failed.meta.logs.join("\n");
+            assert_eq!(format!("{:?}", failed.err), error, "{what}; logs:\n{logs}");
+            assert!(logs.contains(log), "{what}: the logs should say {log:?}:\n{logs}");
             failed
         }
     }
@@ -358,17 +361,23 @@ fn an_answer_that_is_not_the_oracles_signature_of_the_seed_is_refused() {
     refused(
         answer_with(&mut env, &impostor, &request_id, &request_id, &keeper),
         "a key that is not an oracle",
+        "InstructionError(1, Custom(6005))", // ORAO: UnauthorizedFulfillmentAuthority
+        "UnauthorizedFulfillmentAuthority",
     );
     // The oracle signing something else than the seed.
     refused(
         answer_with(&mut env, &orao.oracle, &[1u8; 32], &request_id, &keeper),
         "the oracle signs another message",
+        "InstructionError(1, Custom(6006))", // ORAO: InvalidFulfillMessage
+        "InvalidFulfillMessage",
     );
     // The right instruction for another client.
     let stranger = Address::new_unique();
     refused(
         answer_with(&mut env, &orao.oracle, &request_id, &request_id, &stranger),
         "another client",
+        "InstructionError(1, Custom(2003))", // Anchor: ConstraintRaw on the `client` account
+        "caused by account: client",
     );
     // `fulfill_v2` on its own, with no signature in front of it.
     let payer = Keypair::new();
@@ -377,13 +386,22 @@ fn an_answer_that_is_not_the_oracles_signature_of_the_seed_is_refused() {
     refused(
         send(&mut env.svm, &payer, &[], &[alone]),
         "fulfill_v2 without a signature",
+        "InstructionError(0, Custom(6007))", // ORAO: MissingEd25519SigVerifyInstruction
+        "MissingEd25519SigVerifyInstruction",
     );
     // A forged signature: the precompile rejects it.
     let mut signature = orao::sign(&orao.oracle, &request_id);
     signature[10] ^= 1;
     let forged = orao::ed25519_instruction_with(&orao.oracle.pubkey().to_bytes(), &signature, &request_id);
     let fulfil = orao::fulfill_v2_instruction(&payer.pubkey(), &env.request_for(&request_id), &keeper);
-    refused(send(&mut env.svm, &payer, &[], &[forged, fulfil]), "a forged signature");
+    // It already fails in the first instruction (the precompile), before ORAO runs at all.
+    let failed = refused(
+        send(&mut env.svm, &payer, &[], &[forged, fulfil]),
+        "a forged signature",
+        "InstructionError(0, Custom(2))",
+        "",
+    );
+    assert!(!failed.meta.logs.join("\n").contains("FulfillV2"));
 
     // None of it answered the request.
     assert_eq!(request_state(&env, &request_id), RequestState::Pending);
@@ -474,5 +492,7 @@ fn an_answered_request_cannot_be_replaced_by_asking_again() {
     refused(
         answer(&mut env, &orao, &request_id, &keeper),
         "a second answer to an answered request",
+        "InstructionError(1, AccountAlreadyInitialized)",
+        "AccountAlreadyInitialized",
     );
 }
