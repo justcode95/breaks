@@ -175,6 +175,40 @@ export function encodeConfig(c: ConfigFields): Uint8Array {
   );
 }
 
+export interface TreasuryConfigFields {
+  admin: Address;
+  usdcMint: Address;
+  controller: Address;
+  subsidyBps: number;
+  holderBps: number;
+  lockedSubsidy: bigint;
+  lockedHolder: bigint;
+  bump: number;
+}
+
+/** The fields of the Rust treasury's sample Config (`treasury.account.Config` in programs/treasury/instruction-vectors.json). */
+export function treasuryConfigFieldsFromVector(o: Record<string, any>): TreasuryConfigFields {
+  return { admin: o.admin, usdcMint: o.usdcMint, controller: o.controller, subsidyBps: o.subsidyBps, holderBps: o.holderBps, lockedSubsidy: BigInt(o.lockedSubsidy), lockedHolder: BigInt(o.lockedHolder), bump: o.bump };
+}
+
+export function encodeTreasuryConfig(c: TreasuryConfigFields): Uint8Array {
+  return concat(disc("Config"), ...[c.admin, c.usdcMint, c.controller].map(addressToBytes), u(2, c.subsidyBps), u(2, c.holderBps), u(8, c.lockedSubsidy), u(8, c.lockedHolder), u(1, c.bump));
+}
+
+/** The SPL token account (165 bytes): mint, owner, amount, then the optional fields empty and the state byte at 108. */
+export function encodeTokenAccount(t: { mint: Address; owner: Address; amount: bigint; state?: 0 | 1 | 2 }): Uint8Array {
+  return concat(
+    addressToBytes(t.mint),
+    addressToBytes(t.owner),
+    u(8, t.amount),
+    new Uint8Array(4 + 32), // delegate (none)
+    u(1, t.state ?? 1),
+    new Uint8Array(4 + 8), // is_native (none)
+    new Uint8Array(8), // delegated amount
+    new Uint8Array(4 + 32), // close authority (none)
+  );
+}
+
 export interface Served {
   data: Uint8Array;
   owner: Address;

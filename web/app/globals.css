@@ -342,3 +342,7 @@ a.button {
 .scroll table {
   min-width: 34rem;
 }
+
+th .hint {
+  font-weight: 400;
+}

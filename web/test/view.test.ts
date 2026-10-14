@@ -247,6 +247,12 @@ describe("the break page", () => {
     expect(text(page({}, CLOSES + 600)).includes("use Refresh")).toBe(true);
   });
 
+  it("starts suggesting a refresh at exactly one minute", () => {
+    const at = (age: number) => text(renderToStaticMarkup(createElement(BreakDetails, { loaded: { number: 8, break: account({}), paidOwners: owners, notes: [] }, now: CLOSES + 600, readAt: CLOSES + 600 - age, program: PROGRAM, refresh: () => {} })));
+    expect(at(59)).not.toContain("use Refresh");
+    expect(at(60)).toContain("1m ago; use Refresh to read it again.");
+  });
+
   it("escapes a machine label instead of reading it as markup", () => {
     const label = new Uint8Array(32);
     label.set(new TextEncoder().encode("<b>x</b>&"));

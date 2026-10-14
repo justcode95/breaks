@@ -53,3 +53,8 @@ export const breakAddress = (program: Address, breakId: bigint): Address => find
 export const spotAddress = (program: Address, breakKey: Address, index: number): Address =>
   findProgramAddress([utf8("spot"), addressToBytes(breakKey), u16le(index)], program);
 export const configAddress = (program: Address): Address => findProgramAddress([utf8("config")], program);
+
+export type Bucket = "subsidy" | "holder";
+
+/** The token account that holds a treasury bucket: a PDA of the treasury program (`["subsidy_vault"]`, `["holder_vault"]`). */
+export const vaultAddress = (treasuryProgram: Address, bucket: Bucket): Address => findProgramAddress([utf8(`${bucket}_vault`)], treasuryProgram);

@@ -11,7 +11,7 @@ export type BreakStatus = "Open" | "Closed" | "EligibilityCommitted" | "Funded" 
 /** In the order of the program's enum, which is what the status byte means. */
 const STATUSES: readonly BreakStatus[] = ["Open", "Closed", "EligibilityCommitted", "Funded", "PoolCommitted", "RandomnessRequested", "Settled", "Drawn", "Cancelled"];
 
-class Reader {
+export class Reader {
   private at = 0;
   private readonly view: DataView;
   constructor(private readonly data: Uint8Array) {
@@ -41,7 +41,7 @@ class Reader {
 }
 
 /** A reader after the 8-byte Anchor discriminator, which must be the one of `name`. */
-function accountReader(data: Uint8Array, name: string): Reader {
+export function accountReader(data: Uint8Array, name: string): Reader {
   const expected = hashv(utf8(`account:${name}`)).slice(0, 8);
   if (data.length < 8 || expected.some((b, i) => data[i] !== b)) throw new Error(`not a ${name} account (wrong discriminator)`);
   return new Reader(data.subarray(8));
