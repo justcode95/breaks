@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ORAO_PROGRAM, type Programs } from "./solana/breaks.js";
 import { type BreakTemplate } from "./scheduler/policy.js";
+import type { SweepPolicy } from "./sweep/policy.js";
 import { packMachineBytes } from "./scheduler/machine.js";
 import { type Address, addressToBytes } from "./solana/pubkey.js";
 
@@ -77,9 +78,26 @@ const shape = z.object({
   BREAK_PACK_MACHINE: z.string().refine(isMachine, "not a machine label (1 to 32 plain text bytes, or 0x and 64 hex digits)"),
   // How long the sale and the TWAB window last.
   BREAK_WINDOW_SECS: z.coerce.number().int().min(60),
+  // The fee sweep moves money (USDC in the keeper's wallet into the treasury), so it is off until it is turned on.
+  SWEEP_ENABLED: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
+  // Only "none" exists: a swap from SOL to USDC needs Jupiter, which is a mainnet service. Without one, the sweep only
+  // deposits USDC that is already in the wallet.
+  SWEEP_SWAP_PROVIDER: z.enum(["none"]).default("none"),
+  // USDC (base units) below which nothing is deposited.
+  SWEEP_MIN_DEPOSIT: z.coerce.bigint().positive().default(1_000_000n),
+  // For a swap provider: the SOL (lamports) the wallet always keeps, the smallest and the largest swap, the slippage
+  // allowed in basis points, and an optional floor price (base units of USDC for one whole SOL) below which nothing is swapped.
+  SWEEP_KEEP_LAMPORTS: z.coerce.bigint().nonnegative().default(1_000_000_000n),
+  SWEEP_MIN_LAMPORTS: z.coerce.bigint().positive().default(100_000_000n),
+  SWEEP_MAX_LAMPORTS: z.coerce.bigint().positive().default(10_000_000_000n),
+  SWEEP_SLIPPAGE_BPS: z.coerce.number().int().min(0).max(1_000).default(50),
+  SWEEP_MIN_USDC_PER_SOL: z.coerce.bigint().positive().optional(),
 });
 
 const schema = shape.superRefine((e, ctx) => {
+  if (e.SWEEP_MIN_LAMPORTS > e.SWEEP_MAX_LAMPORTS) {
+    ctx.addIssue({ code: "custom", path: ["SWEEP_MIN_LAMPORTS"], message: "must not be above SWEEP_MAX_LAMPORTS" });
+  }
   if (e.BREAK_SPOT_PRICE > e.BREAK_MAX_PACK_PRICE) {
     ctx.addIssue({ code: "custom", path: ["BREAK_SPOT_PRICE"], message: "must not be above BREAK_MAX_PACK_PRICE (a markup is not supported)" });
   }
@@ -101,6 +119,7 @@ export type Config = {
   eligibility: { minTwab: bigint; capPerWallet?: bigint; settleSecs: number };
   indexer: { mint: Address; intervalSecs: number; lagSecs: number; callsPerRun: number; pageSize: number; concurrency: number };
   scheduler: { enabled: boolean; template: BreakTemplate };
+  sweep: { enabled: boolean; swapProvider: "none"; policy: SweepPolicy };
 };
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -145,6 +164,18 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         maxPackPrice: e.BREAK_MAX_PACK_PRICE,
         packMachine: packMachineBytes(e.BREAK_PACK_MACHINE),
         windowSecs: BigInt(e.BREAK_WINDOW_SECS),
+      },
+    },
+    sweep: {
+      enabled: e.SWEEP_ENABLED,
+      swapProvider: e.SWEEP_SWAP_PROVIDER,
+      policy: {
+        keepLamports: e.SWEEP_KEEP_LAMPORTS,
+        minLamports: e.SWEEP_MIN_LAMPORTS,
+        maxLamports: e.SWEEP_MAX_LAMPORTS,
+        slippageBps: e.SWEEP_SLIPPAGE_BPS,
+        ...(e.SWEEP_MIN_USDC_PER_SOL !== undefined ? { minUsdcPerSol: e.SWEEP_MIN_USDC_PER_SOL } : {}),
+        minDeposit: e.SWEEP_MIN_DEPOSIT,
       },
     },
   };

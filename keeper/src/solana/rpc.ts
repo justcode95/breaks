@@ -111,6 +111,12 @@ export class RpcClient {
     return { data: base64.decode(result.value.data[0]), owner: result.value.owner, slot: result.context.slot };
   }
 
+  /** The lamports an account holds (zero for an account that does not exist). */
+  async getBalance(address: Address, commitment: Commitment): Promise<bigint> {
+    const result = await this.call<{ value: number }>("getBalance", [address, { commitment }]);
+    return BigInt(result.value);
+  }
+
   async getLatestBlockhash(commitment: Commitment): Promise<{ blockhash: string; lastValidBlockHeight: number }> {
     const result = await this.call<{ value: { blockhash: string; lastValidBlockHeight: number } }>("getLatestBlockhash", [{ commitment }]);
     return result.value;

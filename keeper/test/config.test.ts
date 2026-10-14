@@ -42,7 +42,36 @@ describe("loadConfig", () => {
         enabled: true,
         template: { paidSpots: 10, freeSpots: 2, spotPrice: 20_000_000n, maxPackPrice: 25_000_000n, packMachine: packMachineBytes("pokemon-25"), windowSecs: 43_200n },
       },
+      sweep: {
+        enabled: false,
+        swapProvider: "none",
+        policy: { keepLamports: 1_000_000_000n, minLamports: 100_000_000n, maxLamports: 10_000_000_000n, slippageBps: 50, minDeposit: 1_000_000n },
+      },
     });
+  });
+
+  it("keeps the fee sweep off until it is turned on, and reads its limits", () => {
+    expect(loadConfig(base).sweep.enabled).toBe(false);
+    const c = loadConfig({
+      ...base,
+      SWEEP_ENABLED: "true",
+      SWEEP_MIN_DEPOSIT: "5000000",
+      SWEEP_KEEP_LAMPORTS: "0",
+      SWEEP_MIN_LAMPORTS: "50000000",
+      SWEEP_MAX_LAMPORTS: "2000000000",
+      SWEEP_SLIPPAGE_BPS: "100",
+      SWEEP_MIN_USDC_PER_SOL: "100000000",
+    });
+    expect(c.sweep).toEqual({
+      enabled: true,
+      swapProvider: "none",
+      policy: { keepLamports: 0n, minLamports: 50_000_000n, maxLamports: 2_000_000_000n, slippageBps: 100, minUsdcPerSol: 100_000_000n, minDeposit: 5_000_000n },
+    });
+    expect(() => loadConfig({ ...base, SWEEP_ENABLED: "maybe" })).toThrow(/SWEEP_ENABLED/);
+    expect(() => loadConfig({ ...base, SWEEP_SWAP_PROVIDER: "jupiter" })).toThrow(/SWEEP_SWAP_PROVIDER/);
+    expect(() => loadConfig({ ...base, SWEEP_SLIPPAGE_BPS: "5000" })).toThrow(/SWEEP_SLIPPAGE_BPS/);
+    expect(() => loadConfig({ ...base, SWEEP_MIN_DEPOSIT: "0" })).toThrow(/SWEEP_MIN_DEPOSIT/);
+    expect(() => loadConfig({ ...base, SWEEP_MIN_LAMPORTS: "3000000000", SWEEP_MAX_LAMPORTS: "2000000000" })).toThrow(/SWEEP_MIN_LAMPORTS.*SWEEP_MAX_LAMPORTS/);
   });
 
   it("reads the break the scheduler creates and can be told not to create any", () => {
