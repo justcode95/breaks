@@ -4,10 +4,11 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { BreakDetails } from "../app/breaks/[number]/details";
+import { SpotSlots } from "../app/breaks/slots";
 import { type BreakAccount, type BreakStatus, type FreeWinner, decodeBreak } from "../lib/chain/accounts";
 import { breakAddress } from "../lib/chain/address";
 import type { Loaded } from "../lib/chain/load";
-import { duration, expectedWinners, headline, machineLabel, money, percent, share, steps, tone, utcTime } from "../lib/chain/view";
+import { MAX_DRAWN_SPOTS, duration, expectedWinners, headline, machineLabel, money, percent, share, spotSlots, steps, tone, utcTime } from "../lib/chain/view";
 import { toHex } from "../lib/draw/bytes";
 import { type BreakFields, breakFieldsFromVector, encodeBreak } from "./support/accounts";
 
@@ -105,6 +106,34 @@ describe("the progress bar and the badge colour", () => {
     for (const status of ["Closed", "EligibilityCommitted", "Funded", "PoolCommitted", "RandomnessRequested", "Settled"] as const) expect(at({ status }), status).toBe("waiting");
     expect(at({ status: "Drawn" })).toBe("done");
     expect(at({ status: "Cancelled" })).toBe("off");
+  });
+});
+
+describe("the spots drawn as coins", () => {
+  const kinds = (over: Partial<BreakFields>) => (spotSlots(account(over)) ?? []).map((s) => `${s.kind[0]}${s.taken ? "+" : "-"}`).join(" ");
+
+  it("lists the paid spots first, then the free ones, and marks which are taken", () => {
+    expect(kinds({ paidSpots: 4, freeSpots: 2, spotsSold: 3, freeWinnerCount: 0, freeWinners: [] })).toBe("p+ p+ p+ p- f- f-");
+    expect(kinds({ paidSpots: 3, freeSpots: 2, spotsSold: 3, freeWinnerCount: 1, freeWinners: SAMPLE.freeWinners.slice(0, 1) })).toBe("p+ p+ p+ f+ f-");
+    expect(kinds({ paidSpots: 2, freeSpots: 0, spotsSold: 0, freeWinnerCount: 0, freeWinners: [] })).toBe("p- p-");
+  });
+
+  it("draws nothing when there are too many spots to tell apart", () => {
+    expect(spotSlots(account({ paidSpots: MAX_DRAWN_SPOTS - 2, freeSpots: 2, spotsSold: 0, freeWinnerCount: 0, freeWinners: [] }))).toHaveLength(MAX_DRAWN_SPOTS);
+    expect(spotSlots(account({ paidSpots: MAX_DRAWN_SPOTS - 1, freeSpots: 2, spotsSold: 0, freeWinnerCount: 0, freeWinners: [] }))).toBeUndefined();
+    expect(renderToStaticMarkup(createElement(SpotSlots, { b: account({ paidSpots: 500, freeSpots: 2, spotsSold: 3, freeWinnerCount: 0, freeWinners: [] }) }))).toBe("");
+  });
+
+  it("is a labelled picture with a coin for each spot, ticks for paid spots taken and stars for the free ones", () => {
+    const html = renderToStaticMarkup(createElement(SpotSlots, { b: account({ paidSpots: 4, freeSpots: 2, spotsSold: 3, freeWinnerCount: 1, freeWinners: SAMPLE.freeWinners.slice(0, 1) }) }));
+    expect(html).toContain('role="img" aria-label="3 of 4 paid spots taken, 1 of 2 free spots awarded"');
+    expect((html.match(/<span class="slot /g) ?? []).length).toBe(6);
+    expect((html.match(/<span class="slot paid taken"><svg/g) ?? []).length).toBe(3);
+    expect(html).toContain('<span class="slot paid open"></span>');
+    expect((html.match(/<span class="slot free taken"><svg/g) ?? []).length).toBe(1);
+    expect((html.match(/<span class="slot free open"><svg/g) ?? []).length).toBe(1);
+    // The legend is for the eye only: the label above says it all.
+    expect(html).toContain('<div class="key" aria-hidden="true">');
   });
 });
 
@@ -266,6 +295,21 @@ describe("the break page", () => {
     expect(closed).not.toContain("6 left");
     expect(closed).not.toContain("sold out");
     expect(text(page({ status: "Funded", ...sold }))).not.toContain("6 left");
+  });
+
+  it("shows the spots as coins under the figures, except for a cancelled break or one with too many spots", () => {
+    const open = { status: "Open" as const, spotsSold: 3, freeWinnerCount: 0, freeWinners: [] };
+    const html = page(open, CLOSES - 600);
+    expect(html).toContain("<h2>The spots</h2>");
+    expect(html).toContain('aria-label="3 of 10 paid spots taken, 0 of 2 free spots awarded"');
+    expect(page({ ...open, status: "Cancelled" })).not.toContain("The spots");
+    expect(page({ ...open, paidSpots: 500 }, CLOSES - 600)).not.toContain("The spots");
+  });
+
+  it("lets the two tables scroll inside labelled, keyboard-reachable boxes, so a phone does not get a wider page", () => {
+    const html = page({ status: "Drawn" });
+    expect(html).toContain('<div class="table-wrap" role="region" aria-label="Free-spot winners" tabindex="0"><table class="roomy">');
+    expect(html).toContain('<div class="table-wrap" role="region" aria-label="Paid spots" tabindex="0"><table>');
   });
 
   it("has no paid spots table when nobody has bought a spot", () => {

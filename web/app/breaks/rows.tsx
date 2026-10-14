@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { BreakRow } from "../../lib/chain/list";
 import { money, stageLabel, tone, utcTime } from "../../lib/chain/view";
+import { SpotSlots } from "./slots";
 
 /** The breaks as a table, in the order given (newest first). */
 export function BreakRows({ rows, now }: { rows: BreakRow[]; now: number }) {
@@ -54,6 +55,7 @@ export function LatestSummary({ latest, total, now }: { latest: BreakRow | undef
         </Link>
         <span className={`badge ${tone(b, now)}`}>{stageLabel(b, now)}</span>
       </p>
+      <SpotSlots b={b} />
       <p>
         {b.spotsSold} of {b.paidSpots} paid spots sold at {money(b.spotPrice)}, plus {b.freeSpots} free {b.freeSpots === 1 ? "spot" : "spots"} for holders.{" "}
         {total > 1 && <Link href="/breaks">All {total} breaks</Link>}

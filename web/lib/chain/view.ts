@@ -162,3 +162,25 @@ export function tone(b: BreakAccount, nowSecs: number): Tone {
       return "waiting";
   }
 }
+
+export interface SpotSlot {
+  /** A paid spot, or one of the free spots for holders. */
+  kind: "paid" | "free";
+  /** A paid spot that has been bought, or a free spot that has a winner recorded. */
+  taken: boolean;
+}
+
+/** More spots than this are not drawn one by one: a row of hundreds of circles says nothing the bar does not. */
+export const MAX_DRAWN_SPOTS = 60;
+
+/**
+ * Every spot of a break, paid ones first, then the free ones: which are taken. `undefined` when there are too many to draw.
+ * A free spot is taken once its winner is recorded, so before the draw (and when too few wallets were eligible) some stay open.
+ */
+export function spotSlots(b: BreakAccount): SpotSlot[] | undefined {
+  if (b.paidSpots + b.freeSpots > MAX_DRAWN_SPOTS) return undefined;
+  return [
+    ...Array.from({ length: b.paidSpots }, (_, i): SpotSlot => ({ kind: "paid", taken: i < b.spotsSold })),
+    ...Array.from({ length: b.freeSpots }, (_, i): SpotSlot => ({ kind: "free", taken: i < b.freeWinnerCount })),
+  ];
+}

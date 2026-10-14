@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { CapsuleIcon } from "./icons";
 import { Nav } from "./nav";
 import "./globals.css";
 
@@ -17,7 +18,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <header className="site">
           <div className="site-inner">
             <Link href="/" className="brand">
-              <span className="brand-mark" aria-hidden="true" />
+              <CapsuleIcon />
               BREAKS
             </Link>
             <Nav />

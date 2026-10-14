@@ -1,15 +1,26 @@
 import Link from "next/link";
+import { MachineArt } from "./icons";
 import { LatestBreak } from "./latest-break";
 
 export default function Home() {
   return (
     <main>
       <section className="hero">
-        <h1>Collectible pack breaks, paid for by the coin.</h1>
-        <p>
-          Trading fees fund group breaks of collectible card packs on Solana. Anyone can take a paid spot, and holders of the coin get free spots, drawn by
-          verifiable randomness. Devnet only: nothing is live yet.
-        </p>
+        <div>
+          <p className="pill">Devnet only · nothing is live yet</p>
+          <h1>
+            Pack breaks, <span className="glow">paid for by the coin.</span>
+          </h1>
+          <p>
+            Trading fees fund group breaks of collectible card packs on Solana. Anyone can take a paid spot, and holders of the coin get free spots, drawn by
+            verifiable randomness.
+          </p>
+          <div className="actions">
+            <Link href="/breaks" className="button">See the breaks</Link>
+            <Link href="/verify" className="button secondary">Verify a draw</Link>
+          </div>
+        </div>
+        <MachineArt />
       </section>
 
       <LatestBreak />

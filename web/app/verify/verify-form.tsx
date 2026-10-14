@@ -223,82 +223,88 @@ function Result({ result }: { result: VerifyResult }) {
       </dl>
 
       {result.checks.length > 0 && (
-        <table>
-          <caption>Compared with the break's account</caption>
-          <thead>
-            <tr>
-              <th scope="col">Value</th>
-              <th scope="col">You gave</th>
-              <th scope="col">These inputs give</th>
-              <th scope="col">Result</th>
-            </tr>
-          </thead>
-          <tbody>
-            {result.checks.map((c) => (
-              <tr key={c.label}>
-                <th scope="row">{c.label}</th>
-                <td className="mono wrap">{c.expected}</td>
-                <td className="mono wrap">{c.actual}</td>
-                <td>{c.matches ? "✓ matches" : "✗ differs"}</td>
+        <div className="scroll" role="region" aria-label="Comparison with the break's account" tabIndex={0}>
+          <table>
+            <caption>Compared with the break's account</caption>
+            <thead>
+              <tr>
+                <th scope="col">Value</th>
+                <th scope="col">You gave</th>
+                <th scope="col">These inputs give</th>
+                <th scope="col">Result</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {result.checks.map((c) => (
+                <tr key={c.label}>
+                  <th scope="row">{c.label}</th>
+                  <td className="mono wrap">{c.expected}</td>
+                  <td className="mono wrap">{c.actual}</td>
+                  <td>{c.matches ? "✓ matches" : "✗ differs"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <h3>Free-spot winners</h3>
       {result.winners.length === 0 ? (
         <p>No winners: there are no free spots or no eligible wallets.</p>
       ) : (
-        <table>
-          <caption>Drawn one after the other, without replacement</caption>
-          <thead>
-            <tr>
-              <th scope="col">Draw</th>
-              <th scope="col">Wallet</th>
-              <th scope="col">Weight</th>
-              <th scope="col">Range starts at</th>
-              <th scope="col">Drawn position</th>
-            </tr>
-          </thead>
-          <tbody>
-            {result.winners.map((w) => (
-              <tr key={w.wallet}>
-                <th scope="row">{w.draw}</th>
-                <td className="mono wrap">{w.wallet}</td>
-                <td className="mono">{w.weight.toString()}</td>
-                <td className="mono">{w.start.toString()}</td>
-                <td className="mono">{w.position.toString()}</td>
+        <div className="scroll" role="region" aria-label="Free-spot winners" tabIndex={0}>
+          <table>
+            <caption>Drawn one after the other, without replacement</caption>
+            <thead>
+              <tr>
+                <th scope="col">Draw</th>
+                <th scope="col">Wallet</th>
+                <th scope="col">Weight</th>
+                <th scope="col">Range starts at</th>
+                <th scope="col">Drawn position</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {result.winners.map((w) => (
+                <tr key={w.wallet}>
+                  <th scope="row">{w.draw}</th>
+                  <td className="mono wrap">{w.wallet}</td>
+                  <td className="mono">{w.weight.toString()}</td>
+                  <td className="mono">{w.start.toString()}</td>
+                  <td className="mono">{w.position.toString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {result.assignment && (
         <>
           <h3>Who gets which card</h3>
-          <table>
-            <caption>Paid spots in purchase order, then the free winners in draw order</caption>
-            <thead>
-              <tr>
-                <th scope="col">Spot</th>
-                <th scope="col">Kind</th>
-                <th scope="col">Wallet</th>
-                <th scope="col">Card</th>
-              </tr>
-            </thead>
-            <tbody>
-              {result.assignment.map((s) => (
-                <tr key={s.spot}>
-                  <th scope="row">{s.spot}</th>
-                  <td>{s.kind}</td>
-                  <td className="mono wrap">{s.wallet}</td>
-                  <td className="mono wrap">{s.card}</td>
+          <div className="scroll" role="region" aria-label="Who gets which card" tabIndex={0}>
+            <table>
+              <caption>Paid spots in purchase order, then the free winners in draw order</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Spot</th>
+                  <th scope="col">Kind</th>
+                  <th scope="col">Wallet</th>
+                  <th scope="col">Card</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {result.assignment.map((s) => (
+                  <tr key={s.spot}>
+                    <th scope="row">{s.spot}</th>
+                    <td>{s.kind}</td>
+                    <td className="mono wrap">{s.wallet}</td>
+                    <td className="mono wrap">{s.card}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </>
       )}
     </section>

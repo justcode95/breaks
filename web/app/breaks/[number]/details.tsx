@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { breakAddress } from "../../../lib/chain/address";
 import type { Loaded } from "../../../lib/chain/load";
-import { duration, expectedWinners, machineLabel, money, percent, share, stageLabel, steps, tone, utcTime } from "../../../lib/chain/view";
+import { duration, expectedWinners, machineLabel, money, percent, share, spotSlots, stageLabel, steps, tone, utcTime } from "../../../lib/chain/view";
 import { toHex } from "../../../lib/draw/bytes";
+import { SpotSlots } from "../slots";
 
 export type { Loaded };
 
@@ -66,6 +67,13 @@ export function BreakDetails({ loaded, now, readAt, program, refresh }: { loaded
           {sale.sub && <div className="sub">{sale.sub}</div>}
         </div>
       </div>
+
+      {!cancelled && spotSlots(b) && (
+        <section className="card">
+          <h2>The spots</h2>
+          <SpotSlots b={b} />
+        </section>
+      )}
 
       <div className="cols">
         {cancelled ? (
@@ -142,8 +150,8 @@ export function BreakDetails({ loaded, now, readAt, program, refresh }: { loaded
             {b.freeWinnerCount < expectedWinners(b) && seeded ? " The winners are being recorded one at a time." : ""}
           </p>
           {b.freeWinners.length > 0 ? (
-            <div className="table-wrap">
-              <table>
+            <div className="table-wrap" role="region" aria-label="Free-spot winners" tabIndex={0}>
+              <table className="roomy">
                 <caption>Winners recorded on chain, in draw order</caption>
                 <thead>
                   <tr><th scope="col">#</th><th scope="col">Wallet</th><th scope="col">Weight</th><th scope="col">Share of the list</th></tr>
@@ -169,7 +177,7 @@ export function BreakDetails({ loaded, now, readAt, program, refresh }: { loaded
       {loaded.paidOwners.length > 0 && (
         <section className="card">
           <h2>Paid spots</h2>
-          <div className="table-wrap">
+          <div className="table-wrap" role="region" aria-label="Paid spots" tabIndex={0}>
             <table>
               <caption>In purchase order</caption>
               <thead>

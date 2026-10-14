@@ -85,11 +85,15 @@ describe("the latest break on the home page", () => {
   });
 
   it("describes the newest break and links to it", () => {
-    const html = renderToStaticMarkup(createElement(LatestSummary, { latest: row(5, { status: "Open", spotsSold: 4 }), total: 5, now: CLOSES - 60 }));
+    const html = renderToStaticMarkup(createElement(LatestSummary, { latest: row(5, { status: "Open", spotsSold: 4, freeWinnerCount: 0, freeWinners: [] }), total: 5, now: CLOSES - 60 }));
     expect(html).toContain('<a href="/breaks/5"><strong>Break #5</strong></a><span class="badge live">On sale</span>');
     const paragraphs = [...html.matchAll(/<p>(.*?)<\/p>/g)].map((m) => sentence(m[1] as string));
     expect(paragraphs).toEqual(["Break #5On sale", "4 of 10 paid spots sold at $20, plus 2 free spots for holders. All 5 breaks"]);
     expect(html).toContain('<a href="/breaks">All 5 breaks</a>');
+    // The spots are drawn as coins between the title and the sentence.
+    expect(html).toContain('aria-label="4 of 10 paid spots taken, 0 of 2 free spots awarded"');
+    expect(html.indexOf('class="slots"')).toBeGreaterThan(html.indexOf("Break #5"));
+    expect(html.indexOf('class="slots"')).toBeLessThan(html.indexOf("4 of 10 paid spots sold"));
   });
 
   it("only offers the full list when there is more than one break, and reads one free spot in the singular", () => {
