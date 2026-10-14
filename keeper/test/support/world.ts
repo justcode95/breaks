@@ -5,11 +5,13 @@ import type { Logger } from "../../src/job.js";
 import { MemoryPackStore } from "../../src/packs/store.js";
 import type { CommitValues, EligibilityPlan, EligibilityPlanner } from "../../src/eligibility/planner.js";
 import { BreakPipeline, type ActiveBreak, type PipelineDeps } from "../../src/pipeline/pipeline.js";
+import { fixedVrf } from "../../src/pipeline/vrf.js";
 import type { EligibilityStore } from "../../src/pipeline/eligibility-store.js";
 import type { BreakRepo, DbBreakStatus, SpotRecord } from "../../src/pipeline/repo.js";
-import { type BreakAccount, type BreaksConfigAccount, ORAO_PROGRAM, type Programs } from "../../src/solana/breaks.js";
+import { type BreakAccount, type BreaksConfigAccount, ORAO_PROGRAM, type Programs, oraoNetworkState } from "../../src/solana/breaks.js";
 import { type Address, addressToBytes, associatedTokenAddress } from "../../src/solana/pubkey.js";
 import { addr, BUYER } from "./chain.js";
+import { encodeNetworkState } from "./accounts.js";
 import { MockChain } from "./mock-chain.js";
 import { MINT, mintAccountData } from "./token-ledger.js";
 
@@ -18,6 +20,8 @@ export const PROGRAMS: Programs = {
   treasury: "Bvq3U9fz2MiHkLH8u4zyt6T1bimxnaEuHkZhezNDT5R9",
 };
 export const KEEPER = addr(3);
+/** The fee treasury in the fixture's ORAO network state. */
+export const ORAO_TREASURY = addr(0xa2);
 export const WEIGHTS = [10n, 30n, 5n, 50n, 20n, 15n];
 export const ANSWER = Uint8Array.from({ length: 64 }, (_, i) => (i * 7 + 1) & 0xff);
 
@@ -114,6 +118,11 @@ export function world(opts: { paid?: number; free?: number; cardBase?: number; i
   };
   const chain = new MockChain(PROGRAMS, config);
   chain.accounts.set(MINT, mintAccountData());
+  chain.solBalances.set(KEEPER, 5_000_000_000n);
+  chain.accounts.set(
+    oraoNetworkState(ORAO_PROGRAM),
+    encodeNetworkState({ authority: addr(0xa0), treasury: ORAO_TREASURY, requestFee: 1_500_000n, fulfillmentAuthorities: [addr(0xa3), addr(0xa4)], numReceived: 42n }),
+  );
   // Before the eligibility list is committed and the break funded, the chain holds none of that yet.
   const early = opts.status === "Open" || opts.status === "Closed";
   const b: BreakAccount = {
@@ -178,7 +187,7 @@ export function world(opts: { paid?: number; free?: number; cardBase?: number; i
       chain,
       programs: PROGRAMS,
       keeper: KEEPER,
-      vrf: { program: ORAO_PROGRAM, networkState: addr(0xa1), treasury: addr(0xa2) },
+      vrf: fixedVrf(ORAO_PROGRAM, { networkState: oraoNetworkState(ORAO_PROGRAM), treasury: ORAO_TREASURY }),
       eligibility,
       planner,
       packs,

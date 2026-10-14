@@ -28,10 +28,11 @@ import { SqlPackStore, type Sql } from "./packs/sql-store.js";
 import type { ChainClient } from "./pipeline/chain.js";
 import { SqlEligibilityStore } from "./pipeline/eligibility-store.js";
 import { pipelineJob } from "./pipeline/job.js";
+import { OraoVrf } from "./pipeline/vrf.js";
 import { BreakPipeline } from "./pipeline/pipeline.js";
 import { SqlBreakRepo } from "./pipeline/repo.js";
 import { DrawnBreaks, FundedBreaks } from "./pipeline/sources.js";
-import { configAddress, decodeBreaksConfig, oraoNetworkState } from "./solana/breaks.js";
+import { configAddress, decodeBreaksConfig } from "./solana/breaks.js";
 import type { Address } from "./solana/pubkey.js";
 
 /** The one thing the keeper needs from a `pg` pool; kept narrow so tests can use another Postgres. */
@@ -117,6 +118,34 @@ export async function verifyKeeperIdentity(chain: ChainClient, config: Pick<Conf
   return true;
 }
 
+/** About what the rent of ORAO's request account costs (748 bytes), paid by the keeper on top of ORAO's fee. */
+export const RANDOMNESS_REQUEST_RENT = 6_100_000n;
+
+/**
+ * Says what ORAO charges and where it goes, from ORAO's network state, and warns if the keeper cannot pay for a request.
+ * A network state that cannot be read is reported, not fatal: the other jobs do not need it, and a request waits until it can.
+ */
+export async function reportVrf(deps: Pick<AppDeps, "chain" | "wallets" | "keeper" | "log">, program: Address): Promise<void> {
+  const { chain, wallets, keeper, log } = deps;
+  try {
+    const state = await new OraoVrf(chain, program).state();
+    log.info("ORAO VRF", {
+      program,
+      requestFee: String(state.requestFee),
+      treasury: state.treasury,
+      oracles: state.fulfillmentAuthorities.length,
+      tokenFeeConfigured: state.tokenFee !== undefined,
+    });
+    const have = await wallets.lamports(keeper);
+    const needed = state.requestFee + RANDOMNESS_REQUEST_RENT;
+    if (have < needed) {
+      log.error("the keeper wallet cannot pay for a randomness request: top it up with SOL", { keeper, lamports: String(have), needed: String(needed) });
+    }
+  } catch (err) {
+    log.error("cannot read ORAO's network state; randomness requests will wait until it can be read", { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 export interface AppDeps {
   sql: Sql;
   chain: ChainClient;
@@ -141,6 +170,7 @@ export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]
   if (problems.length > 0) throw new Error(`the database is not ready: ${problems.join("; ")}`);
 
   await verifyMint(chain, config.indexer.mint);
+  await reportVrf(deps, config.vrf.program);
 
   if (await verifyKeeperIdentity(chain, config, keeper)) {
     log.info("keeper key matches the breaks program", { keeper });
@@ -170,7 +200,7 @@ export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]
     chain,
     programs: config.programs,
     keeper,
-    vrf: { program: config.vrf.program, networkState: oraoNetworkState(config.vrf.program), treasury: config.vrf.treasury },
+    vrf: new OraoVrf(chain, config.vrf.program),
     eligibility: new SqlEligibilityStore(sql),
     planner: new SqlEligibilityPlanner(sql, new DbPublisher(sql), {
       policy: { minTwab: config.eligibility.minTwab, ...(config.eligibility.capPerWallet !== undefined ? { capPerWallet: config.eligibility.capPerWallet } : {}) },

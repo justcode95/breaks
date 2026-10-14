@@ -63,10 +63,9 @@ const shape = z.object({
   // The deployed programs.
   BREAKS_PROGRAM_ID: address,
   TREASURY_PROGRAM_ID: address,
-  // Randomness: the VRF program (must be the one the breaks program is configured with) and ORAO's fee treasury,
-  // which is a field of ORAO's network state. Read it from there and copy it in; the keeper does not guess it.
+  // Randomness: the VRF program, which must be the one the breaks program is configured with. ORAO's fee treasury is
+  // read from the program's network state when a request is made, so there is nothing to copy in.
   VRF_PROGRAM_ID: address.default(ORAO_PROGRAM),
-  ORAO_TREASURY: address,
   // The break the scheduler creates when the treasury can pay for its worst case. The numbers are open decisions
   // (CLAUDE.md), so none has a default. Prices are micro-USDC. The program checks them against its own limits too.
   BREAK_AUTO_CREATE: z.enum(["true", "false"]).default("true").transform((v) => v === "true"),
@@ -115,7 +114,7 @@ export type Config = {
   keeperKeypairPath?: string;
   commitment: "confirmed" | "finalized";
   programs: Programs;
-  vrf: { program: Address; treasury: Address };
+  vrf: { program: Address };
   eligibility: { minTwab: bigint; capPerWallet?: bigint; settleSecs: number };
   indexer: { mint: Address; intervalSecs: number; lagSecs: number; callsPerRun: number; pageSize: number; concurrency: number };
   scheduler: { enabled: boolean; template: BreakTemplate };
@@ -141,7 +140,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     ...(e.KEEPER_KEYPAIR_PATH !== undefined ? { keeperKeypairPath: e.KEEPER_KEYPAIR_PATH } : {}),
     commitment: e.SOLANA_COMMITMENT,
     programs: { breaks: e.BREAKS_PROGRAM_ID, treasury: e.TREASURY_PROGRAM_ID },
-    vrf: { program: e.VRF_PROGRAM_ID, treasury: e.ORAO_TREASURY },
+    vrf: { program: e.VRF_PROGRAM_ID },
     eligibility: {
       minTwab: e.MIN_TWAB,
       ...(e.WEIGHT_CAP !== undefined ? { capPerWallet: e.WEIGHT_CAP } : {}),

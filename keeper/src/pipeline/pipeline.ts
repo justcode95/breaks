@@ -47,6 +47,7 @@ import { type Address, addressFromBytes, addressToBytes, associatedTokenAddress 
 import type { CardTransfer } from "../delivery/transfer.js";
 import type { ChainClient, SendResult } from "./chain.js";
 import type { EligibilityStore } from "./eligibility-store.js";
+import type { VrfSource } from "./vrf.js";
 
 export interface ActiveBreak {
   /** `breaks.id` in the database, as text. */
@@ -59,22 +60,13 @@ export interface ActiveBreak {
   status: string;
 }
 
-/** ORAO's accounts for `request_randomness`. They must be read from ORAO's network state and checked against it. */
-export interface VrfAccounts {
-  program: Address;
-  networkState: Address;
-  /** ORAO's fee treasury (a field of its network state). */
-  treasury: Address;
-  /** ORAO's token-fee accounts, when it charges its fee in ORAO tokens. */
-  extra?: { pubkey: Address; writable: boolean }[];
-}
-
 export interface PipelineDeps {
   chain: ChainClient;
   programs: Programs;
   /** The keeper wallet: fee payer and the signer the programs expect. */
   keeper: Address;
-  vrf: VrfAccounts;
+  /** Where the accounts for the randomness request come from (ORAO's network state). */
+  vrf: VrfSource;
   eligibility: EligibilityStore;
   /** Works out the eligibility list to commit once a break is closed (waits for the balance indexer). */
   planner: EligibilityPlanner;
@@ -300,16 +292,23 @@ export class BreakPipeline {
 
   private async sendRequest(active: ActiveBreak, b: BreakAccount, attempt: number, previous: Address | undefined, report: PipelineReport): Promise<Step> {
     const { programs, keeper, vrf } = this.deps;
+    let accounts;
+    try {
+      accounts = await vrf.accounts();
+    } catch (err) {
+      // Nothing is sent without ORAO's own word on where its fee goes.
+      return problem(err instanceof Error ? err.message : String(err));
+    }
     const seed = requestId(breakAddress(programs, active.onchainId), attempt, b.eligibilityRoot, b.poolHash);
     const ix = requestRandomness(programs, {
       keeper,
       breakId: active.onchainId,
       vrfProgram: vrf.program,
-      vrfNetworkState: vrf.networkState,
-      vrfTreasury: vrf.treasury,
+      vrfNetworkState: accounts.networkState,
+      vrfTreasury: accounts.treasury,
       seed,
       ...(previous ? { previousRequest: previous } : {}),
-      ...(vrf.extra ? { extra: vrf.extra } : {}),
+      ...(accounts.extra ? { extra: accounts.extra } : {}),
     });
     return this.send(active, b, attempt === 0 ? "request_randomness" : `request_randomness#${attempt}`, ix, report);
   }

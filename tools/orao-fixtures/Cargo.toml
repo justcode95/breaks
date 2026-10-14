@@ -1,0 +1,15 @@
+# Generates keeper/test/fixtures/orao.json with the REAL orao-solana-vrf crate, so the keeper's decoder for ORAO's
+# network state is checked against ORAO's own types. Not part of the workspace (it needs Anchor 0.32, the workspace
+# uses 1.x) and not built by CI. Regenerate with:
+#   cd tools/orao-fixtures && cargo run --quiet > ../../keeper/test/fixtures/orao.json
+[package]
+name = "orao-fixtures"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+anchor-lang = "0.32.1"
+orao-solana-vrf = "=0.7.0"
+
+[workspace]

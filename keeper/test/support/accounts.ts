@@ -12,6 +12,7 @@ import {
   type RequestState,
   type SpotAccount,
 } from "../../src/solana/breaks.js";
+import type { OraoNetworkState } from "../../src/solana/orao.js";
 import type { TreasuryConfig } from "../../src/solana/treasury.js";
 import type { Address } from "../../src/solana/pubkey.js";
 import { addressToBytes } from "../../src/solana/pubkey.js";
@@ -110,4 +111,17 @@ export function encodeTokenAccount(a: { mint: Address; owner: Address; amount: b
   new DataView(data.buffer).setBigUint64(64, a.amount, true);
   data[108] = 1;
   return data;
+}
+
+/** ORAO's network state account, padded to the 8 + 464 bytes ORAO allocates for it. */
+export function encodeNetworkState(s: OraoNetworkState): Uint8Array {
+  const w = new Writer().address(s.authority).address(s.treasury).u64(s.requestFee).u32(s.fulfillmentAuthorities.length);
+  for (const a of s.fulfillmentAuthorities) w.address(a);
+  w.bool(s.tokenFee !== undefined);
+  if (s.tokenFee) w.address(s.tokenFee.mint).address(s.tokenFee.treasury).u64(s.tokenFee.fee);
+  w.u64(s.numReceived);
+  const body = withDiscriminator("NetworkState", w);
+  const padded = new Uint8Array(8 + 464);
+  padded.set(body, 0);
+  return padded;
 }

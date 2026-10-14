@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { drawFreeWinners } from "../src/draw/draw.js";
 import { equalBytes } from "../src/draw/bytes.js";
-import { MAX_RANDOMNESS_ATTEMPTS, ORAO_PROGRAM, breakAddress, drawSeed, requestAddress, requestId } from "../src/solana/breaks.js";
+import { MAX_RANDOMNESS_ATTEMPTS, ORAO_PROGRAM, breakAddress, drawSeed, oraoNetworkState, requestAddress, requestId } from "../src/solana/breaks.js";
 import { addressFromBytes } from "../src/solana/pubkey.js";
 import { associatedTokenAddress } from "../src/solana/pubkey.js";
+import { OraoVrf, fixedVrf } from "../src/pipeline/vrf.js";
+import { encodeNetworkState } from "./support/accounts.js";
 import { addr, BUYER } from "./support/chain.js";
 import { ANSWER, PROGRAMS, world } from "./support/world.js";
 
@@ -216,12 +218,62 @@ describe("BreakPipeline: randomness", () => {
   it("does not use a randomness program the keeper is not configured for", async () => {
     const w = world();
     await w.pullPacks();
-    const wrong = w.pipeline({ vrf: { program: addr(77), networkState: addr(0xa1), treasury: addr(0xa2) } });
+    const wrong = w.pipeline({ vrf: fixedVrf(addr(77), { networkState: addr(0xa1), treasury: addr(0xa2) }) });
     // The pool is committed (that does not involve ORAO); asking for randomness is refused before anything is sent.
     const r = await wrong.advance(w.active);
     expect(steps(r)).toEqual(["commit_pool"]);
     expect(r.problem).toMatch(/set to use .* for randomness but the keeper is configured for/);
     expect(w.chain.applied).toEqual(["commit_pool"]);
+  });
+
+  describe("the accounts for ORAO's fee", () => {
+    const orao = (w: ReturnType<typeof world>) => new OraoVrf(w.chain, ORAO_PROGRAM);
+
+    it("come from ORAO's network state: the request goes to the treasury it names", async () => {
+      const w = world();
+      await w.pullPacks();
+      const r = await w.pipeline({ vrf: orao(w) }).advance(w.active);
+      expect(steps(r)).toEqual(["commit_pool", "request_randomness"]);
+      expect(r.problem).toBeUndefined();
+    });
+
+    it("follow a treasury that ORAO changes between two requests", async () => {
+      const w = world();
+      await w.pullPacks();
+      const pipe = w.pipeline({ vrf: orao(w) });
+      w.chain.accounts.set(
+        oraoNetworkState(ORAO_PROGRAM),
+        encodeNetworkState({ authority: addr(0xa0), treasury: addr(0x99), requestFee: 1_500_000n, fulfillmentAuthorities: [], numReceived: 43n }),
+      );
+      // The program model, like ORAO, only accepts the treasury the network state names.
+      const r = await pipe.advance(w.active);
+      expect(steps(r)).toEqual(["commit_pool", "request_randomness"]);
+      expect(r.problem).toBeUndefined();
+    });
+
+    it("are refused by ORAO when they are not its treasury (what a copy in the configuration could get wrong)", async () => {
+      const w = world();
+      await w.pullPacks();
+      const stale = fixedVrf(ORAO_PROGRAM, { networkState: oraoNetworkState(ORAO_PROGRAM), treasury: addr(0x55) });
+      const r = await w.pipeline({ vrf: stale }).advance(w.active);
+      expect(r.problem).toMatch(/request_randomness failed: UnknownTreasuryGiven/);
+      expect(w.chain.applied).toEqual(["commit_pool"]);
+    });
+
+    it("are not guessed: with no network state nothing is requested, and the reason says so", async () => {
+      const w = world();
+      await w.pullPacks();
+      w.chain.accounts.delete(oraoNetworkState(ORAO_PROGRAM));
+      const r = await w.pipeline({ vrf: orao(w) }).advance(w.active);
+      expect(steps(r)).toEqual(["commit_pool"]);
+      expect(r.problem).toMatch(/network state .* does not exist on this cluster/);
+      expect(w.chain.applied).toEqual(["commit_pool"]);
+      // It is an expected, explainable condition, reported once as a problem; not an unexpected failure logged as such.
+      expect(w.errors).toEqual([]);
+      // and once ORAO's state is there, the request goes out
+      w.chain.accounts.set(oraoNetworkState(ORAO_PROGRAM), encodeNetworkState({ authority: addr(0xa0), treasury: addr(0xa2), requestFee: 1n, fulfillmentAuthorities: [], numReceived: 0n }));
+      expect(steps(await w.pipeline({ vrf: orao(w) }).advance(w.active))).toEqual(["request_randomness"]);
+    });
   });
 
   it("reports a request account that is missing", async () => {

@@ -11,7 +11,6 @@ const base = {
   DATABASE_URL: "postgres://x",
   BREAKS_PROGRAM_ID: BREAKS,
   TREASURY_PROGRAM_ID: TREASURY,
-  ORAO_TREASURY: addr(0xa2),
   MIN_TWAB: "1000000000000",
   TOKEN_MINT: addr(0xb1),
   BREAK_PAID_SPOTS: "10",
@@ -35,7 +34,7 @@ describe("loadConfig", () => {
       jobIntervalMs: 10_000,
       commitment: "confirmed",
       programs: { breaks: BREAKS, treasury: TREASURY },
-      vrf: { program: ORAO_PROGRAM, treasury: addr(0xa2) },
+      vrf: { program: ORAO_PROGRAM },
       eligibility: { minTwab: 1_000_000_000_000n, settleSecs: 120 },
       indexer: { mint: addr(0xb1), intervalSecs: 900, lagSecs: 120, callsPerRun: 60, pageSize: 25, concurrency: 4 },
       scheduler: {
@@ -136,9 +135,9 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, CARD_TRANSFER: "collector-crypt" })).toThrow(/CARD_TRANSFER/);
   });
 
-  it("requires an RPC url, a database url, both program ids, ORAO's treasury, the minimum TWAB, the token and the break to create", () => {
+  it("requires an RPC url, a database url, both program ids, the minimum TWAB, the token and the break to create", () => {
     expect(() => loadConfig({})).toThrow(/SOLANA_RPC_URL.*DATABASE_URL|DATABASE_URL.*SOLANA_RPC_URL/);
-    for (const key of ["BREAKS_PROGRAM_ID", "TREASURY_PROGRAM_ID", "ORAO_TREASURY", "MIN_TWAB", "TOKEN_MINT", "BREAK_PAID_SPOTS", "BREAK_FREE_SPOTS", "BREAK_SPOT_PRICE", "BREAK_MAX_PACK_PRICE", "BREAK_PACK_MACHINE", "BREAK_WINDOW_SECS"] as const) {
+    for (const key of ["BREAKS_PROGRAM_ID", "TREASURY_PROGRAM_ID", "MIN_TWAB", "TOKEN_MINT", "BREAK_PAID_SPOTS", "BREAK_FREE_SPOTS", "BREAK_SPOT_PRICE", "BREAK_MAX_PACK_PRICE", "BREAK_PACK_MACHINE", "BREAK_WINDOW_SECS"] as const) {
       const { [key]: _removed, ...rest } = base;
       expect(() => loadConfig(rest)).toThrow(new RegExp(key));
     }
@@ -146,7 +145,6 @@ describe("loadConfig", () => {
 
   it("rejects a program id or treasury that is not an address, such as an unedited placeholder", () => {
     expect(() => loadConfig({ ...base, BREAKS_PROGRAM_ID: "REPLACE_ME" })).toThrow(/BREAKS_PROGRAM_ID.*not a Solana address/);
-    expect(() => loadConfig({ ...base, ORAO_TREASURY: "REPLACE_WITH_ORAO_TREASURY" })).toThrow(/ORAO_TREASURY/);
     expect(() => loadConfig({ ...base, VRF_PROGRAM_ID: "nope" })).toThrow(/VRF_PROGRAM_ID/);
     expect(() => loadConfig({ ...base, TOKEN_MINT: "REPLACE_WITH_THE_TOKEN_MINT" })).toThrow(/TOKEN_MINT/);
   });
