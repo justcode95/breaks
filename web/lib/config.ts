@@ -1,6 +1,7 @@
 // Where the site reads the chain from. Set when the site is built (the `NEXT_PUBLIC_` values are put into the page):
-//   NEXT_PUBLIC_BREAKS_PROGRAM_ID   the deployed breaks program (no default: it belongs to one deployment)
-//   NEXT_PUBLIC_SOLANA_RPC_URL      a node that answers browsers (default: the public devnet node)
+//   NEXT_PUBLIC_BREAKS_PROGRAM_ID     the deployed breaks program (no default: it belongs to one deployment)
+//   NEXT_PUBLIC_TREASURY_PROGRAM_ID   the deployed treasury program (the treasury page is hidden without it)
+//   NEXT_PUBLIC_SOLANA_RPC_URL        a node that answers browsers (default: the public devnet node)
 
 import { type Address, isAddress } from "./chain/address";
 
@@ -11,12 +12,19 @@ export interface ChainConfig {
   breaksProgram: Address;
 }
 
-export type ChainSetup = { kind: "off" } | { kind: "problem"; problem: string } | { kind: "on"; config: ChainConfig };
+export interface TreasuryConfigSetting {
+  rpcUrl: string;
+  treasuryProgram: Address;
+}
 
-export function chainSetup(env: { rpcUrl?: string | undefined; program?: string | undefined }): ChainSetup {
+export type Setup<T> = { kind: "off" } | { kind: "problem"; problem: string } | { kind: "on"; config: T };
+export type ChainSetup = Setup<ChainConfig>;
+
+/** The program's address and the node's, checked. `variable` names the setting in a problem report. */
+function programAndNode(env: { rpcUrl?: string | undefined; program?: string | undefined }, variable: string): { kind: "off" } | { kind: "problem"; problem: string } | { kind: "ok"; program: Address; rpcUrl: string } {
   const program = env.program?.trim();
   if (!program) return { kind: "off" };
-  if (!isAddress(program)) return { kind: "problem", problem: "NEXT_PUBLIC_BREAKS_PROGRAM_ID is not a Solana address." };
+  if (!isAddress(program)) return { kind: "problem", problem: `${variable} is not a Solana address.` };
   const rpcUrl = env.rpcUrl?.trim() || DEFAULT_RPC_URL;
   let url: URL;
   try {
@@ -28,5 +36,15 @@ export function chainSetup(env: { rpcUrl?: string | undefined; program?: string 
   if (url.protocol !== "https:" && !(local && url.protocol === "http:")) {
     return { kind: "problem", problem: "NEXT_PUBLIC_SOLANA_RPC_URL must be an https:// address." };
   }
-  return { kind: "on", config: { rpcUrl, breaksProgram: program } };
+  return { kind: "ok", program, rpcUrl };
+}
+
+export function chainSetup(env: { rpcUrl?: string | undefined; program?: string | undefined }): ChainSetup {
+  const s = programAndNode(env, "NEXT_PUBLIC_BREAKS_PROGRAM_ID");
+  return s.kind === "ok" ? { kind: "on", config: { rpcUrl: s.rpcUrl, breaksProgram: s.program } } : s;
+}
+
+export function treasurySetup(env: { rpcUrl?: string | undefined; program?: string | undefined }): Setup<TreasuryConfigSetting> {
+  const s = programAndNode(env, "NEXT_PUBLIC_TREASURY_PROGRAM_ID");
+  return s.kind === "ok" ? { kind: "on", config: { rpcUrl: s.rpcUrl, treasuryProgram: s.program } } : s;
 }
