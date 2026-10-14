@@ -1,13 +1,19 @@
 // Wires the jobs together: which stores, which providers, which chain. `index.ts` only starts it.
 //
-// Up to six jobs, each idempotent and each starting from what it reads, never from a shared in-memory state:
+// Up to seven jobs, each idempotent and each starting from what it reads, never from a shared in-memory state:
 //   pipeline   - the on-chain steps (commit_pool, randomness, free-spot claims) and the status mirror
 //   pack-buyer - buys the packs of funded breaks
 //   delivery   - sends the cards of drawn breaks
 //   indexer    - reads every transfer of the token into `balance_events` and says how far it got (`indexer_state`)
 //   scheduler  - creates the next break when the treasury can pay for its worst case, and copies breaks from the chain
 //   fee-sweep  - (only when SWEEP_ENABLED) deposits the USDC in the keeper's wallet into the treasury, and swaps fee SOL to USDC when a swapper exists
+//   x-bot      - (only when BOT_ENABLED) announces the reserve, the sale, the free-spot winners and the results on X, from finalized chain data
 
+import { XBot, botJob } from "./bot/bot.js";
+import { LogPoster, type Poster } from "./bot/poster.js";
+import { SqlBotStore } from "./bot/store.js";
+import { ChainWorld } from "./bot/world.js";
+import { XPoster } from "./bot/x-poster.js";
 import type { Config } from "./config.js";
 import { Deliverer, deliveryJob } from "./delivery/deliverer.js";
 import { DbPublisher, SqlEligibilityPlanner } from "./eligibility/planner.js";
@@ -25,7 +31,7 @@ import type { Job, Logger } from "./job.js";
 import { PackBuyer, packBuyerJob } from "./packs/buyer.js";
 import { MockPackProvider } from "./packs/mock-provider.js";
 import { SqlPackStore, type Sql } from "./packs/sql-store.js";
-import type { ChainClient } from "./pipeline/chain.js";
+import type { AccountReader, ChainClient } from "./pipeline/chain.js";
 import { SqlEligibilityStore } from "./pipeline/eligibility-store.js";
 import { pipelineJob } from "./pipeline/job.js";
 import { OraoVrf } from "./pipeline/vrf.js";
@@ -64,6 +70,7 @@ export async function checkSchema(sql: Sql): Promise<string[]> {
     ["published_documents", "sha256", "0005"],
     ["indexed_accounts", "until_sig", "0006"],
     ["fee_swaps", "signature", "0007"],
+    ["bot_posts", "valid_until", "0008"],
   ];
   for (const [table, column, migration] of columns) {
     const ok = await have(
@@ -157,9 +164,41 @@ export interface AppDeps {
   keeper: Address;
   log: Logger;
   now?: () => Date;
+  /** Reads accounts at `finalized`, for the X bot (required when it is on): it announces nothing that could roll back. */
+  finalized?: AccountReader;
+  /** Where the X bot's posts go. Default: built from the config (a dry run, or X). */
+  poster?: Poster;
 }
 
-export type AppConfig = Pick<Config, "programs" | "vrf" | "packProvider" | "cardTransfer" | "mockPackPrice" | "jobIntervalMs" | "eligibility" | "indexer" | "scheduler" | "sweep">;
+export type AppConfig = Pick<Config, "programs" | "vrf" | "packProvider" | "cardTransfer" | "mockPackPrice" | "jobIntervalMs" | "eligibility" | "indexer" | "scheduler" | "sweep" | "bot">;
+
+/** The X bot over finalized chain data and the keeper's own tables, posting to X or (the default) only to the log. */
+function buildBot(config: AppConfig, deps: AppDeps, now: () => Date): XBot {
+  const { sql, finalized, log } = deps;
+  if (!finalized) throw new Error("the X bot needs a chain reader at the finalized commitment");
+  let poster = deps.poster;
+  if (!poster) {
+    if (config.bot.poster === "x") {
+      if (!config.bot.x) throw new Error("BOT_POSTER=x needs the X_* credentials");
+      poster = new XPoster({ credentials: config.bot.x.credentials, ...(config.bot.x.baseUrl !== undefined ? { baseUrl: config.bot.x.baseUrl } : {}) });
+      log.info("X bot on: posts are sent to X", { dailyLimit: config.bot.limits.maxPerDay, minGapSecs: config.bot.limits.minGapSecs });
+    } else {
+      poster = new LogPoster(log);
+      log.info("X bot on as a DRY RUN: posts are only written to the log (BOT_POSTER=log)");
+    }
+  }
+  const store = new SqlBotStore(sql);
+  return new XBot({
+    scope: config.programs.breaks,
+    world: new ChainWorld({ chain: finalized, programs: config.programs, template: config.scheduler.template, store, lookback: config.bot.lookback }),
+    store,
+    poster,
+    settings: config.bot.settings,
+    limits: config.bot.limits,
+    log,
+    now,
+  });
+}
 
 /** Checks the database and the key, then builds the jobs. Throws, before any job runs, if something is not ready. */
 export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]> {
@@ -250,6 +289,7 @@ export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]
     });
     jobs.push(feeSweepJob({ sweeper, intervalMs }));
   }
+  if (config.bot.enabled) jobs.push(botJob({ bot: buildBot(config, deps, now), intervalMs: config.bot.intervalSecs * 1000 }));
   return [
     ...jobs,
     pipelineJob({ pipeline, repo, intervalMs }),

@@ -2,6 +2,9 @@ import { z } from "zod";
 import { ORAO_PROGRAM, type Programs } from "./solana/breaks.js";
 import { type BreakTemplate } from "./scheduler/policy.js";
 import type { SweepPolicy } from "./sweep/policy.js";
+import type { BotLimits } from "./bot/bot.js";
+import type { BotSettings } from "./bot/policy.js";
+import type { XCredentials } from "./bot/x-poster.js";
 import { packMachineBytes } from "./scheduler/machine.js";
 import { type Address, addressToBytes } from "./solana/pubkey.js";
 
@@ -23,6 +26,15 @@ const isMachine = (s: string) => {
     return false;
   }
 };
+
+/** "25,50,75" as numbers; empty items are ignored. */
+const list = (s: string): number[] =>
+  s
+    .split(",")
+    .map((x) => x.trim())
+    .filter((x) => x !== "")
+    .map(Number);
+const httpsUrl = z.string().url().refine((u) => u.startsWith("https://"), "must be an https:// address");
 
 // Devnet only (CLAUDE.md guardrails). Adding "mainnet-beta" here is a rule change that needs the owner's sign-off.
 const shape = z.object({
@@ -91,11 +103,47 @@ const shape = z.object({
   SWEEP_MAX_LAMPORTS: z.coerce.bigint().positive().default(10_000_000_000n),
   SWEEP_SLIPPAGE_BPS: z.coerce.number().int().min(0).max(1_000).default(50),
   SWEEP_MIN_USDC_PER_SOL: z.coerce.bigint().positive().optional(),
+  // The X bot. Off until it is turned on. `log` only writes what it would post to the log (a dry run, no account
+  // needed); `x` posts to X as the account the four X_* credentials belong to.
+  BOT_ENABLED: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
+  BOT_POSTER: z.enum(["log", "x"]).default("log"),
+  X_API_BASE: httpsUrl.optional(),
+  X_CONSUMER_KEY: z.string().min(1).optional(),
+  X_CONSUMER_SECRET: z.string().min(1).optional(),
+  X_ACCESS_TOKEN: z.string().min(1).optional(),
+  X_ACCESS_TOKEN_SECRET: z.string().min(1).optional(),
+  // How often the bot looks, the least time between two posts, and the most posts in 24 hours (a pay-per-post budget).
+  BOT_INTERVAL_SECS: z.coerce.number().int().min(10).default(60),
+  BOT_MIN_GAP_SECS: z.coerce.number().int().min(0).default(60),
+  BOT_MAX_POSTS_PER_DAY: z.coerce.number().int().min(1).default(20),
+  // A post that gets no verdict is sent again with the same text after attempts x this many seconds, up to this many sends.
+  BOT_RETRY_STEP_SECS: z.coerce.number().int().min(1).default(120),
+  BOT_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(5),
+  // The progress of the next break is announced at these percentages, and spots left this many hours before the end.
+  BOT_MILESTONES: z.string().default("25,50,75"),
+  BOT_REMINDER_HOURS: z.string().default("3,1"),
+  // How many of the latest breaks are looked at, and how long a delivery must be old before the results are posted.
+  BOT_LOOKBACK_BREAKS: z.coerce.number().int().min(1).max(50).default(5),
+  BOT_FINALITY_MARGIN_SECS: z.coerce.number().int().min(0).default(120),
+  // Where the results page will be: the results post links to <BOT_SITE_URL>/breaks/<number>. No link without it.
+  BOT_SITE_URL: httpsUrl.optional(),
 });
 
 const schema = shape.superRefine((e, ctx) => {
   if (e.SWEEP_MIN_LAMPORTS > e.SWEEP_MAX_LAMPORTS) {
     ctx.addIssue({ code: "custom", path: ["SWEEP_MIN_LAMPORTS"], message: "must not be above SWEEP_MAX_LAMPORTS" });
+  }
+  const milestones = list(e.BOT_MILESTONES);
+  if (!milestones.every((m, i) => Number.isInteger(m) && m >= 1 && m <= 99 && (i === 0 || m > (milestones[i - 1] as number)))) {
+    ctx.addIssue({ code: "custom", path: ["BOT_MILESTONES"], message: "must be whole percentages from 1 to 99, rising, like 25,50,75" });
+  }
+  if (!list(e.BOT_REMINDER_HOURS).every((h) => Number.isInteger(h) && h >= 1 && h <= 168)) {
+    ctx.addIssue({ code: "custom", path: ["BOT_REMINDER_HOURS"], message: "must be whole hours from 1 to 168, like 3,1" });
+  }
+  if (e.BOT_ENABLED && e.BOT_POSTER === "x") {
+    for (const name of ["X_CONSUMER_KEY", "X_CONSUMER_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"] as const) {
+      if (e[name] === undefined) ctx.addIssue({ code: "custom", path: [name], message: "is required when BOT_POSTER=x" });
+    }
   }
   if (e.BREAK_SPOT_PRICE > e.BREAK_MAX_PACK_PRICE) {
     ctx.addIssue({ code: "custom", path: ["BREAK_SPOT_PRICE"], message: "must not be above BREAK_MAX_PACK_PRICE (a markup is not supported)" });
@@ -119,6 +167,16 @@ export type Config = {
   indexer: { mint: Address; intervalSecs: number; lagSecs: number; callsPerRun: number; pageSize: number; concurrency: number };
   scheduler: { enabled: boolean; template: BreakTemplate };
   sweep: { enabled: boolean; swapProvider: "none"; policy: SweepPolicy };
+  bot: {
+    enabled: boolean;
+    poster: "log" | "x";
+    /** Only with poster "x". */
+    x?: { baseUrl?: string; credentials: XCredentials };
+    intervalSecs: number;
+    settings: BotSettings;
+    limits: BotLimits;
+    lookback: number;
+  };
 };
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -176,6 +234,32 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         ...(e.SWEEP_MIN_USDC_PER_SOL !== undefined ? { minUsdcPerSol: e.SWEEP_MIN_USDC_PER_SOL } : {}),
         minDeposit: e.SWEEP_MIN_DEPOSIT,
       },
+    },
+    bot: {
+      enabled: e.BOT_ENABLED,
+      poster: e.BOT_POSTER,
+      ...(e.BOT_POSTER === "x" && e.X_CONSUMER_KEY && e.X_CONSUMER_SECRET && e.X_ACCESS_TOKEN && e.X_ACCESS_TOKEN_SECRET
+        ? {
+            x: {
+              ...(e.X_API_BASE !== undefined ? { baseUrl: e.X_API_BASE } : {}),
+              credentials: {
+                consumerKey: e.X_CONSUMER_KEY,
+                consumerSecret: e.X_CONSUMER_SECRET,
+                accessToken: e.X_ACCESS_TOKEN,
+                accessTokenSecret: e.X_ACCESS_TOKEN_SECRET,
+              },
+            },
+          }
+        : {}),
+      intervalSecs: e.BOT_INTERVAL_SECS,
+      settings: {
+        milestones: list(e.BOT_MILESTONES),
+        reminderHours: list(e.BOT_REMINDER_HOURS),
+        finalityMarginSecs: e.BOT_FINALITY_MARGIN_SECS,
+        ...(e.BOT_SITE_URL !== undefined ? { siteUrl: e.BOT_SITE_URL } : {}),
+      },
+      limits: { minGapSecs: e.BOT_MIN_GAP_SECS, maxPerDay: e.BOT_MAX_POSTS_PER_DAY, maxAttempts: e.BOT_MAX_ATTEMPTS, retryStepSecs: e.BOT_RETRY_STEP_SECS },
+      lookback: e.BOT_LOOKBACK_BREAKS,
     },
   };
 }

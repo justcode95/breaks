@@ -8,6 +8,7 @@ import { assignCards } from "../src/draw/pool.js";
 import { createRunner } from "../src/job.js";
 import { ORAO_PROGRAM, oraoNetworkState, requestAddress } from "../src/solana/breaks.js";
 import { addressFromBytes, addressToBytes, associatedTokenAddress } from "../src/solana/pubkey.js";
+import { ScriptedPoster } from "./support/bot.js";
 import { addr } from "./support/chain.js";
 import { insertBreak, migratedDb } from "./support/db.js";
 import { packMachineBytes } from "../src/scheduler/machine.js";
@@ -24,6 +25,14 @@ const config: AppConfig = {
   eligibility: { minTwab: 1n, settleSecs: 120 },
   indexer: { mint: MINT, intervalSecs: 900, lagSecs: 120, callsPerRun: 1000, pageSize: 100, concurrency: 4 },
   sweep: { enabled: false, swapProvider: "none", policy: { keepLamports: 1_000_000_000n, minLamports: 100_000_000n, maxLamports: 10_000_000_000n, slippageBps: 50, minDeposit: 1_000_000n } },
+  bot: {
+    enabled: false,
+    poster: "log",
+    intervalSecs: 60,
+    settings: { milestones: [25, 50, 75], reminderHours: [3, 1], finalityMarginSecs: 120 },
+    limits: { minGapSecs: 60, maxPerDay: 20, maxAttempts: 5, retryStepSecs: 120 },
+    lookback: 5,
+  },
   scheduler: {
     enabled: true,
     template: { paidSpots: 3, freeSpots: 2, spotPrice: 20_000_000n, maxPackPrice: 25_000_000n, packMachine: packMachineBytes("pokemon-25"), windowSecs: 21_600n },
@@ -79,6 +88,7 @@ describe("checkSchema", () => {
       "published_documents.sha256 is missing (migration 0005)",
       "indexed_accounts.until_sig is missing (migration 0006)",
       "fee_swaps.signature is missing (migration 0007)",
+      "bot_posts.valid_until is missing (migration 0008)",
       "breaks.status does not accept 'drawn' (migration 0004)",
       "balance_events is not unique per owner (migration 0006)",
     ]);
@@ -458,6 +468,72 @@ describe("the jobs, with the fee sweep", () => {
     const w = world();
     const jobs = await buildJobs(config, { sql: shared, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log: logger().log });
     expect(jobs.map((j) => j.name)).not.toContain("fee-sweep");
+  });
+});
+
+describe("the jobs, with the X bot", () => {
+  const on = (over: Partial<AppConfig["bot"]> = {}): AppConfig => ({ ...config, bot: { ...config.bot, enabled: true, ...over } });
+  const openWorld = () => {
+    const w = world({ status: "Open", id: 8n });
+    w.chain.unixTime = 1_800_000_100n; // the sale has just opened
+    return w;
+  };
+
+  it("builds the bot job only when it is on, and announces a live sale from the finalized view", async () => {
+    await shared.exec("truncate bot_posts cascade");
+    const w = openWorld();
+    const poster = new ScriptedPoster();
+    const { log, errors } = logger();
+    const jobs = await buildJobs(on(), { sql: shared, chain: w.chain, finalized: w.chain, poster, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log, now: w.clock.now });
+    expect(jobs.map((j) => j.name)).toEqual(["indexer", "scheduler", "x-bot", "pipeline", "pack-buyer", "delivery"]);
+
+    // Only the bot is run here: the other jobs have their own tests and need a database that matches this chain.
+    await jobs.find((j) => j.name === "x-bot")!.run({ now: w.clock.now, log });
+    expect(errors).toEqual([]);
+    // (The fixture's machine id is 32 bytes of 0x77, which reads as the text "wwww...".)
+    expect(poster.sent).toEqual([`Break #9 is LIVE — 3 paid spots @ $20 + 2 FREE holder spots. Packs: ${"w".repeat(32)}. Closes Jan 15, 14:00 UTC.`]);
+  });
+
+  it("announces nothing that the finalized view does not show yet, even if the confirmed view does", async () => {
+    await shared.exec("truncate bot_posts cascade");
+    const confirmed = openWorld();
+    const finalized = openWorld();
+    finalized.chain.breaks.clear();
+    const poster = new ScriptedPoster();
+    const jobs = await buildJobs(on(), { sql: shared, chain: confirmed.chain, finalized: finalized.chain, poster, reader: quietNode(), wallets: confirmed.chain, keeper: KEEPER, log: logger().log, now: confirmed.clock.now });
+    const bot = jobs.find((j) => j.name === "x-bot")!;
+    await bot.run({ now: confirmed.clock.now, log: logger().log });
+    expect(poster.sent).toEqual([]);
+    finalized.chain.breaks.set(8n, confirmed.chain.breaks.get(8n)!);
+    await bot.run({ now: confirmed.clock.now, log: logger().log });
+    expect(poster.sent).toHaveLength(1);
+  });
+
+  it("is a dry run by default: it says so, and only writes the posts to the log", async () => {
+    await shared.exec("truncate bot_posts cascade");
+    const w = openWorld();
+    const seen: [string, Record<string, unknown> | undefined][] = [];
+    const log = { info: (m: string, e?: Record<string, unknown>) => seen.push([m, e]), error: (m: string, e?: Record<string, unknown>) => seen.push([`ERROR ${m}`, e]) };
+    const jobs = await buildJobs(on(), { sql: shared, chain: w.chain, finalized: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log, now: w.clock.now });
+    expect(seen.map(([m]) => m)).toContain("X bot on as a DRY RUN: posts are only written to the log (BOT_POSTER=log)");
+    await jobs.find((j) => j.name === "x-bot")!.run({ now: w.clock.now, log });
+    const dry = seen.find(([m]) => m.startsWith("X post (dry run"));
+    expect(dry?.[1]).toMatchObject({ text: expect.stringContaining("is LIVE") });
+  });
+
+  it("refuses to start without a finalized reader, or to post to X without credentials", async () => {
+    const w = openWorld();
+    const base = { sql: shared, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log: logger().log };
+    await expect(buildJobs(on(), base)).rejects.toThrow(/finalized commitment/);
+    await expect(buildJobs(on({ poster: "x" }), { ...base, finalized: w.chain })).rejects.toThrow(/X_\* credentials/);
+  });
+
+  it("says when it posts to X", async () => {
+    const w = openWorld();
+    const { log, infos } = logger();
+    const x = { credentials: { consumerKey: "a", consumerSecret: "b", accessToken: "c", accessTokenSecret: "d" } };
+    await buildJobs(on({ poster: "x", x }), { sql: shared, chain: w.chain, finalized: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log, now: w.clock.now });
+    expect(infos).toContain("X bot on: posts are sent to X");
   });
 });
 
