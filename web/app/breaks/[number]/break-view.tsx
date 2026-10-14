@@ -2,11 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { loadBreak } from "../../../lib/chain/load";
-import { chainSetup } from "../../../lib/config";
+import { SETUP } from "../../../lib/site";
 import { BreakDetails, type Loaded } from "./details";
-
-// The `NEXT_PUBLIC_` values have to be written out like this for the build to put them into the page.
-const SETUP = chainSetup({ rpcUrl: process.env.NEXT_PUBLIC_SOLANA_RPC_URL, program: process.env.NEXT_PUBLIC_BREAKS_PROGRAM_ID });
 
 type State = { state: "loading" } | { state: "error"; message: string } | { state: "loaded"; loaded: Loaded; readAt: number };
 

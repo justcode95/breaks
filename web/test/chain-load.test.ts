@@ -8,7 +8,7 @@ import { getAccounts } from "../lib/chain/rpc";
 import { fromHex, toHex } from "../lib/draw/bytes";
 import { exampleInput } from "../lib/example";
 import { type Verified, type VerifyResult, verifyDraw } from "../lib/verify";
-import { type BreakFields, type Served, breakFieldsFromVector, encodeBreak, encodeSpot, fakeNode } from "./support/accounts";
+import { type BreakFields, type Served, breakFieldsFromVector, configFieldsFromVector, encodeBreak, encodeConfig, encodeSpot, fakeNode } from "./support/accounts";
 
 const vectors: { programs: { breaks: string }; cases: { name: string; inputs: Record<string, string>; outputs: Record<string, unknown> | null }[] } = JSON.parse(
   readFileSync(join(import.meta.dirname, "..", "..", "programs", "breaks", "instruction-vectors.json"), "utf8"),
@@ -29,6 +29,9 @@ describe("the test encoder", () => {
     const o = v.outputs as Record<string, any>;
     const fields = breakFieldsFromVector(o);
     expect(toHex(encodeBreak(fields))).toBe(v.inputs.data);
+
+    const c = vectors.cases.find((x) => x.name === "breaks.account.BreaksConfig")!;
+    expect(toHex(encodeConfig(configFieldsFromVector(c.outputs as Record<string, any>)))).toBe(c.inputs.data);
 
     const s = vectors.cases.find((c) => c.name === "breaks.account.Spot")!;
     const so = s.outputs as Record<string, any>;
