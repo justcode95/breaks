@@ -46,6 +46,7 @@ describe("loadConfig", () => {
         swapProvider: "none",
         policy: { keepLamports: 1_000_000_000n, minLamports: 100_000_000n, maxLamports: 10_000_000_000n, slippageBps: 50, minDeposit: 1_000_000n },
       },
+      publish: { intervalSecs: 60 },
       bot: {
         enabled: false,
         poster: "log",
@@ -55,6 +56,13 @@ describe("loadConfig", () => {
         lookback: 5,
       },
     });
+  });
+
+  it("publishes the lists only when told where, and refuses an interval that would hammer the node", () => {
+    expect(loadConfig(base).publish).toEqual({ intervalSecs: 60 });
+    expect(loadConfig({ ...base, PUBLISH_DIR: "/srv/published", PUBLISH_INTERVAL_SECS: "30" }).publish).toEqual({ dir: "/srv/published", intervalSecs: 30 });
+    expect(() => loadConfig({ ...base, PUBLISH_INTERVAL_SECS: "9" })).toThrow(/PUBLISH_INTERVAL_SECS/);
+    expect(() => loadConfig({ ...base, PUBLISH_DIR: "" })).toThrow(/PUBLISH_DIR/);
   });
 
   it("keeps the X bot off, as a dry run, until it is turned on; real posting needs the four credentials", () => {

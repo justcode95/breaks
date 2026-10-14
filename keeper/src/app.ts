@@ -1,12 +1,13 @@
 // Wires the jobs together: which stores, which providers, which chain. `index.ts` only starts it.
 //
-// Up to seven jobs, each idempotent and each starting from what it reads, never from a shared in-memory state:
+// Up to eight jobs, each idempotent and each starting from what it reads, never from a shared in-memory state:
 //   pipeline   - the on-chain steps (commit_pool, randomness, free-spot claims) and the status mirror
 //   pack-buyer - buys the packs of funded breaks
 //   delivery   - sends the cards of drawn breaks
 //   indexer    - reads every transfer of the token into `balance_events` and says how far it got (`indexer_state`)
 //   scheduler  - creates the next break when the treasury can pay for its worst case, and copies breaks from the chain
 //   fee-sweep  - (only when SWEEP_ENABLED) deposits the USDC in the keeper's wallet into the treasury, and swaps fee SOL to USDC when a swapper exists
+//   publish    - (only when PUBLISH_DIR is set) writes each break's eligible wallets and cards as files named by the hashes the chain committed
 //   x-bot      - (only when BOT_ENABLED) announces the reserve, the sale, the free-spot winners and the results on X, from finalized chain data
 
 import { XBot, botJob } from "./bot/bot.js";
@@ -29,6 +30,9 @@ import type { WalletReader } from "./sweep/wallet.js";
 import { SqlDeliveryStore } from "./delivery/sql-store.js";
 import type { Job, Logger } from "./job.js";
 import { PackBuyer, packBuyerJob } from "./packs/buyer.js";
+import { PublishExporter, publishJob } from "./publish/exporter.js";
+import { DirSink } from "./publish/sink.js";
+import { SqlPublishStore } from "./publish/store.js";
 import { MockPackProvider } from "./packs/mock-provider.js";
 import { SqlPackStore, type Sql } from "./packs/sql-store.js";
 import type { AccountReader, ChainClient } from "./pipeline/chain.js";
@@ -170,7 +174,7 @@ export interface AppDeps {
   poster?: Poster;
 }
 
-export type AppConfig = Pick<Config, "programs" | "vrf" | "packProvider" | "cardTransfer" | "mockPackPrice" | "jobIntervalMs" | "eligibility" | "indexer" | "scheduler" | "sweep" | "bot">;
+export type AppConfig = Pick<Config, "programs" | "vrf" | "packProvider" | "cardTransfer" | "mockPackPrice" | "jobIntervalMs" | "eligibility" | "indexer" | "scheduler" | "sweep" | "publish" | "bot">;
 
 /** The X bot over finalized chain data and the keeper's own tables, posting to X or (the default) only to the log. */
 function buildBot(config: AppConfig, deps: AppDeps, now: () => Date): XBot {
@@ -288,6 +292,12 @@ export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]
       now,
     });
     jobs.push(feeSweepJob({ sweeper, intervalMs }));
+  }
+  if (config.publish.dir) {
+    if (!deps.finalized) throw new Error("publishing the lists needs a chain reader at the finalized commitment");
+    log.info("publishing eligibility lists and card pools as files", { dir: config.publish.dir });
+    const exporter = new PublishExporter({ store: new SqlPublishStore(sql), sink: new DirSink(config.publish.dir), chain: deps.finalized, programs: config.programs });
+    jobs.push(publishJob({ exporter, intervalMs: config.publish.intervalSecs * 1000 }));
   }
   if (config.bot.enabled) jobs.push(botJob({ bot: buildBot(config, deps, now), intervalMs: config.bot.intervalSecs * 1000 }));
   return [
