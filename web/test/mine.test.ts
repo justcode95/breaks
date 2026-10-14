@@ -33,8 +33,10 @@ function world(o: { breaks: number; override?: Record<number, Partial<BreakField
   for (let id = 0; id < o.breaks; id++) {
     m.set(breakAddress(PROGRAM, BigInt(id)), { data: encodeBreak({ ...SAMPLE, id: BigInt(id), status: "Drawn", freeWinnerCount: 0, freeWinners: [], ...o.override?.[id] }), owner: PROGRAM });
   }
+  const keys = new Map<number, Address>();
   for (const s of o.spots ?? []) {
-    const key = breakAddress(PROGRAM, BigInt(s.breakId));
+    const key = keys.get(s.breakId) ?? breakAddress(PROGRAM, BigInt(s.breakId));
+    keys.set(s.breakId, key);
     m.set(spotAddress(PROGRAM, key, s.index), { data: encodeSpot({ breakId: BigInt(s.breakId), index: s.index, owner: s.owner ?? ME, paid: s.paid ?? 20_000_000n, refunded: s.refunded ?? false }), owner: PROGRAM });
   }
   return m;
@@ -118,7 +120,8 @@ describe("the spots of a wallet", () => {
     ]);
   });
 
-  it("show only the newest 500 and say so when there are more", async () => {
+  // 500 addresses are worked out by the test and again by the loader, which a slow machine takes seconds over.
+  it("show only the newest 500 and say so when there are more", { timeout: 30_000 }, async () => {
     const spots = Array.from({ length: MAX_SPOTS + 1 }, (_, i) => ({ breakId: 0, index: i }));
     const mine = await load(world({ breaks: 1, spots })).result;
     expect(mine.spots).toHaveLength(MAX_SPOTS);

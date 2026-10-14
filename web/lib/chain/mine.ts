@@ -60,6 +60,13 @@ export async function loadMine(opts: MineOptions): Promise<Mine> {
     ]);
 
     // The node did the searching; each answer is only believed if the program's own rules say it can be what it claims.
+    // (A break's address is worked out once, not once per spot: finding an address costs about a millisecond.)
+    const breakKeys = new Map<bigint, Address>();
+    const breakKey = (id: bigint): Address => {
+      let key = breakKeys.get(id);
+      if (!key) breakKeys.set(id, (key = breakAddress(opts.breaksProgram, id)));
+      return key;
+    };
     const spots = found.map(({ address, account }) => {
       if (account.owner !== opts.breaksProgram) throw new LoadError("The node returned a spot account that is not owned by the breaks program.");
       let spot: ReturnType<typeof decodeSpot>;
@@ -69,7 +76,7 @@ export async function loadMine(opts: MineOptions): Promise<Mine> {
         throw new LoadError(`A spot account could not be read: ${err instanceof Error ? err.message : String(err)}`);
       }
       if (spot.owner !== opts.owner) throw new LoadError("The node returned a spot that belongs to another wallet.");
-      if (address !== spotAddress(opts.breaksProgram, breakAddress(opts.breaksProgram, spot.breakId), spot.index)) {
+      if (address !== spotAddress(opts.breaksProgram, breakKey(spot.breakId), spot.index)) {
         throw new LoadError("The node returned a spot account at an address the program would not use for it.");
       }
       return spot;
@@ -80,7 +87,7 @@ export async function loadMine(opts: MineOptions): Promise<Mine> {
 
     // The breaks those spots are in: they must exist, since a spot cannot be bought without one.
     const ids = [...new Set(kept.map((s) => s.breakId))];
-    const accounts = await getAccounts({ ...net, addresses: ids.map((id) => breakAddress(opts.breaksProgram, id)) });
+    const accounts = await getAccounts({ ...net, addresses: ids.map(breakKey) });
     const breaks = new Map<bigint, BreakAccount>();
     ids.forEach((id, i) => {
       const number = Number(id) + 1;
