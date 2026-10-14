@@ -56,6 +56,8 @@ describe("the accounts, as the Rust program writes them", () => {
     expect([b.paidSpots, b.freeSpots, b.spotsSold, b.eligibilityCount, b.poolSize, b.freeWinnerCount]).toEqual([o.paidSpots, o.freeSpots, o.spotsSold, o.eligibilityCount, o.poolSize, o.freeWinnerCount]);
     expect([b.spotPrice, b.opensAt, b.closesAt, b.eligibilityTotalWeight, b.seededAt].map(String)).toEqual([o.spotPrice, o.opensAt, o.closesAt, o.eligibilityTotalWeight, o.seededAt]);
     expect([toHex(b.eligibilityRoot), toHex(b.poolHash), toHex(b.seed)]).toEqual([o.eligibilityRoot, o.poolHash, o.seed]);
+    expect(b.maxPackPrice.toString()).toBe(o.maxPackPrice);
+    expect(toHex(b.packMachine)).toBe(o.packMachine);
     // Only the recorded winners are kept, not the empty slots.
     const winners = (o.freeWinners as { wallet: string; start: string; weight: string }[]).slice(0, o.freeWinnerCount as number);
     expect(b.freeWinners.map((w) => ({ wallet: w.wallet, start: w.start.toString(), weight: w.weight.toString() }))).toEqual(winners);

@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, type ReactNode, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import { inputFromBreak, loadBreak } from "../../lib/chain/load";
 import { chainSetup } from "../../lib/config";
 import { emptyInput, exampleInput } from "../../lib/example";
@@ -37,12 +37,12 @@ export function VerifyForm() {
     e.preventDefault();
     setResult(verifyDraw(input));
   };
-  const load = async () => {
+  const load = async (text: string = number) => {
     if (SETUP.kind !== "on") return;
     setLoading({ state: "loading" });
     setResult(undefined);
     try {
-      const loaded = await loadBreak({ ...SETUP.config, number: Number(number.trim() === "" ? Number.NaN : number) });
+      const loaded = await loadBreak({ ...SETUP.config, number: Number(text.trim() === "" ? Number.NaN : text) });
       const { patch, onChain, notes } = inputFromBreak(loaded);
       // The eligibility list and the cards are not on chain: whatever was pasted stays.
       setInput((i) => ({ ...i, ...patch, onChain }));
@@ -51,6 +51,14 @@ export function VerifyForm() {
       setLoading({ state: "error", message: err instanceof Error ? err.message : String(err) });
     }
   };
+  // A link such as /verify?break=3 (from a break's page) opens the form with that break loaded.
+  useEffect(() => {
+    const linked = new URLSearchParams(window.location.search).get("break");
+    if (linked === null || !/^[1-9][0-9]{0,8}$/.test(linked)) return;
+    setNumber(linked);
+    void load(linked);
+    // Once, when the page opens.
+  }, []);
   const reset = (next: VerifyInput) => {
     setInput(next);
     setResult(undefined);
@@ -73,7 +81,7 @@ export function VerifyForm() {
               <div className="inline">
                 <label htmlFor="number">Break number</label>
                 <input id="number" type="number" min={1} value={number} onChange={(e) => setNumber(e.target.value)} />
-                <button type="button" onClick={load} disabled={loading.state === "loading"}>
+                <button type="button" onClick={() => void load()} disabled={loading.state === "loading"}>
                   {loading.state === "loading" ? "Loading…" : "Load from the chain"}
                 </button>
               </div>

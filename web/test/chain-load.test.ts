@@ -8,7 +8,7 @@ import { getAccounts } from "../lib/chain/rpc";
 import { fromHex, toHex } from "../lib/draw/bytes";
 import { exampleInput } from "../lib/example";
 import { type Verified, type VerifyResult, verifyDraw } from "../lib/verify";
-import { type BreakFields, type Served, encodeBreak, encodeSpot, fakeNode } from "./support/accounts";
+import { type BreakFields, type Served, breakFieldsFromVector, encodeBreak, encodeSpot, fakeNode } from "./support/accounts";
 
 const vectors: { programs: { breaks: string }; cases: { name: string; inputs: Record<string, string>; outputs: Record<string, unknown> | null }[] } = JSON.parse(
   readFileSync(join(import.meta.dirname, "..", "..", "programs", "breaks", "instruction-vectors.json"), "utf8"),
@@ -27,37 +27,7 @@ describe("the test encoder", () => {
   it("writes exactly the bytes the Rust program writes", () => {
     const v = vectors.cases.find((c) => c.name === "breaks.account.Break")!;
     const o = v.outputs as Record<string, any>;
-    const hex = (s: string) => fromHex(s);
-    const fields: BreakFields = {
-      id: BigInt(o.id),
-      status: o.status,
-      paidSpots: o.paidSpots,
-      freeSpots: o.freeSpots,
-      spotPrice: BigInt(o.spotPrice),
-      maxPackPrice: BigInt(o.maxPackPrice),
-      packMachine: hex(o.packMachine),
-      opensAt: BigInt(o.opensAt),
-      closesAt: BigInt(o.closesAt),
-      spotsSold: o.spotsSold,
-      lockedSubsidy: BigInt(o.lockedSubsidy),
-      lockedHolder: BigInt(o.lockedHolder),
-      eligibilityRoot: hex(o.eligibilityRoot),
-      eligibilityTotalWeight: BigInt(o.eligibilityTotalWeight),
-      eligibilityCount: o.eligibilityCount,
-      eligibilityInputsHash: hex(o.eligibilityInputsHash),
-      poolSize: o.poolSize,
-      packBudget: BigInt(o.packBudget),
-      poolHash: hex(o.poolHash),
-      randomnessAttempt: o.randomnessAttempt,
-      randomnessRequestId: hex(o.randomnessRequestId),
-      randomnessRequestedAt: BigInt(o.randomnessRequestedAt),
-      seed: hex(o.seed),
-      seededAt: BigInt(o.seededAt),
-      freeWinnerCount: o.freeWinnerCount,
-      freeWinners: (o.freeWinners as { wallet: string; start: string; weight: string }[]).slice(0, o.freeWinnerCount).map((w) => ({ wallet: w.wallet, start: BigInt(w.start), weight: BigInt(w.weight) })),
-      bump: o.bump,
-      escrowBump: o.escrowBump,
-    };
+    const fields = breakFieldsFromVector(o);
     expect(toHex(encodeBreak(fields))).toBe(v.inputs.data);
 
     const s = vectors.cases.find((c) => c.name === "breaks.account.Spot")!;
@@ -231,7 +201,10 @@ describe("a break that is not that far along", () => {
   it("notes a refunded spot", async () => {
     const b = consistentBreak({ status: "Cancelled" });
     b.accounts.set(spotAddress(PROGRAM, b.key, 1), { data: encodeSpot({ breakId: ID, index: 1, owner: b.paidOwners[1]!, paid: 20_000_000n, refunded: true }), owner: PROGRAM });
-    expect((await load(b.accounts).promise).notes).toEqual(["This break was cancelled: nothing was drawn.", "Paid spot 2 was refunded."]);
+    const loaded = await load(b.accounts).promise;
+    // The loader reports the spots; the verify form's notes add the cancellation in front.
+    expect(loaded.notes).toEqual(["Paid spot 2 was refunded."]);
+    expect(inputFromBreak(loaded).notes).toEqual(["This break was cancelled: nothing was drawn.", "Paid spot 2 was refunded."]);
   });
 });
 

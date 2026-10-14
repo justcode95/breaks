@@ -3,7 +3,7 @@
 
 import { base64 } from "@scure/base";
 import { type Address, addressToBytes } from "../../lib/chain/address";
-import { concat, hashv, utf8 } from "../../lib/draw/bytes";
+import { concat, fromHex, hashv, utf8 } from "../../lib/draw/bytes";
 
 const disc = (name: string) => hashv(utf8(`account:${name}`)).slice(0, 8);
 const u = (bytes: number, n: bigint | number, signed = false): Uint8Array => {
@@ -49,6 +49,41 @@ export interface BreakFields {
   freeWinners: { wallet: Address; start: bigint; weight: bigint }[];
   bump: number;
   escrowBump: number;
+}
+
+/** The fields of the Rust program's sample Break (`breaks.account.Break` in instruction-vectors.json), as numbers and bytes. */
+export function breakFieldsFromVector(o: Record<string, any>): BreakFields {
+  const hex = (s: string) => fromHex(s);
+  return {
+    id: BigInt(o.id),
+    status: o.status,
+    paidSpots: o.paidSpots,
+    freeSpots: o.freeSpots,
+    spotPrice: BigInt(o.spotPrice),
+    maxPackPrice: BigInt(o.maxPackPrice),
+    packMachine: hex(o.packMachine),
+    opensAt: BigInt(o.opensAt),
+    closesAt: BigInt(o.closesAt),
+    spotsSold: o.spotsSold,
+    lockedSubsidy: BigInt(o.lockedSubsidy),
+    lockedHolder: BigInt(o.lockedHolder),
+    eligibilityRoot: hex(o.eligibilityRoot),
+    eligibilityTotalWeight: BigInt(o.eligibilityTotalWeight),
+    eligibilityCount: o.eligibilityCount,
+    eligibilityInputsHash: hex(o.eligibilityInputsHash),
+    poolSize: o.poolSize,
+    packBudget: BigInt(o.packBudget),
+    poolHash: hex(o.poolHash),
+    randomnessAttempt: o.randomnessAttempt,
+    randomnessRequestId: hex(o.randomnessRequestId),
+    randomnessRequestedAt: BigInt(o.randomnessRequestedAt),
+    seed: hex(o.seed),
+    seededAt: BigInt(o.seededAt),
+    freeWinnerCount: o.freeWinnerCount,
+    freeWinners: (o.freeWinners as { wallet: string; start: string; weight: string }[]).slice(0, o.freeWinnerCount).map((w) => ({ wallet: w.wallet, start: BigInt(w.start), weight: BigInt(w.weight) })),
+    bump: o.bump,
+    escrowBump: o.escrowBump,
+  };
 }
 
 export function encodeBreak(b: BreakFields): Uint8Array {

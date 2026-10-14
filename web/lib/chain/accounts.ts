@@ -60,6 +60,10 @@ export interface BreakAccount {
   paidSpots: number;
   freeSpots: number;
   spotPrice: bigint;
+  /** The most a pack can cost, committed when the break was created (USDC base units). */
+  maxPackPrice: bigint;
+  /** The 32 bytes naming the Collector Crypt machine / price tier, committed when the break was created. */
+  packMachine: Uint8Array;
   opensAt: bigint;
   closesAt: bigint;
   spotsSold: number;
@@ -85,8 +89,8 @@ export function decodeBreak(data: Uint8Array): BreakAccount {
   const paidSpots = r.u16();
   const freeSpots = r.u16();
   const spotPrice = r.u64();
-  r.u64(); // max pack price
-  r.fixed(32); // pack machine
+  const maxPackPrice = r.u64();
+  const packMachine = r.fixed(32);
   const opensAt = r.i64();
   const closesAt = r.i64();
   const spotsSold = r.u16();
@@ -113,6 +117,8 @@ export function decodeBreak(data: Uint8Array): BreakAccount {
     paidSpots,
     freeSpots,
     spotPrice,
+    maxPackPrice,
+    packMachine,
     opensAt,
     closesAt,
     spotsSold,

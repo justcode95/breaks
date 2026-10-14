@@ -45,8 +45,6 @@ export async function loadBreak(opts: LoadOptions): Promise<Loaded> {
     if (b.id !== id) throw new LoadError(`The account for break #${opts.number} says it is break id ${b.id}.`);
 
     const notes: string[] = [];
-    if (b.status === "Cancelled") notes.push("This break was cancelled: nothing was drawn.");
-
     const addresses = Array.from({ length: b.spotsSold }, (_, i) => spotAddress(opts.breaksProgram, key, i));
     const spots = await read(addresses);
     const paidOwners: Address[] = [];
@@ -81,7 +79,8 @@ const SEEDED: readonly BreakStatus[] = ["Settled", "Drawn"];
 
 export function inputFromBreak(loaded: Loaded): FromChain {
   const b = loaded.break;
-  const notes = [...loaded.notes];
+  // The cancellation is said here and not by the loader: the break page has its own words for it.
+  const notes = b.status === "Cancelled" ? ["This break was cancelled: nothing was drawn.", ...loaded.notes] : [...loaded.notes];
   const expected = { root: "", totalWeight: "", entryCount: "", poolHash: "" };
 
   if (COMMITTED.includes(b.status)) {
