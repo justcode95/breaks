@@ -13,6 +13,7 @@ describe("which page the navigation marks", () => {
     expect(isCurrent("/breaks/7", "/breaks")).toBe(true);
     expect(isCurrent("/breaksy", "/breaks")).toBe(false);
     expect(isCurrent("/treasury", "/breaks")).toBe(false);
+    expect(isCurrent("/menu", "/me")).toBe(false);
     expect(isCurrent("/", "/breaks")).toBe(false);
   });
 
@@ -20,6 +21,7 @@ describe("which page the navigation marks", () => {
     expect(marked(nav("/breaks"))).toEqual(["Breaks"]);
     expect(marked(nav("/breaks/12"))).toEqual(["Breaks"]);
     expect(marked(nav("/treasury"))).toEqual(["Treasury"]);
+    expect(marked(nav("/me"))).toEqual(["My spots"]);
     expect(marked(nav("/verify"))).toEqual(["Verify a draw"]);
   });
 
@@ -28,9 +30,9 @@ describe("which page the navigation marks", () => {
     expect(marked(nav("/somewhere-else"))).toEqual([]);
   });
 
-  it("is a labelled navigation with the three links, in order", () => {
+  it("is a labelled navigation with the four links, in order", () => {
     const html = nav("/");
     expect(html).toContain('<nav aria-label="Main">');
-    expect([...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1])).toEqual(["/breaks", "/treasury", "/verify"]);
+    expect([...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1])).toEqual(["/breaks", "/treasury", "/me", "/verify"]);
   });
 });
