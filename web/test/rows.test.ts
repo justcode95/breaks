@@ -61,6 +61,15 @@ describe("the table of breaks", () => {
     expect(html).toContain('<div class="scroll" role="region" aria-label="Breaks, newest first" tabindex="0"><table>');
   });
 
+  it("colours each break's stage badge by where it is", () => {
+    expect(html).toContain('<span class="badge live">On sale</span>');
+    expect(html).toContain('<span class="badge done">Drawn</span>');
+    expect(html).toContain('<span class="badge off">Cancelled</span>');
+    const settling = renderToStaticMarkup(createElement(BreakRows, { rows: [row(4, { status: "Funded" }), row(5, { status: "Open" })], now: CLOSES + 60 }));
+    expect(settling).toContain('<span class="badge waiting">Packs paid for</span>');
+    expect(settling).toContain('<span class="badge waiting">Sale over, closing</span>');
+  });
+
   it("has column headings and a caption for screen readers", () => {
     expect(html).toContain("<caption>Newest first</caption>");
     expect((html.match(/<th scope="col">/g) ?? []).length).toBe(6);
@@ -76,10 +85,15 @@ describe("the latest break on the home page", () => {
   });
 
   it("describes the newest break and links to it", () => {
-    const html = renderToStaticMarkup(createElement(LatestSummary, { latest: row(5, { status: "Open", spotsSold: 4 }), total: 5, now: CLOSES - 60 }));
-    expect(html).toContain('<a href="/breaks/5">Break #5</a>');
-    expect(sentence(html)).toContain("Break #5: On sale. 4 of 10 paid spots sold at $20, plus 2 free spots for holders.");
+    const html = renderToStaticMarkup(createElement(LatestSummary, { latest: row(5, { status: "Open", spotsSold: 4, freeWinnerCount: 0, freeWinners: [] }), total: 5, now: CLOSES - 60 }));
+    expect(html).toContain('<a href="/breaks/5"><strong>Break #5</strong></a><span class="badge live">On sale</span>');
+    const paragraphs = [...html.matchAll(/<p>(.*?)<\/p>/g)].map((m) => sentence(m[1] as string));
+    expect(paragraphs).toEqual(["Break #5On sale", "4 of 10 paid spots sold at $20, plus 2 free spots for holders. All 5 breaks"]);
     expect(html).toContain('<a href="/breaks">All 5 breaks</a>');
+    // The spots are drawn as coins between the title and the sentence.
+    expect(html).toContain('aria-label="4 of 10 paid spots taken, 0 of 2 free spots awarded"');
+    expect(html.indexOf('class="slots"')).toBeGreaterThan(html.indexOf("Break #5"));
+    expect(html.indexOf('class="slots"')).toBeLessThan(html.indexOf("4 of 10 paid spots sold"));
   });
 
   it("only offers the full list when there is more than one break, and reads one free spot in the singular", () => {

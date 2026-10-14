@@ -194,7 +194,9 @@ describe("the treasury page", () => {
 
   it("says what is available, reserved and held, in total and per bucket", async () => {
     const t = text(await page());
-    expect(t).toContain("$8.50 is available to fund new breaks. $1.50 more is reserved for breaks that already exist, out of $10 in the treasury.");
+    expect(t).toContain("Available for new breaks $8.50 can fund a break that is not made yet");
+    expect(t).toContain("Reserved for breaks $1.50 already set aside for breaks that exist");
+    expect(t).toContain("In the vaults $10 the whole treasury, in USDC");
     const body = await page();
     const rows = [...body.matchAll(/<tr>(.*?)<\/tr>/g)].map((m) => text(m[1] as string).trim());
     expect(rows).toEqual([

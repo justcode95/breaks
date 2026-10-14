@@ -140,3 +140,47 @@ export function stageLabel(b: BreakAccount, nowSecs: number): string {
   // "On sale" and "Drawn" read better than the steps' own words, and a cancelled break has no step.
   return step && b.status !== "Open" && b.status !== "Drawn" ? step.label : headline(b, nowSecs);
 }
+
+/** `part` of `whole` as a whole percent from 0 to 100, for a progress bar; 0 when there is no whole. */
+export function percent(part: number, whole: number): number {
+  if (!(whole > 0) || !(part > 0)) return 0;
+  return Math.min(100, Math.round((part / whole) * 100));
+}
+
+export type Tone = "live" | "waiting" | "done" | "off";
+
+/** How a break's badge is coloured: on sale (live), being settled (waiting), drawn (done), cancelled (off). */
+export function tone(b: BreakAccount, nowSecs: number): Tone {
+  switch (b.status) {
+    case "Open":
+      return Number(b.closesAt) > nowSecs ? "live" : "waiting";
+    case "Drawn":
+      return "done";
+    case "Cancelled":
+      return "off";
+    default:
+      return "waiting";
+  }
+}
+
+export interface SpotSlot {
+  /** A paid spot, or one of the free spots for holders. */
+  kind: "paid" | "free";
+  /** A paid spot that has been bought, or a free spot that has a winner recorded. */
+  taken: boolean;
+}
+
+/** More spots than this are not drawn one by one: a row of hundreds of circles says nothing the bar does not. */
+export const MAX_DRAWN_SPOTS = 60;
+
+/**
+ * Every spot of a break, paid ones first, then the free ones: which are taken. `undefined` when there are too many to draw.
+ * A free spot is taken once its winner is recorded, so before the draw (and when too few wallets were eligible) some stay open.
+ */
+export function spotSlots(b: BreakAccount): SpotSlot[] | undefined {
+  if (b.paidSpots + b.freeSpots > MAX_DRAWN_SPOTS) return undefined;
+  return [
+    ...Array.from({ length: b.paidSpots }, (_, i): SpotSlot => ({ kind: "paid", taken: i < b.spotsSold })),
+    ...Array.from({ length: b.freeSpots }, (_, i): SpotSlot => ({ kind: "free", taken: i < b.freeWinnerCount })),
+  ];
+}
