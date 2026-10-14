@@ -13,5 +13,14 @@
   "requests": [
     { "name": "pay the fee in SOL", "programId": "VRFzZoJdhFWL8rkvu87LpKM3RbcVezpMEc6X5GVDr7y", "data": "2697d106c3661cd90909090909090909090909090909090909090909090909090909090909090909", "accounts": [{ "pubkey": "93MB2qRDNVLxbmmPuYpLdAqn3u2x9ZhaVZK5wELHueP8", "isSigner": true, "isWritable": true }, { "pubkey": "5ER1oENnV4srxYdAynUfRzWeQCPQaqMiAp4VqyMbSqnK", "isSigner": false, "isWritable": true }, { "pubkey": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3", "isSigner": false, "isWritable": true }, { "pubkey": "39MefeKkkhpPA5mEYdCmx3NfuSyUU8h7mr1BCuTwD6T7", "isSigner": false, "isWritable": true }, { "pubkey": "11111111111111111111111111111111", "isSigner": false, "isWritable": false }] },
     { "name": "pay the fee in ORAO tokens", "programId": "VRFzZoJdhFWL8rkvu87LpKM3RbcVezpMEc6X5GVDr7y", "data": "2697d106c3661cd90909090909090909090909090909090909090909090909090909090909090909", "accounts": [{ "pubkey": "93MB2qRDNVLxbmmPuYpLdAqn3u2x9ZhaVZK5wELHueP8", "isSigner": true, "isWritable": true }, { "pubkey": "5ER1oENnV4srxYdAynUfRzWeQCPQaqMiAp4VqyMbSqnK", "isSigner": false, "isWritable": true }, { "pubkey": "5TeWSsjg2gbxCyWVniXeCmwM7UtHTCK7svzJr5xYJzHf", "isSigner": false, "isWritable": true }, { "pubkey": "39MefeKkkhpPA5mEYdCmx3NfuSyUU8h7mr1BCuTwD6T7", "isSigner": false, "isWritable": true }, { "pubkey": "11111111111111111111111111111111", "isSigner": false, "isWritable": false }, { "pubkey": "AByCTxLPRZPoyK22KdMxa3xkCbcNbeNWzVeEvh6UcJs9", "isSigner": false, "isWritable": true }, { "pubkey": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "isSigner": false, "isWritable": false }] }
-  ]
+  ],
+  "fulfil": {
+    "oracleSecret": "0505050505050505050505050505050505050505050505050505050505050505",
+    "oracle": "8SFqwqnq4whPhs8icwHA2hQg3hUoN1qrCLK1SBx3WKwe",
+    "client": "7tj9biW3KRJ7EEWmVUGigHiouCTXhV2dzcyvwma7Cyu7",
+    "instructions": [
+    { "name": "ed25519 signature of the seed", "programId": "Ed25519SigVerify111111111111111111111111111", "data": "01003000ffff1000ffff70002000ffff6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf186c3e25328bf37db8d0ece606027988bdf27dc95e12b1e5c48094c769377a5f8d4b759d0fc6e0563d414389728c23e39ad84de8db6b77a753db271ec335588020909090909090909090909090909090909090909090909090909090909090909", "accounts": [] },
+    { "name": "fulfill_v2", "programId": "VRFzZoJdhFWL8rkvu87LpKM3RbcVezpMEc6X5GVDr7y", "data": "a4e3ed54706f93c4", "accounts": [{ "pubkey": "93MB2qRDNVLxbmmPuYpLdAqn3u2x9ZhaVZK5wELHueP8", "isSigner": true, "isWritable": true }, { "pubkey": "Sysvar1nstructions1111111111111111111111111", "isSigner": false, "isWritable": false }, { "pubkey": "5ER1oENnV4srxYdAynUfRzWeQCPQaqMiAp4VqyMbSqnK", "isSigner": false, "isWritable": true }, { "pubkey": "39MefeKkkhpPA5mEYdCmx3NfuSyUU8h7mr1BCuTwD6T7", "isSigner": false, "isWritable": true }, { "pubkey": "7tj9biW3KRJ7EEWmVUGigHiouCTXhV2dzcyvwma7Cyu7", "isSigner": false, "isWritable": true }, { "pubkey": "11111111111111111111111111111111", "isSigner": false, "isWritable": false }] }
+    ]
+  }
 }

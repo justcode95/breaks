@@ -11,5 +11,6 @@ publish = false
 [dependencies]
 anchor-lang = "0.32.1"
 orao-solana-vrf = "=0.7.0"
+ed25519-dalek = "1.0.1"
 
 [workspace]

@@ -8,6 +8,11 @@ id.json
 
 # Solana / Anchor
 target/
+# ORAO's program and network state, dumped from devnet by scripts/dump-orao.sh
+orao-dump/
+orao-dump-new/
+orao-dump.partial.*
+orao-dump-new.partial.*
 .anchor/
 test-ledger/
 node_modules/
