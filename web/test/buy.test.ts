@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { type BreakAccount, decodeBreak } from "../lib/chain/accounts";
 import { addressFromBytes, associatedTokenAddress, breakAddress, escrowAddress, spotAddress } from "../lib/chain/address";
-import { buySpotInstruction, checkAfford, checkSale } from "../lib/chain/buy";
+import { buySpotInstruction, checkAfford, checkSale, explorerTxUrl } from "../lib/chain/buy";
 import { toHex } from "../lib/draw/bytes";
 import { type BreakFields, breakFieldsFromVector, encodeBreak } from "./support/accounts";
 
@@ -131,5 +131,20 @@ describe("whether a wallet can pay", () => {
     expect(checkAfford(20_000_000n, 19_999_999n)).toEqual({ ok: false, reason: "A spot costs $20 USDC and this wallet has $19.999999." });
     expect(checkAfford(20_500_000n, 0n)).toEqual({ ok: false, reason: "A spot costs $20.50 USDC and this wallet has $0." });
     expect(checkAfford(20_000_000n, null)).toEqual({ ok: false, reason: "This wallet has no USDC account yet, so it has no USDC to pay with." });
+  });
+});
+
+describe("the link to a transaction", () => {
+  it("is the devnet explorer's page for a plausible signature", () => {
+    const sig = "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW";
+    expect(explorerTxUrl(sig)).toBe(`https://explorer.solana.com/tx/${sig}?cluster=devnet`);
+    expect(explorerTxUrl("5".repeat(64))).toBeDefined();
+    expect(explorerTxUrl("5".repeat(88))).toBeDefined();
+  });
+
+  it("is nothing for text that is not a signature, since it came from a wallet", () => {
+    for (const bad of ["", "5".repeat(63), "5".repeat(89), `${"5".repeat(70)}/../x`, `${"5".repeat(70)}?x=1`, `${"5".repeat(70)} `, "0".repeat(70), "O".repeat(70), "l".repeat(70), "I".repeat(70), "https://evil.example"]) {
+      expect(explorerTxUrl(bad), bad).toBeUndefined();
+    }
   });
 });

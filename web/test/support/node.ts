@@ -25,6 +25,8 @@ export interface NodeScript {
   heights?: number[];
   /** Methods that always fail with an error from the node. */
   failing?: string[];
+  /** What the node says when it fails (default: "<method> is failing"). */
+  failMessage?: string;
 }
 
 export interface Call {
@@ -40,7 +42,7 @@ export function rpcNode(script: NodeScript) {
   const fetchFn = (async (_url: string, init: RequestInit) => {
     const { method, params } = JSON.parse(init.body as string) as { method: string; params: unknown[] };
     calls.push({ method, params });
-    if (script.failing?.includes(method)) return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, error: { message: `${method} is failing` } }));
+    if (script.failing?.includes(method)) return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, error: { message: script.failMessage ?? `${method} is failing` } }));
     switch (method) {
       case "getGenesisHash":
         return reply(script.genesis ?? GENESIS_HASHES.devnet);

@@ -79,7 +79,7 @@ export function errorText(err: unknown): string {
 }
 
 /** Ends a line of someone else's words with a full stop, unless it already ends the sentence. */
-const endSentence = (text: string): string => (/[.!?…]$/.test(text) ? text : `${text}.`);
+export const endSentence = (text: string): string => (/[.!?…]$/.test(text) ? text : `${text}.`);
 
 export type ConnectResult = { ok: true; account: WalletAccount } | { ok: false; reason: string };
 

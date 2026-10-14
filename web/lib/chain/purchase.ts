@@ -6,13 +6,14 @@
 import { SolanaSignAndSendTransaction, type SolanaSignAndSendTransactionFeature } from "@solana/wallet-standard-features";
 import type { Wallet, WalletAccount } from "@wallet-standard/base";
 import { base58 } from "@scure/base";
-import { CHAIN, displayName, errorText } from "../wallet/wallets";
+import { CHAIN, displayName, endSentence, errorText } from "../wallet/wallets";
 import { type BreakAccount, type ConfigAccount, decodeBreak, decodeConfig } from "./accounts";
 import { type Address, breakAddress, configAddress } from "./address";
 import { loadUsdcBalance } from "./balance";
 import { buySpotInstruction, checkAfford, checkSale } from "./buy";
 import { checkDevnet } from "./cluster";
-import { type RpcOptions, getAccounts, rpc } from "./rpc";
+import { LoadError } from "./load";
+import { type RpcOptions, RpcFailure, getAccounts, rpc } from "./rpc";
 import { buildTransaction } from "./transaction";
 import { sol } from "./view";
 
@@ -149,7 +150,7 @@ export async function buySpot(o: PurchaseOptions): Promise<PurchaseResult> {
   try {
     ready = await prepare(o, nodeOpts);
   } catch (err) {
-    return { kind: "refused", reason: `Could not check the purchase, so nothing was sent: ${errorText(err)}.` };
+    return { kind: "refused", reason: `Could not check the purchase, so nothing was sent: ${endSentence(errorText(err))}` };
   }
   if ("refused" in ready) return { kind: "refused", reason: ready.refused };
 
@@ -163,7 +164,7 @@ export async function buySpot(o: PurchaseOptions): Promise<PurchaseResult> {
     if (!out || out.signature.length !== 64) throw new Error("the wallet did not give back a transaction signature");
     signature = base58.encode(out.signature);
   } catch (err) {
-    return { kind: "declined", reason: `${displayName(o.wallet)} did not send the transaction: ${errorText(err)}. If you approved it, check your wallet's history before trying again.` };
+    return { kind: "declined", reason: `${displayName(o.wallet)} did not send the transaction: ${endSentence(errorText(err))} If you approved it, check your wallet's history before trying again.` };
   }
 
   o.onStep?.("confirming");
@@ -201,8 +202,8 @@ async function prepare(o: PurchaseOptions, nodeOpts: RpcOptions): Promise<Ready 
   // The purchase creates an account for the spot and pays the fee, and what is left of the wallet must still be a valid account.
   const [lamports, rentSpot, rentBare] = await Promise.all([
     rpc<{ value?: unknown }>(nodeOpts, "getBalance", [o.account.address, { commitment: "confirmed" }]).then((r) => integer(r?.value, "the wallet's SOL balance")),
-    rpc<unknown>(nodeOpts, "getMinimumBalanceForRentExemption", [SPOT_ACCOUNT_BYTES]).then((r) => integer(r, "the rent of a spot account")),
-    rpc<unknown>(nodeOpts, "getMinimumBalanceForRentExemption", [0]).then((r) => integer(r, "the rent of a wallet")),
+    rentExempt(nodeOpts, SPOT_ACCOUNT_BYTES, "the rent of a spot account"),
+    rentExempt(nodeOpts, 0, "the rent of a wallet"),
   ]);
   const need = rentSpot + SIGNATURE_FEE_LAMPORTS + rentBare;
   if (lamports < need) return { refused: `This wallet needs about ${sol(need)} for the new spot's account and the network fee, and has ${sol(lamports)}.` };
@@ -220,6 +221,44 @@ async function prepare(o: PurchaseOptions, nodeOpts: RpcOptions): Promise<Ready 
 function integer(value: unknown, what: string): bigint {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error(`the node did not give ${what}`);
   return BigInt(value);
+}
+
+/** What the node asks to keep an account of `bytes` bytes alive. */
+const rentExempt = (nodeOpts: RpcOptions, bytes: number, what: string): Promise<bigint> =>
+  rpc<unknown>(nodeOpts, "getMinimumBalanceForRentExemption", [bytes]).then((r) => integer(r, what));
+
+export interface SaleTerms {
+  /** The admin has paused sales. */
+  paused: boolean;
+  /** The SOL a purchase costs besides the USDC: the rent of the new spot account and the network fee. */
+  solCost: bigint;
+}
+
+/**
+ * What the buy panel shows before anyone clicks: whether sales are paused, and the SOL a purchase costs next to its USDC, so the
+ * buyer knows the whole price before the wallet asks. The purchase itself checks everything again; this only informs the page.
+ */
+export async function loadSaleTerms(o: { rpcUrl: string; program: Address; fetch?: typeof fetch }): Promise<SaleTerms> {
+  const nodeOpts: RpcOptions = { url: o.rpcUrl, ...(o.fetch ? { fetch: o.fetch } : {}) };
+  try {
+    const [[config], rent] = await Promise.all([
+      getAccounts({ ...nodeOpts, addresses: [configAddress(o.program)], commitment: "confirmed" }),
+      rentExempt(nodeOpts, SPOT_ACCOUNT_BYTES, "the rent of a spot account"),
+    ]);
+    if (!config) throw new LoadError("The breaks program has not been set up on this network (its config account does not exist).");
+    if (config.owner !== o.program) throw new LoadError("The config account is not owned by the breaks program.");
+    let decoded: ConfigAccount;
+    try {
+      decoded = decodeConfig(config.data);
+    } catch (err) {
+      throw new LoadError(`The config account could not be read: ${errorText(err)}`);
+    }
+    return { paused: decoded.paused, solCost: rent + SIGNATURE_FEE_LAMPORTS };
+  } catch (err) {
+    if (err instanceof LoadError) throw err;
+    if (err instanceof RpcFailure) throw new LoadError(err.message);
+    throw new LoadError(`Could not read the sale terms: ${errorText(err)}`);
+  }
 }
 
 interface SignatureStatus {
@@ -253,7 +292,7 @@ async function confirm(o: PurchaseOptions, nodeOpts: RpcOptions, signature: stri
       lastError = errorText(err);
     }
     if (clock() - started >= timeout) {
-      const why = lastError ? ` The last attempt to ask the network failed: ${lastError}.` : "";
+      const why = lastError ? ` The last attempt to ask the network failed: ${endSentence(lastError)}` : "";
       return { kind: "unconfirmed", signature, reason: `The network has not confirmed the transaction yet. It may still land, so check your wallet's history or the explorer before trying again.${why}` };
     }
     await sleep(pollMs);
