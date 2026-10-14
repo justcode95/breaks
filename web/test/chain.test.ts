@@ -71,9 +71,15 @@ describe("the accounts, as the Rust program writes them", () => {
     expect({ breakId: s.breakId.toString(), index: s.index, owner: s.owner, paid: s.paid.toString(), refunded: s.refunded }).toEqual({ breakId: o.breakId, index: o.index, owner: o.owner, paid: o.paid, refunded: o.refunded });
   });
 
-  it("reads the id the next break will get from the config", () => {
+  it("reads the admin, the USDC mint, the id the next break will get and the pause from the config", () => {
     const v = named("breaks.account.BreaksConfig");
-    expect(decodeConfig(fromHex(v.inputs.data as string)).nextBreakId.toString()).toBe((v.outputs as Record<string, unknown>).nextBreakId);
+    const c = decodeConfig(fromHex(v.inputs.data as string));
+    const o = v.outputs as Record<string, unknown>;
+    expect({ admin: c.admin, usdcMint: c.usdcMint, nextBreakId: c.nextBreakId.toString(), paused: c.paused }).toEqual({ admin: o.admin, usdcMint: o.usdcMint, nextBreakId: o.nextBreakId, paused: o.paused });
+    // The sample is paused; flip the byte before the bump to see the other way round.
+    const open = fromHex(v.inputs.data as string);
+    open[open.length - 2] = 0;
+    expect(decodeConfig(open).paused).toBe(false);
   });
 
   it("refuses data that is not the account asked for, or is cut short", () => {

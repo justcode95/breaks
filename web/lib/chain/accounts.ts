@@ -148,13 +148,28 @@ export function decodeSpot(data: Uint8Array): SpotAccount {
 }
 
 export interface ConfigAccount {
+  /** The wallet of the multisig that can pause the program. */
+  admin: Address;
+  /** The USDC mint the paid spots are bought with. */
+  usdcMint: Address;
   /** The id the next break will get; the breaks that exist are `0 .. nextBreakId - 1`. */
   nextBreakId: bigint;
+  /** While paused, no break is created and no spot is sold (refunds and cancelling still work). */
+  paused: boolean;
 }
 
 export function decodeConfig(data: Uint8Array): ConfigAccount {
   const r = accountReader(data, "BreaksConfig");
-  r.fixed(32 * 5); // admin, keeper, buyer, usdc mint, randomness program
+  const admin = r.address();
+  r.fixed(32 * 2); // keeper, buyer
+  const usdcMint = r.address();
+  r.fixed(32); // randomness program
   r.u64(); // randomness timeout
-  return { nextBreakId: r.u64() };
+  const nextBreakId = r.u64();
+  r.u64(); // minimum window
+  r.u64(); // maximum window
+  r.u16(); // most paid spots
+  r.u16(); // most free spots
+  const paused = r.bool();
+  return { admin, usdcMint, nextBreakId, paused };
 }
