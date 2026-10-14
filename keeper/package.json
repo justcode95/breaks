@@ -9,7 +9,8 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node --env-file-if-exists=.env dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "phase0": "tsx src/phase0/main.ts"
   },
   "dependencies": {
     "@noble/curves": "^2.4.0",
