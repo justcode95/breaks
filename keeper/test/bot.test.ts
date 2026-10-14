@@ -171,6 +171,16 @@ describe("what the bot posts, and when", () => {
     expect(t.poster.sent).toHaveLength(2);
   });
 
+  it("does not let a milestone announced by another deployment silence this one's", async () => {
+    const t = setup({ funds: [(NEED * 80n) / 100n, (NEED * 80n) / 100n] });
+    expect((await t.bot.run()).queued).toEqual(["reserve:5:75"]);
+    t.chain.treasury.subsidyVault = (NEED * 60n) / 100n;
+    t.chain.treasury.holderVault = (NEED * 60n) / 100n;
+    t.later(61);
+    // Same break id, but a fresh program: its reserve is at 60%, and 50 is news there.
+    expect((await t.make(t.chain, "scope2").run()).queued).toEqual(["reserve:5:50"]);
+  });
+
   it("announces the milestones as the reserve fills, the highest reached, and nothing once the break can be created", async () => {
     const t = setup({ limits: { minGapSecs: 0 } });
     const fund = (pct: bigint) => {
@@ -189,15 +199,20 @@ describe("what the bot posts, and when", () => {
   });
 
   it("names the winners with the handles of those who agreed to be tagged, and nobody else", async () => {
-    await db.query(
-      `insert into x_links (wallet, x_handle, signature, may_tag) values
-         ($1, 'alice', 's', true), ($2, 'evil http://x.co', 's', true), ($3, 'carol', 's', false)`,
-      [addr(21), addr(22), addr(23)],
-    );
+    // Both winners have a handle on file; only alice agreed to be tagged.
+    await db.query("insert into x_links (wallet, x_handle, signature, may_tag) values ($1, 'alice', 's', true), ($2, 'bob', 's', false)", [addr(21), addr(22)]);
     const t = setup({ breaks: [drawn()], nextBreakId: 5n });
     t.at(14n * HOUR);
     await t.bot.run();
     expect(t.poster.sent).toEqual([`Free holder spots in Break #5 go to @alice, ${addr(22).slice(0, 4)}…${addr(22).slice(-4)} 🎉`]);
+  });
+
+  it("never puts a handle that is not a plain X handle into a post, even one the site stored", async () => {
+    await db.query("insert into x_links (wallet, x_handle, signature, may_tag) values ($1, 'evil http://x.co', 's', true), ($2, 'ok_name', 's', true)", [addr(21), addr(22)]);
+    const t = setup({ breaks: [drawn()], nextBreakId: 5n });
+    t.at(14n * HOUR);
+    await t.bot.run();
+    expect(t.poster.sent).toEqual([`Free holder spots in Break #5 go to ${addr(21).slice(0, 4)}…${addr(21).slice(-4)}, @ok_name 🎉`]);
   });
 
   it("posts the results of a delivered break once its last delivery has had time to settle", async () => {
@@ -399,8 +414,13 @@ describe("what the bot looks at", () => {
     const funded: [bigint, bigint] = [NEED, NEED / 2n];
     expect((await setup({ funds: funded, paused: true }).bot.run()).queued).toEqual([]);
     expect((await setup({ funds: funded }).bot.run()).queued).toEqual(["reserve:5:50"]);
-    // 99 paid spots is more than the program allows (20): it would not create this break, so there is no progress to report.
-    expect((await setup({ funds: funded, template: { paidSpots: 99 } }).bot.run()).queued).toEqual([]);
+    // 19 paid spots is within what the program allows (20) and 21 is not: it would not create that break, so there is
+    // no progress to report, though the same funds are 57% of its worst case.
+    const part: [bigint, bigint] = [60_000_000n, 50_000_000n];
+    await db.exec("truncate bot_posts cascade");
+    expect((await setup({ funds: part, template: { paidSpots: 19 } }).bot.run()).queued).toEqual(["reserve:5:50"]);
+    await db.exec("truncate bot_posts cascade");
+    expect((await setup({ funds: part, template: { paidSpots: 21 } }).bot.run()).queued).toEqual([]);
   });
 
   it("decides from the view it is given: a break that is not final yet is not announced", async () => {
