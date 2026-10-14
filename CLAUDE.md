@@ -146,6 +146,8 @@ Minimum tables: `breaks`, `spots`, `packs` (spot_index, purchase_tx, card_mint, 
 - **Transparency** — treasury buckets, exclusion list, every past break with eligibility list + root, pool hash, randomness proof, the per-spot ledger, and a "verify this draw" tool that recomputes eligibility and assignment client-side.
 - **How it works** — plain-language fees → reserve → breaks → free spots → packs.
 
+**Built so far (the only page with logic):** `/verify` ("Verify a draw", `web/app/verify/`, `web/lib/verify.ts`). A person pastes a break's inputs and the browser recomputes the free-spot winners and who gets which card, with nothing sent anywhere. Inputs: the seed (64 hex digits, or ORAO's 128 and the seed is derived), the break's free-spot count, the eligibility list (`wallet weight` per line, any order, `#` comments), optionally the paid spots' wallets in purchase order and the pool's card mints (any order; one card per spot), and optionally the values on the break's account to compare with (root, total weight, number of wallets, pool hash; empty fields are not checked, a difference is shown in words and not by colour alone). Bad input is reported by section and line and nothing is computed; an empty list is a zero root and no winners, as the keeper commits it. **The draw code in `web/lib/draw/` is a separate implementation from the keeper's** (browser-safe: `@noble/hashes`, no `node:crypto` or `Buffer`), on purpose: a verifier that shares code with what it checks is not independent. Both are pinned to the same bytes by `draw-core/vectors.json` (made by the Rust crate the program runs), and the seed derivation by the Rust program's own `breaks.draw_seed` vector in `programs/breaks/instruction-vectors.json`. Tested by `web/test/draw.test.ts` (every Rust case: root, winners, assignment; the tree's refusals; the pool) and `web/test/verify.test.ts` (every Rust case again through the pasted text, input errors by line, the comparison, the example), with mutation checks (a verifier that wrongly says "matches" is the worst failure), and driven in a real browser (empty form, the example, a matching and a wrong root, no console errors, no sideways scroll at 375 px). `pnpm test` now runs the web tests too. **Not built:** the page takes pasted inputs; loading them from the chain (the break's account) and from the published eligibility record (`published_documents`) is the next step, as are the other pages. The look is a bare placeholder (the name is still BREAKS).
+
 ### 5. X bot (`keeper/src/bot/`, built: see the Keeper section)
 Uses the X API (pay-per-use in 2026; posts containing a URL cost much more than plain posts per third-party summaries, so confirm in X's console and keep links to the results post or a reply). Account labeled as automated. Templates:
 - Reserve milestone: "Break #{n} is {pct}% funded 🔥 Unlocks at ${target}."
@@ -163,7 +165,7 @@ testkit/            (shared helpers for the on-chain tests)
 keeper/             (jobs, indexer, buyer, bot)
 tools/orao-fixtures (standalone crate that writes keeper/test/fixtures/orao.json with the real ORAO crate; not built by CI)
 docs/               (PHASE0.md)
-web/                (Next.js)
+web/                (Next.js; lib/draw is a browser-safe implementation of the draw, tested against draw-core/vectors.json)
 db/                 (migrations)
 tests/              (Anchor tests: every instruction, happy + failure paths; added in Phase 2)
 scripts/            (dump-orao.sh: ORAO's program and network state from devnet for the real-ORAO tests; devnet setup scripts are added when needed)
@@ -175,7 +177,7 @@ The mock `PackProvider` lives in `keeper/src/packs/mock-provider.ts`. Root files
 ```
 pnpm install
 pnpm typecheck
-pnpm test                    # keeper tests, incl. db/migrations applied on an in-memory Postgres (PGlite)
+pnpm test                    # keeper tests (incl. db/migrations applied on an in-memory Postgres, PGlite) and web tests
 pnpm --filter web build
 cargo check --workspace      # Anchor programs, host check only
 ```
@@ -200,7 +202,7 @@ On-chain tests share helpers in `testkit/` (deploy with an upgrade authority, se
 2. **Treasury** (initialize, deposit_fees, set_split; merged). No admin-transfer instruction yet: decide whether to add a two-step handover.
 3. **Breaks program** — create/buy/close/commit/fund/cancel/refund, randomness (ORAO) and the free-spot draw, with the treasury lock/pay-out (merged and in review).
 4. **Keeper** — TWAB, eligibility, the draw logic and the instruction encoders / account decoders (built, tested against the Rust vectors); the pack buyer, delivery and the on-chain pipeline (mock providers, a modelled chain); the real RPC client (offline-tested only), the jobs wiring (`indexer`, `scheduler`, `fee-sweep`, `pipeline`, `pack-buyer`, `delivery`), the pre-funding steps (close, eligibility, fund), the balance indexer, the break scheduler and the fee sweep without a swapper (offline-tested only); next: a first devnet run, the real pack provider and card transfer (after Phase 0).
-5. **Website** — live break, dashboard, transparency + verify tool.
+5. **Website** — live break, dashboard, transparency + verify tool (started: the verify tool, from pasted inputs).
 6. **X bot** (built and tested offline against a pretend poster and a signature check; never run against X).
 7. **Hardening** — admin panel, monitoring/alerts, external audit, then mainnet with small breaks.
 

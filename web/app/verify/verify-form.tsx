@@ -1,0 +1,231 @@
+"use client";
+
+import { type FormEvent, type ReactNode, useState } from "react";
+import { emptyInput, exampleInput } from "../../lib/example";
+import { type VerifyInput, type VerifyResult, verifyDraw } from "../../lib/verify";
+
+type Expected = VerifyInput["expected"];
+
+function Field(props: { id: string; label: string; hint: ReactNode; children: ReactNode }) {
+  return (
+    <div className="field">
+      <label htmlFor={props.id}>{props.label}</label>
+      <p className="hint" id={`${props.id}-hint`}>
+        {props.hint}
+      </p>
+      {props.children}
+    </div>
+  );
+}
+
+export function VerifyForm() {
+  const [input, setInput] = useState<VerifyInput>(emptyInput());
+  const [result, setResult] = useState<VerifyResult | undefined>();
+
+  const set = (patch: Partial<VerifyInput>) => setInput((i) => ({ ...i, ...patch }));
+  const setExpected = (patch: Partial<Expected>) => setInput((i) => ({ ...i, expected: { ...i.expected, ...patch } }));
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    setResult(verifyDraw(input));
+  };
+
+  return (
+    <>
+      <form onSubmit={submit} noValidate>
+        <Field id="seed" label="Seed" hint="The draw seed on the break's account (64 hex digits), or ORAO's randomness for the request (128 hex digits); the seed is derived from it.">
+          <input id="seed" className="mono" aria-describedby="seed-hint" value={input.seed} onChange={(e) => set({ seed: e.target.value })} spellCheck={false} autoComplete="off" />
+        </Field>
+
+        <Field id="free" label="Free spots" hint="How many free holder spots the break has (0 to 16). Fewer winners are drawn if fewer wallets are eligible.">
+          <input id="free" type="number" min={0} max={16} aria-describedby="free-hint" value={input.freeSpots} onChange={(e) => set({ freeSpots: e.target.value })} />
+        </Field>
+
+        <Field id="holders" label="Eligible holders" hint="The published eligibility list: one wallet and its weight per line, in any order. Lines starting with # are ignored.">
+          <textarea id="holders" className="mono" rows={8} aria-describedby="holders-hint" value={input.holders} onChange={(e) => set({ holders: e.target.value })} spellCheck={false} />
+        </Field>
+
+        <Field id="paid" label="Paid spots (optional)" hint="The buyer's wallet of each paid spot, one per line, in purchase order. Needed with the cards to see who gets which card.">
+          <textarea id="paid" className="mono" rows={4} aria-describedby="paid-hint" value={input.paidOwners} onChange={(e) => set({ paidOwners: e.target.value })} spellCheck={false} />
+        </Field>
+
+        <Field id="cards" label="Cards in the pool (optional)" hint="The mint of every card that was pulled, one per line, in any order. There is one card per spot.">
+          <textarea id="cards" className="mono" rows={4} aria-describedby="cards-hint" value={input.cards} onChange={(e) => set({ cards: e.target.value })} spellCheck={false} />
+        </Field>
+
+        <fieldset>
+          <legend>Compare with the break's account (optional)</legend>
+          <p className="hint">Copy these from the break's account on chain. A field you leave empty is not checked.</p>
+          <div className="grid">
+            <Field id="x-root" label="Eligibility root" hint="64 hex digits">
+              <input id="x-root" className="mono" value={input.expected.root} onChange={(e) => setExpected({ root: e.target.value })} spellCheck={false} autoComplete="off" />
+            </Field>
+            <Field id="x-pool" label="Pool hash" hint="64 hex digits">
+              <input id="x-pool" className="mono" value={input.expected.poolHash} onChange={(e) => setExpected({ poolHash: e.target.value })} spellCheck={false} autoComplete="off" />
+            </Field>
+            <Field id="x-weight" label="Total weight" hint="a whole number">
+              <input id="x-weight" className="mono" value={input.expected.totalWeight} onChange={(e) => setExpected({ totalWeight: e.target.value })} inputMode="numeric" autoComplete="off" />
+            </Field>
+            <Field id="x-count" label="Eligible wallets" hint="a whole number">
+              <input id="x-count" className="mono" value={input.expected.entryCount} onChange={(e) => setExpected({ entryCount: e.target.value })} inputMode="numeric" autoComplete="off" />
+            </Field>
+          </div>
+        </fieldset>
+
+        <div className="actions">
+          <button type="submit">Verify the draw</button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => {
+              setInput(exampleInput());
+              setResult(undefined);
+            }}
+          >
+            Load an example
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => {
+              setInput(emptyInput());
+              setResult(undefined);
+            }}
+          >
+            Clear
+          </button>
+        </div>
+      </form>
+
+      <div aria-live="polite">{result && <Result result={result} />}</div>
+    </>
+  );
+}
+
+function Result({ result }: { result: VerifyResult }) {
+  if (!result.ok) {
+    return (
+      <section className="result" role="alert">
+        <h2>Cannot verify yet</h2>
+        <ul>
+          {result.errors.map((e) => (
+            <li key={e}>{e}</li>
+          ))}
+        </ul>
+      </section>
+    );
+  }
+  const mismatch = result.checks.filter((c) => !c.matches);
+  return (
+    <section className="result" aria-labelledby="result-title">
+      <h2 id="result-title">Result</h2>
+
+      {result.checks.length > 0 && (
+        <div className={mismatch.length === 0 ? "verdict ok" : "verdict bad"} role="status">
+          {mismatch.length === 0
+            ? `Every value you gave matches (${result.checks.length} checked).`
+            : `${mismatch.length} of ${result.checks.length} values you gave do NOT match what these inputs produce.`}
+        </div>
+      )}
+
+      <h3>Seed</h3>
+      <p className="mono wrap">{result.seed.hex}</p>
+      <p className="hint">{result.seed.derived ? "Derived from ORAO's randomness: sha256(\"breaks:seed:v1\" ‖ randomness)." : "Used as given."}</p>
+
+      <h3>Eligibility commitment</h3>
+      <dl>
+        <dt>Root</dt>
+        <dd className="mono wrap">{result.eligibility.root}</dd>
+        <dt>Total weight</dt>
+        <dd className="mono">{result.eligibility.totalWeight.toString()}</dd>
+        <dt>Eligible wallets</dt>
+        <dd className="mono">{result.eligibility.entries}</dd>
+        {result.poolHash && (
+          <>
+            <dt>Pool hash</dt>
+            <dd className="mono wrap">{result.poolHash}</dd>
+          </>
+        )}
+      </dl>
+
+      {result.checks.length > 0 && (
+        <table>
+          <caption>Compared with the break's account</caption>
+          <thead>
+            <tr>
+              <th scope="col">Value</th>
+              <th scope="col">You gave</th>
+              <th scope="col">These inputs give</th>
+              <th scope="col">Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            {result.checks.map((c) => (
+              <tr key={c.label}>
+                <th scope="row">{c.label}</th>
+                <td className="mono wrap">{c.expected}</td>
+                <td className="mono wrap">{c.actual}</td>
+                <td>{c.matches ? "✓ matches" : "✗ differs"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h3>Free-spot winners</h3>
+      {result.winners.length === 0 ? (
+        <p>No winners: there are no free spots or no eligible wallets.</p>
+      ) : (
+        <table>
+          <caption>Drawn one after the other, without replacement</caption>
+          <thead>
+            <tr>
+              <th scope="col">Draw</th>
+              <th scope="col">Wallet</th>
+              <th scope="col">Weight</th>
+              <th scope="col">Range starts at</th>
+              <th scope="col">Drawn position</th>
+            </tr>
+          </thead>
+          <tbody>
+            {result.winners.map((w) => (
+              <tr key={w.wallet}>
+                <th scope="row">{w.draw}</th>
+                <td className="mono wrap">{w.wallet}</td>
+                <td className="mono">{w.weight.toString()}</td>
+                <td className="mono">{w.start.toString()}</td>
+                <td className="mono">{w.position.toString()}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {result.assignment && (
+        <>
+          <h3>Who gets which card</h3>
+          <table>
+            <caption>Paid spots in purchase order, then the free winners in draw order</caption>
+            <thead>
+              <tr>
+                <th scope="col">Spot</th>
+                <th scope="col">Kind</th>
+                <th scope="col">Wallet</th>
+                <th scope="col">Card</th>
+              </tr>
+            </thead>
+            <tbody>
+              {result.assignment.map((s) => (
+                <tr key={s.spot}>
+                  <th scope="row">{s.spot}</th>
+                  <td>{s.kind}</td>
+                  <td className="mono wrap">{s.wallet}</td>
+                  <td className="mono wrap">{s.card}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </section>
+  );
+}
