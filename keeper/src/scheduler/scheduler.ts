@@ -16,9 +16,8 @@ import type { Job } from "../job.js";
 import type { ChainClient } from "../pipeline/chain.js";
 import { type BreakAccount, type BreaksConfigAccount, type Programs, breakAddress, configAddress, createBreak, decodeBreak, decodeBreaksConfig } from "../solana/breaks.js";
 import type { Address } from "../solana/pubkey.js";
-import { decodeTokenAccount } from "../solana/token.js";
-import { decodeTreasuryConfig, treasuryAddresses } from "../solana/treasury.js";
-import { type BreakTemplate, type ReserveProgress, reserveProgress, templateProblem, unlocked } from "./policy.js";
+import { type BreakTemplate, type ReserveProgress, templateProblem } from "./policy.js";
+import { readReserve } from "./reserve.js";
 import type { SchedulerStore } from "./store.js";
 
 export type SchedulerOutcome =
@@ -123,16 +122,8 @@ export class BreakScheduler {
   }
 
   /** What each bucket has that is not locked for a break, against the worst case of the configured break. */
-  private async reserve(): Promise<ReserveProgress> {
-    const { chain, programs, template } = this.deps;
-    const t = treasuryAddresses(programs.treasury);
-    const [config, subsidy, holder] = await Promise.all([chain.getAccountData(t.config), chain.getAccountData(t.subsidyVault), chain.getAccountData(t.holderVault)]);
-    if (!config || !subsidy || !holder) throw new Error("the treasury is not initialized (its config or a vault is missing)");
-    const locked = decodeTreasuryConfig(config);
-    return reserveProgress(template, {
-      subsidy: unlocked(decodeTokenAccount(subsidy).amount, locked.lockedSubsidy),
-      holder: unlocked(decodeTokenAccount(holder).amount, locked.lockedHolder),
-    });
+  private reserve(): Promise<ReserveProgress> {
+    return readReserve(this.deps.chain, this.deps.programs, this.deps.template);
   }
 
   private async create(config: BreaksConfigAccount, nowSecs: bigint): Promise<SchedulerOutcome> {

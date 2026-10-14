@@ -22,3 +22,6 @@ export interface ChainClient {
    */
   sendAndConfirm(instructions: Instruction[]): Promise<SendResult>;
 }
+
+/** Reading is all some jobs need (the X bot reads at a stricter commitment than the keeper sends with). */
+export type AccountReader = Pick<ChainClient, "getAccountData">;

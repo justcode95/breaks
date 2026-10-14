@@ -46,7 +46,68 @@ describe("loadConfig", () => {
         swapProvider: "none",
         policy: { keepLamports: 1_000_000_000n, minLamports: 100_000_000n, maxLamports: 10_000_000_000n, slippageBps: 50, minDeposit: 1_000_000n },
       },
+      bot: {
+        enabled: false,
+        poster: "log",
+        intervalSecs: 60,
+        settings: { milestones: [25, 50, 75], reminderHours: [3, 1], finalityMarginSecs: 120 },
+        limits: { minGapSecs: 60, maxPerDay: 20, maxAttempts: 5, retryStepSecs: 120 },
+        lookback: 5,
+      },
     });
+  });
+
+  it("keeps the X bot off, as a dry run, until it is turned on; real posting needs the four credentials", () => {
+    expect(loadConfig(base).bot).toMatchObject({ enabled: false, poster: "log" });
+    // A dry run needs no account.
+    expect(loadConfig({ ...base, BOT_ENABLED: "true" }).bot).toMatchObject({ enabled: true, poster: "log" });
+
+    const creds = { X_CONSUMER_KEY: "ck", X_CONSUMER_SECRET: "cs", X_ACCESS_TOKEN: "at", X_ACCESS_TOKEN_SECRET: "as" };
+    expect(() => loadConfig({ ...base, BOT_ENABLED: "true", BOT_POSTER: "x" })).toThrow(/X_CONSUMER_KEY.*required/);
+    expect(() => loadConfig({ ...base, BOT_ENABLED: "true", BOT_POSTER: "x", ...creds, X_ACCESS_TOKEN_SECRET: undefined })).toThrow(/X_ACCESS_TOKEN_SECRET/);
+    const c = loadConfig({
+      ...base,
+      ...creds,
+      BOT_ENABLED: "true",
+      BOT_POSTER: "x",
+      X_API_BASE: "https://api.x.com",
+      BOT_INTERVAL_SECS: "30",
+      BOT_MIN_GAP_SECS: "120",
+      BOT_MAX_POSTS_PER_DAY: "10",
+      BOT_MILESTONES: "10, 50",
+      BOT_REMINDER_HOURS: "6,2,1",
+      BOT_LOOKBACK_BREAKS: "3",
+      BOT_SITE_URL: "https://example.org",
+    });
+    expect(c.bot).toEqual({
+      enabled: true,
+      poster: "x",
+      x: { baseUrl: "https://api.x.com", credentials: { consumerKey: "ck", consumerSecret: "cs", accessToken: "at", accessTokenSecret: "as" } },
+      intervalSecs: 30,
+      settings: { milestones: [10, 50], reminderHours: [6, 2, 1], finalityMarginSecs: 120, siteUrl: "https://example.org" },
+      limits: { minGapSecs: 120, maxPerDay: 10, maxAttempts: 5, retryStepSecs: 120 },
+      lookback: 3,
+    });
+  });
+
+  it("refuses X bot settings that make no sense", () => {
+    for (const bad of [
+      { BOT_MILESTONES: "50,25" },
+      { BOT_MILESTONES: "0,50" },
+      { BOT_MILESTONES: "50,100" },
+      { BOT_MILESTONES: "25,x" },
+      { BOT_REMINDER_HOURS: "0" },
+      { BOT_REMINDER_HOURS: "1.5" },
+      { BOT_REMINDER_HOURS: "500" },
+      { X_API_BASE: "http://api.x.com" },
+      { BOT_SITE_URL: "http://example.org" },
+      { BOT_SITE_URL: "not a url" },
+      { BOT_POSTER: "telegram" },
+      { BOT_MAX_POSTS_PER_DAY: "0" },
+      { BOT_INTERVAL_SECS: "1" },
+    ]) {
+      expect(() => loadConfig({ ...base, ...bad }), JSON.stringify(bad)).toThrow(/Invalid keeper config/);
+    }
   });
 
   it("keeps the fee sweep off until it is turned on, and reads its limits", () => {
