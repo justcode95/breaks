@@ -40,6 +40,15 @@ describe("a wallet's USDC balance", () => {
     expect(n.requests.every((r) => r.config.commitment === "finalized")).toBe(true);
   });
 
+  it("reads at the commitment it is asked for, finalized when it is not asked", async () => {
+    const quick = node();
+    await loadUsdcBalance({ rpcUrl: "http://node.test", program: PROGRAM, owner: WALLET, commitment: "confirmed", fetch: quick.fetchFn });
+    expect(quick.requests.map((r) => r.config.commitment)).toEqual(["confirmed", "confirmed"]);
+    const slow = node();
+    await load(slow);
+    expect(slow.requests.map((r) => r.config.commitment)).toEqual(["finalized", "finalized"]);
+  });
+
   it("is zero for an account that holds nothing, and null for a wallet that has no USDC account yet", async () => {
     expect(await load(node({ token: { data: encodeTokenAccount({ mint: CONFIG.usdcMint, owner: WALLET, amount: 0n }), owner: TOKEN_PROGRAM } }))).toMatchObject({ balance: 0n });
     expect(await load(node({ token: null }))).toEqual({ mint: CONFIG.usdcMint, account: ATA, balance: null });

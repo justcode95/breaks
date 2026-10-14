@@ -8,7 +8,7 @@ import { SpotSlots } from "../app/breaks/slots";
 import { type BreakAccount, type BreakStatus, type FreeWinner, decodeBreak } from "../lib/chain/accounts";
 import { breakAddress } from "../lib/chain/address";
 import type { Loaded } from "../lib/chain/load";
-import { MAX_DRAWN_SPOTS, duration, expectedWinners, headline, machineLabel, money, percent, share, spotSlots, steps, tone, utcTime } from "../lib/chain/view";
+import { MAX_DRAWN_SPOTS, sol, duration, expectedWinners, headline, machineLabel, money, percent, share, spotSlots, steps, tone, utcTime } from "../lib/chain/view";
 import { toHex } from "../lib/draw/bytes";
 import { type BreakFields, breakFieldsFromVector, encodeBreak } from "./support/accounts";
 
@@ -106,6 +106,18 @@ describe("the progress bar and the badge colour", () => {
     for (const status of ["Closed", "EligibilityCommitted", "Funded", "PoolCommitted", "RandomnessRequested", "Settled"] as const) expect(at({ status }), status).toBe("waiting");
     expect(at({ status: "Drawn" })).toBe("done");
     expect(at({ status: "Cancelled" })).toBe("off");
+  });
+});
+
+describe("SOL amounts", () => {
+  it("reads lamports as SOL, to the digits that matter", () => {
+    expect(sol(0n)).toBe("0 SOL");
+    expect(sol(1n)).toBe("0.000000001 SOL");
+    expect(sol(5_000n)).toBe("0.000005 SOL");
+    expect(sol(1_320_000n)).toBe("0.00132 SOL");
+    expect(sol(1_000_000_000n)).toBe("1 SOL");
+    expect(sol(1_500_000_000n)).toBe("1.5 SOL");
+    expect(sol(12_345_678_901n)).toBe("12.345678901 SOL");
   });
 });
 

@@ -1,7 +1,12 @@
 // A pretend wallet that follows the Wallet Standard, typed with the standard's own feature types: if the standard's shapes change,
 // this file stops compiling. It remembers how it was called and can announce account changes.
 
-import { SolanaSignAndSendTransaction, type SolanaSignAndSendTransactionFeature } from "@solana/wallet-standard-features";
+import {
+  SolanaSignAndSendTransaction,
+  type SolanaSignAndSendTransactionFeature,
+  type SolanaSignAndSendTransactionInput,
+  type SolanaSignAndSendTransactionOutput,
+} from "@solana/wallet-standard-features";
 import type { Wallet, WalletAccount, WalletIcon } from "@wallet-standard/base";
 import {
   StandardConnect,
@@ -36,11 +41,15 @@ export interface PretendOptions {
   accounts?: WalletAccount[];
   connect?: (input?: { silent?: boolean }) => Promise<{ accounts: readonly WalletAccount[] }>;
   disconnect?: () => Promise<void>;
+  /** What the wallet does when asked to sign and send: by default it "sends" and answers with a signature of 64 sevens. */
+  send?: (...inputs: readonly SolanaSignAndSendTransactionInput[]) => Promise<readonly SolanaSignAndSendTransactionOutput[]>;
 }
 
 export interface Pretend extends Wallet {
   connectCalls: ({ silent?: boolean } | undefined)[];
   disconnectCalls: number;
+  /** Every request to sign and send, as the wallet received it. */
+  sendCalls: SolanaSignAndSendTransactionInput[];
   listeners: number;
   /** Announces a change of accounts to everyone listening. */
   emit: (accounts: readonly WalletAccount[]) => void;
@@ -59,6 +68,7 @@ export function pretendWallet(opts: PretendOptions = {}): Pretend {
     features: {},
     connectCalls: [],
     disconnectCalls: 0,
+    sendCalls: [],
     get listeners() {
       return listeners.size;
     },
@@ -107,8 +117,9 @@ export function pretendWallet(opts: PretendOptions = {}): Pretend {
           [SolanaSignAndSendTransaction]: {
             version: "1.0.0",
             supportedTransactionVersions: ["legacy", 0],
-            signAndSendTransaction: async () => {
-              throw new Error("the pretend wallet does not send anything");
+            signAndSendTransaction: async (...inputs) => {
+              wallet.sendCalls.push(...inputs);
+              return opts.send ? opts.send(...inputs) : [{ signature: new Uint8Array(64).fill(7) }];
             },
           } satisfies SolanaSignAndSendTransactionFeature[typeof SolanaSignAndSendTransaction],
         }

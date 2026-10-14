@@ -24,11 +24,13 @@ export interface BalanceOptions {
   program: Address;
   /** The wallet. */
   owner: Address;
+  /** How settled the data must be. `finalized` (the default) cannot roll back; `confirmed` is quicker and is what a purchase uses. */
+  commitment?: "finalized" | "confirmed";
   fetch?: typeof fetch;
 }
 
 export async function loadUsdcBalance(opts: BalanceOptions): Promise<UsdcBalance> {
-  const extra = opts.fetch ? { fetch: opts.fetch } : {};
+  const extra = { ...(opts.fetch ? { fetch: opts.fetch } : {}), ...(opts.commitment ? { commitment: opts.commitment } : {}) };
   try {
     const [config] = await getAccounts({ url: opts.rpcUrl, addresses: [configAddress(opts.program)], ...extra });
     if (!config) throw new LoadError("The breaks program has not been set up on this network (its config account does not exist).");
