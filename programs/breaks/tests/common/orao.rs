@@ -195,6 +195,9 @@ pub struct RealOrao {
     pub oracle: Keypair,
     pub treasury: Address,
     pub request_fee: u64,
+    /// What the dumped network state said before its oracles were replaced (for the test output).
+    pub devnet_oracles: usize,
+    pub devnet_token_fee: bool,
 }
 
 impl RealOrao {
@@ -223,8 +226,11 @@ impl RealOrao {
         assert!(program.starts_with(b"\x7fELF"), "orao_vrf.so is not an ELF program");
         let mut state = NetworkState::parse(&raw_state).unwrap_or_else(|e| panic!("network_state.bin: {e}"));
         let oracle = Keypair::new();
+        let (devnet_oracles, devnet_token_fee) = (state.oracles.len(), state.token_fee.is_some());
         state.oracles = vec![oracle.pubkey().to_bytes()];
         RealOrao {
+            devnet_oracles,
+            devnet_token_fee,
             program,
             treasury: Address::new_from_array(state.treasury),
             request_fee: state.request_fee,

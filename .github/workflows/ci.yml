@@ -57,7 +57,7 @@ jobs:
             exit 1
           fi
       - name: Test the breaks program against the real ORAO
-        run: cargo test -p breaks --test real_orao --locked -- --ignored
+        run: cargo test -p breaks --test real_orao --locked -- --ignored --nocapture
 
   node:
     runs-on: ubuntu-latest

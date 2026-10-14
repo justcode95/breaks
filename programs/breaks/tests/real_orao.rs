@@ -225,6 +225,18 @@ fn request_state(env: &Env, seed: &[u8; 32]) -> RequestState {
     parse_request(&account.data, seed).unwrap()
 }
 
+/// The transaction must have failed. The error and the program logs go to the test output
+/// (`--nocapture`), so a refusal can be checked for being the right one.
+fn refused(result: Sent, what: &str) -> litesvm::types::FailedTransactionMetadata {
+    match result {
+        Ok(_) => panic!("{what}: expected a refusal, but the transaction succeeded"),
+        Err(failed) => {
+            println!("--- {what}: {:?}\n{}", failed.err, failed.meta.logs.join("\n"));
+            failed
+        }
+    }
+}
+
 fn network_state(env: &Env) -> NetworkState {
     NetworkState::parse(&env.svm.get_account(&orao::network_state_address()).unwrap().data).unwrap()
 }
@@ -264,6 +276,12 @@ fn the_real_program_takes_the_request_the_breaks_program_sends_and_charges_its_f
     // The fee went to the treasury ORAO names, the keeper paid it and the account's rent, and
     // ORAO counted the request.
     let fee = orao.request_fee;
+    println!(
+        "devnet network state: fee {fee} lamports, treasury {}, {} oracles replaced by 1, token fee {}",
+        orao.treasury,
+        orao.devnet_oracles,
+        if orao.devnet_token_fee { "configured" } else { "none" }
+    );
     assert_eq!(env.svm.get_balance(&orao.treasury).unwrap() - treasury_before, fee);
     let rent = env.svm.minimum_balance_for_rent_exemption(orao::REQUEST_ACCOUNT_SIZE);
     let paid = keeper_before - env.svm.get_balance(&keeper).unwrap();
@@ -337,23 +355,35 @@ fn an_answer_that_is_not_the_oracles_signature_of_the_seed_is_refused() {
 
     // A key that is not one of the oracles.
     let impostor = Keypair::new();
-    assert!(answer_with(&mut env, &impostor, &request_id, &request_id, &keeper).is_err());
+    refused(
+        answer_with(&mut env, &impostor, &request_id, &request_id, &keeper),
+        "a key that is not an oracle",
+    );
     // The oracle signing something else than the seed.
-    assert!(answer_with(&mut env, &orao.oracle, &[1u8; 32], &request_id, &keeper).is_err());
+    refused(
+        answer_with(&mut env, &orao.oracle, &[1u8; 32], &request_id, &keeper),
+        "the oracle signs another message",
+    );
     // The right instruction for another client.
     let stranger = Address::new_unique();
-    assert!(answer_with(&mut env, &orao.oracle, &request_id, &request_id, &stranger).is_err());
+    refused(
+        answer_with(&mut env, &orao.oracle, &request_id, &request_id, &stranger),
+        "another client",
+    );
     // `fulfill_v2` on its own, with no signature in front of it.
     let payer = Keypair::new();
     env.svm.airdrop(&payer.pubkey(), 1_000_000_000).unwrap();
     let alone = orao::fulfill_v2_instruction(&payer.pubkey(), &env.request_for(&request_id), &keeper);
-    assert!(send(&mut env.svm, &payer, &[], &[alone]).is_err());
+    refused(
+        send(&mut env.svm, &payer, &[], &[alone]),
+        "fulfill_v2 without a signature",
+    );
     // A forged signature: the precompile rejects it.
     let mut signature = orao::sign(&orao.oracle, &request_id);
     signature[10] ^= 1;
     let forged = orao::ed25519_instruction_with(&orao.oracle.pubkey().to_bytes(), &signature, &request_id);
     let fulfil = orao::fulfill_v2_instruction(&payer.pubkey(), &env.request_for(&request_id), &keeper);
-    assert!(send(&mut env.svm, &payer, &[], &[forged, fulfil]).is_err());
+    refused(send(&mut env.svm, &payer, &[], &[forged, fulfil]), "a forged signature");
 
     // None of it answered the request.
     assert_eq!(request_state(&env, &request_id), RequestState::Pending);
@@ -441,5 +471,8 @@ fn an_answered_request_cannot_be_replaced_by_asking_again() {
     assert_eq!(env.brk(id).seed, draw_seed(&orao::sign(&orao.oracle, &request_id)));
 
     // ORAO does not take a second answer either.
-    assert!(answer(&mut env, &orao, &request_id, &keeper).is_err());
+    refused(
+        answer(&mut env, &orao, &request_id, &keeper),
+        "a second answer to an answered request",
+    );
 }
