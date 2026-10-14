@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { Nav } from "./nav";
 import "./globals.css";
 
 // BREAKS is a placeholder name until the coin name is decided (see CLAUDE.md, "Open decisions").
@@ -14,12 +15,13 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="en">
       <body>
         <header className="site">
-          <nav aria-label="Main">
-            <Link href="/">BREAKS</Link>
-            <Link href="/breaks">Breaks</Link>
-            <Link href="/treasury">Treasury</Link>
-            <Link href="/verify">Verify a draw</Link>
-          </nav>
+          <div className="site-inner">
+            <Link href="/" className="brand">
+              <span className="brand-mark" aria-hidden="true" />
+              BREAKS
+            </Link>
+            <Nav />
+          </div>
         </header>
         {children}
       </body>

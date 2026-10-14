@@ -16,9 +16,23 @@ export function TreasuryDetails({ treasury, program, now, readAt, refresh }: { t
 
   return (
     <>
-      <p>
-        <strong>{money(total.available)}</strong> is available to fund new breaks. {money(total.locked)} more is reserved for breaks that already exist, out of {money(total.balance)} in the treasury.
-      </p>
+      <div className="stats wide">
+        <div className="stat">
+          <div className="label">Available for new breaks</div>
+          <div className="value">{money(total.available)}</div>
+          <div className="sub">can fund a break that is not made yet</div>
+        </div>
+        <div className="stat">
+          <div className="label">Reserved for breaks</div>
+          <div className="value">{money(total.locked)}</div>
+          <div className="sub">already set aside for breaks that exist</div>
+        </div>
+        <div className="stat">
+          <div className="label">In the vaults</div>
+          <div className="value">{money(total.balance)}</div>
+          <div className="sub">the whole treasury, in USDC</div>
+        </div>
+      </div>
 
       <h2>The two buckets</h2>
       <div className="scroll" role="region" aria-label="Treasury buckets" tabIndex={0}>
@@ -41,9 +55,9 @@ export function TreasuryDetails({ treasury, program, now, readAt, refresh }: { t
                   <span className="hint block">{r.pays}</span>
                 </th>
                 <td>{share(BigInt(r.bps), 10_000n)}</td>
-                <td>{money(r.bucket.balance)}</td>
-                <td>{money(r.bucket.locked)}</td>
-                <td>{money(r.bucket.available)}</td>
+                <td className="num">{money(r.bucket.balance)}</td>
+                <td className="num">{money(r.bucket.locked)}</td>
+                <td className="num">{money(r.bucket.available)}</td>
               </tr>
             ))}
           </tbody>
@@ -51,61 +65,65 @@ export function TreasuryDetails({ treasury, program, now, readAt, refresh }: { t
             <tr>
               <th scope="row">Total</th>
               <td>{share(BigInt(c.subsidyBps + c.holderBps), 10_000n)}</td>
-              <td>{money(total.balance)}</td>
-              <td>{money(total.locked)}</td>
-              <td>{money(total.available)}</td>
+              <td className="num">{money(total.balance)}</td>
+              <td className="num">{money(total.locked)}</td>
+              <td className="num">{money(total.available)}</td>
             </tr>
           </tfoot>
         </table>
       </div>
 
-      <h2>How the money is used</h2>
-      <ul>
-        <li>A break is only created when the buckets can cover its worst case: every free spot at the highest pack price, and every paid spot's gap between that price and its own price.</li>
-        <li>Creating a break reserves that amount. Pay-outs can only come out of reserved money, so they never touch the money reserved for another break.</li>
-        <li>The treasury only holds USDC. Fees arrive as SOL and are swapped before they are deposited.</li>
-      </ul>
+      <section className="card">
+        <h2>How the money is used</h2>
+        <ul>
+          <li>A break is only created when the buckets can cover its worst case: every free spot at the highest pack price, and every paid spot's gap between that price and its own price.</li>
+          <li>Creating a break reserves that amount. Pay-outs can only come out of reserved money, so they never touch the money reserved for another break.</li>
+          <li>The treasury only holds USDC. Fees arrive as SOL and are swapped before they are deposited.</li>
+        </ul>
+      </section>
 
-      <h2>Who controls it</h2>
-      <dl>
-        <dt>Admin</dt>
-        <dd>
-          <code className="mono wrap">{c.admin}</code>
-          <span className="hint block">Changes the split and appoints the controller. Meant to be a multisig.</span>
-        </dd>
-        <dt>Controller</dt>
-        <dd>
-          {noController(c.controller) ? (
-            <>
-              <strong>Not set yet.</strong> Until the admin appoints one, nobody can reserve or pay out money.
-            </>
-          ) : (
-            <>
-              <code className="mono wrap">{c.controller}</code>
-              <span className="hint block">The only signer that can reserve, release and pay out money. In production, the breaks program.</span>
-            </>
-          )}
-        </dd>
-        <dt>Money</dt>
-        <dd>
-          <code className="mono wrap">{c.usdcMint}</code>
-          <span className="hint block">The USDC mint both buckets are held in.</span>
-        </dd>
-      </dl>
-
-      <details>
-        <summary>Addresses to check this yourself</summary>
+      <section className="card">
+        <h2>Who controls it</h2>
         <dl>
-          <dt>Treasury program</dt>
-          <dd><code className="mono wrap">{program}</code></dd>
-          <dt>Config</dt>
-          <dd><code className="mono wrap">{treasury.configAddress}</code></dd>
-          <dt>Subsidy vault</dt>
-          <dd><code className="mono wrap">{subsidy.vault}</code></dd>
-          <dt>Holder vault</dt>
-          <dd><code className="mono wrap">{holder.vault}</code></dd>
+          <dt>Admin</dt>
+          <dd>
+            <code className="mono wrap">{c.admin}</code>
+            <span className="hint block">Changes the split and appoints the controller. Meant to be a multisig.</span>
+          </dd>
+          <dt>Controller</dt>
+          <dd>
+            {noController(c.controller) ? (
+              <>
+                <strong>Not set yet.</strong> Until the admin appoints one, nobody can reserve or pay out money.
+              </>
+            ) : (
+              <>
+                <code className="mono wrap">{c.controller}</code>
+                <span className="hint block">The only signer that can reserve, release and pay out money. In production, the breaks program.</span>
+              </>
+            )}
+          </dd>
+          <dt>Money</dt>
+          <dd>
+            <code className="mono wrap">{c.usdcMint}</code>
+            <span className="hint block">The USDC mint both buckets are held in.</span>
+          </dd>
         </dl>
-      </details>
+
+        <details>
+          <summary>Addresses to check this yourself</summary>
+          <dl>
+            <dt>Treasury program</dt>
+            <dd><code className="mono wrap">{program}</code></dd>
+            <dt>Config</dt>
+            <dd><code className="mono wrap">{treasury.configAddress}</code></dd>
+            <dt>Subsidy vault</dt>
+            <dd><code className="mono wrap">{subsidy.vault}</code></dd>
+            <dt>Holder vault</dt>
+            <dd><code className="mono wrap">{holder.vault}</code></dd>
+          </dl>
+        </details>
+      </section>
 
       {treasury.notes.length > 0 && (
         <ul className="notes">

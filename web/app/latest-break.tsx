@@ -25,7 +25,7 @@ export function LatestBreak() {
 
   if (SETUP.kind !== "on") return null;
   return (
-    <section aria-labelledby="latest-title" aria-live="polite">
+    <section className="latest" aria-labelledby="latest-title" aria-live="polite">
       <h2 id="latest-title">Latest break</h2>
       {view.state === "loading" && <p>Reading the chain…</p>}
       {view.state === "error" && <p className="problem">{view.message}</p>}

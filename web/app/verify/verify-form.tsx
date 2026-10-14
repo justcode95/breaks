@@ -103,13 +103,15 @@ export function VerifyForm() {
           )}
         </fieldset>
 
-        <Field id="seed" label="Seed" hint="The draw seed on the break's account (64 hex digits), or ORAO's randomness for the request (128 hex digits); the seed is derived from it.">
-          <input id="seed" className="mono" aria-describedby="seed-hint" value={input.seed} onChange={(e) => set({ seed: e.target.value })} spellCheck={false} autoComplete="off" />
-        </Field>
+        <div className="grid">
+          <Field id="seed" label="Seed" hint="The draw seed on the break's account (64 hex digits), or ORAO's randomness for the request (128 hex digits); the seed is derived from it.">
+            <input id="seed" className="mono" aria-describedby="seed-hint" value={input.seed} onChange={(e) => set({ seed: e.target.value })} spellCheck={false} autoComplete="off" />
+          </Field>
 
-        <Field id="free" label="Free spots" hint="How many free holder spots the break has (0 to 16). Fewer winners are drawn if fewer wallets are eligible.">
-          <input id="free" type="number" min={0} max={16} aria-describedby="free-hint" value={input.freeSpots} onChange={(e) => set({ freeSpots: e.target.value })} />
-        </Field>
+          <Field id="free" label="Free spots" hint="How many free holder spots the break has (0 to 16). Fewer winners are drawn if fewer wallets are eligible.">
+            <input id="free" type="number" min={0} max={16} aria-describedby="free-hint" value={input.freeSpots} onChange={(e) => set({ freeSpots: e.target.value })} />
+          </Field>
+        </div>
 
         <Field id="holders" label="Eligible holders" hint="The published eligibility list: one wallet and its weight per line, in any order. Lines starting with # are ignored.">
           <textarea id="holders" className="mono" rows={8} aria-describedby="holders-hint" value={input.holders} onChange={(e) => set({ holders: e.target.value })} spellCheck={false} />

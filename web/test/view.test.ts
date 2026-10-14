@@ -7,7 +7,7 @@ import { BreakDetails } from "../app/breaks/[number]/details";
 import { type BreakAccount, type BreakStatus, type FreeWinner, decodeBreak } from "../lib/chain/accounts";
 import { breakAddress } from "../lib/chain/address";
 import type { Loaded } from "../lib/chain/load";
-import { duration, expectedWinners, headline, machineLabel, money, share, steps, utcTime } from "../lib/chain/view";
+import { duration, expectedWinners, headline, machineLabel, money, percent, share, steps, tone, utcTime } from "../lib/chain/view";
 import { toHex } from "../lib/draw/bytes";
 import { type BreakFields, breakFieldsFromVector, encodeBreak } from "./support/accounts";
 
@@ -79,6 +79,32 @@ describe("the figures on a break page", () => {
     expect(share(5n, 0n)).toBe("0%");
     expect(share(100n, 100n)).toBe("100%");
     expect(share(101n, 100n)).toBe("—");
+  });
+});
+
+describe("the progress bar and the badge colour", () => {
+  it("turns spots sold into a whole percent from 0 to 100", () => {
+    expect(percent(0, 10)).toBe(0);
+    expect(percent(4, 10)).toBe(40);
+    expect(percent(10, 10)).toBe(100);
+    expect(percent(1, 3)).toBe(33);
+    expect(percent(2, 3)).toBe(67);
+    expect(percent(1, 1000)).toBe(0);
+    // Nothing to measure against, or nonsense, is an empty bar, and the bar never overflows its box.
+    expect(percent(5, 0)).toBe(0);
+    expect(percent(-3, 10)).toBe(0);
+    expect(percent(11, 10)).toBe(100);
+    expect(percent(Number.NaN, 10)).toBe(0);
+  });
+
+  it("colours the badge by where the break is", () => {
+    const at = (over: Partial<BreakFields>, now = CLOSES - 60) => tone(account(over), now);
+    expect(at({ status: "Open" })).toBe("live");
+    expect(at({ status: "Open" }, CLOSES)).toBe("waiting");
+    expect(at({ status: "Open" }, CLOSES + 1)).toBe("waiting");
+    for (const status of ["Closed", "EligibilityCommitted", "Funded", "PoolCommitted", "RandomnessRequested", "Settled"] as const) expect(at({ status }), status).toBe("waiting");
+    expect(at({ status: "Drawn" })).toBe("done");
+    expect(at({ status: "Cancelled" })).toBe("off");
   });
 });
 
@@ -154,7 +180,14 @@ describe("the break page", () => {
   it("shows a drawn break with everything the chain holds", () => {
     const html = page({ status: "Drawn", freeWinners: [SAMPLE.freeWinners[0] as FreeWinner, { ...(SAMPLE.freeWinners[1] as FreeWinner), weight: 600n }], eligibilityTotalWeight: 1200n });
     const t = text(html);
-    expect(t).toContain("Drawn. 8 of 10 paid spots sold at $20, plus 2 free spots for holders.");
+    expect(html).toContain('<span class="badge done">Drawn</span>');
+    expect(t).toContain("8 of 10 paid spots sold at $20, plus 2 free spots for holders.");
+    // The numbers at a glance: spots with a bar at 8 of 10, the free spots, the price, and that the sale has ended.
+    expect(t).toContain("Paid spots 8 / 10");
+    expect(html).toContain('<div class="bar" role="img" aria-label="8 of 10 paid spots sold"><span style="width:80%"></span></div>');
+    expect(t).toContain("Free spots 2 for holders");
+    expect(t).toContain("Spot price $20 packs up to $25");
+    expect(t).toContain("Sale Ended 2027-01-15 14:00 UTC");
     expect(t).toContain("at most $25 each");
     expect(t).toContain("2027-01-15 08:00 UTC to 2027-01-15 14:00 UTC");
     for (const hex of [SAMPLE.eligibilityRoot, SAMPLE.poolHash, SAMPLE.seed]) expect(html).toContain(toHex(hex));
@@ -177,7 +210,11 @@ describe("the break page", () => {
   it("shows an open break as on sale, with the spots left and nothing committed yet", () => {
     const html = page({ status: "Open", spotsSold: 3, eligibilityRoot: new Uint8Array(32), eligibilityTotalWeight: 0n, eligibilityCount: 0, poolHash: new Uint8Array(32), seed: new Uint8Array(32), freeWinnerCount: 0, freeWinners: [] }, CLOSES - 7_320, [], owners);
     const t = text(html);
-    expect(t).toContain("On sale. 3 of 10 paid spots sold at $20, plus 2 free spots for holders. 7 paid spots left.");
+    expect(html).toContain('<span class="badge live">On sale</span>');
+    expect(t).toContain("3 of 10 paid spots sold at $20, plus 2 free spots for holders. 7 paid spots left.");
+    expect(t).toContain("Paid spots 3 / 10 7 left");
+    expect(html).toContain('style="width:30%"');
+    expect(t).toContain("Closes in 2h 2m 2027-01-15 14:00 UTC");
     expect(t).toContain("Closes 2027-01-15 14:00 UTC (2h 2m left by your clock).");
     expect(t).not.toContain("Committed before the draw");
     expect(t).not.toContain("Draw seed");
@@ -195,11 +232,40 @@ describe("the break page", () => {
     expect(full.match(/aria-current="step"/g)).toHaveLength(1);
     expect(text(full)).toContain("Spots on sale (now)");
     expect(text(full)).toContain("Sale closed (not yet)");
+    // The marks beside the steps: one dot for where the break is, a hollow circle for each step to come.
+    const marks = (html: string) => [...html.matchAll(/<span class="mark" aria-hidden="true">(.)<\/span>/g)].map((m) => m[1]).join("");
+    expect(marks(full)).toBe("●○○○○○○○");
     const drawn = page({ status: "Drawn" });
+    expect(marks(drawn)).toBe("✓✓✓✓✓✓✓✓");
+    expect(marks(page({ status: "Funded" }))).toBe("✓✓✓●○○○○");
     expect(drawn).not.toContain("aria-current");
     expect(text(drawn)).toContain("Spots on sale (done)");
     // One spot left reads in the singular.
     expect(text(page({ ...open, spotsSold: 9 }, CLOSES - 600, [], owners))).toContain("1 paid spot left.");
+  });
+
+  it("shows a full sale as sold out with a full bar, and a sale past its closing time as closing", () => {
+    const base = { status: "Open" as const, eligibilityRoot: new Uint8Array(32), eligibilityTotalWeight: 0n, eligibilityCount: 0, poolHash: new Uint8Array(32), seed: new Uint8Array(32), freeWinnerCount: 0, freeWinners: [] };
+    const full = page({ ...base, spotsSold: 10 }, CLOSES - 600, [], owners);
+    expect(text(full)).toContain("Paid spots 10 / 10 sold out");
+    expect(full).toContain('style="width:100%"');
+    const closing = page({ ...base, spotsSold: 4 }, CLOSES + 5, [], owners);
+    expect(closing).toContain('<span class="badge waiting">Sale over, closing</span>');
+    expect(text(closing)).toContain("Sale Closing waiting to be closed on chain");
+    const empty = page({ ...base, spotsSold: 0 }, CLOSES - 600, [], []);
+    expect(empty).toContain('style="width:0%"');
+    expect(text(empty)).toContain("Paid spots 0 / 10 10 left");
+  });
+
+  it("only counts the spots left while the sale is on, and not once it is over", () => {
+    const sold = { spotsSold: 4, freeWinnerCount: 0, freeWinners: [] };
+    expect(text(page({ status: "Open", ...sold }, CLOSES - 600))).toContain("Paid spots 4 / 10 6 left");
+    // A sale that has ended has no spots to take, whatever is left unsold.
+    const closed = text(page({ status: "Closed", ...sold }));
+    expect(closed).toContain("Paid spots 4 / 10");
+    expect(closed).not.toContain("6 left");
+    expect(closed).not.toContain("sold out");
+    expect(text(page({ status: "Funded", ...sold }))).not.toContain("6 left");
   });
 
   it("has no paid spots table when nobody has bought a spot", () => {
@@ -233,8 +299,11 @@ describe("the break page", () => {
   });
 
   it("shows a cancelled break as cancelled, with no progress", () => {
-    const t = text(page({ status: "Cancelled", freeWinnerCount: 0, freeWinners: [] }));
-    expect(t).toContain("Cancelled.");
+    const html = page({ status: "Cancelled", freeWinnerCount: 0, freeWinners: [] });
+    const t = text(html);
+    expect(html).toContain('<span class="badge off">Cancelled</span>');
+    expect(t).toContain("Sale Cancelled");
+    expect(html).toContain("<h2>Cancelled</h2>");
     expect(t).toContain("This break was cancelled: nothing was drawn, and the paid spots can be refunded.");
     expect(t).not.toContain("Progress");
     expect(t).not.toContain("Free spots go to");

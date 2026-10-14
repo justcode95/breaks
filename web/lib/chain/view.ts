@@ -140,3 +140,25 @@ export function stageLabel(b: BreakAccount, nowSecs: number): string {
   // "On sale" and "Drawn" read better than the steps' own words, and a cancelled break has no step.
   return step && b.status !== "Open" && b.status !== "Drawn" ? step.label : headline(b, nowSecs);
 }
+
+/** `part` of `whole` as a whole percent from 0 to 100, for a progress bar; 0 when there is no whole. */
+export function percent(part: number, whole: number): number {
+  if (!(whole > 0) || !(part > 0)) return 0;
+  return Math.min(100, Math.round((part / whole) * 100));
+}
+
+export type Tone = "live" | "waiting" | "done" | "off";
+
+/** How a break's badge is coloured: on sale (live), being settled (waiting), drawn (done), cancelled (off). */
+export function tone(b: BreakAccount, nowSecs: number): Tone {
+  switch (b.status) {
+    case "Open":
+      return Number(b.closesAt) > nowSecs ? "live" : "waiting";
+    case "Drawn":
+      return "done";
+    case "Cancelled":
+      return "off";
+    default:
+      return "waiting";
+  }
+}
