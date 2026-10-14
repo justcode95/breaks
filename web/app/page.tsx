@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function Home() {
   return (
     <main>
@@ -9,6 +11,9 @@ export default function Home() {
         <li>Players buy paid spots in USDC; holders get free spots drawn by verifiable randomness.</li>
         <li>At the deadline, packs are bought and the pulled cards are randomly assigned to the spots.</li>
       </ol>
+      <p>
+        Every draw can be checked: <Link href="/verify">recompute a break's winners and cards in your browser</Link>.
+      </p>
     </main>
   );
 }
