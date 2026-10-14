@@ -58,3 +58,14 @@ export type Bucket = "subsidy" | "holder";
 
 /** The token account that holds a treasury bucket: a PDA of the treasury program (`["subsidy_vault"]`, `["holder_vault"]`). */
 export const vaultAddress = (treasuryProgram: Address, bucket: Bucket): Address => findProgramAddress([utf8(`${bucket}_vault`)], treasuryProgram);
+
+export const escrowAddress = (program: Address, breakKey: Address): Address => findProgramAddress([utf8("escrow"), addressToBytes(breakKey)], program);
+
+/** The programs a purchase talks to besides the breaks program. */
+export const TOKEN_PROGRAM: Address = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+export const SYSTEM_PROGRAM: Address = "11111111111111111111111111111111";
+export const ASSOCIATED_TOKEN_PROGRAM: Address = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+
+/** Where `owner`'s account for the token `mint` normally lives: the associated token account. */
+export const associatedTokenAddress = (owner: Address, mint: Address): Address =>
+  findProgramAddress([addressToBytes(owner), addressToBytes(TOKEN_PROGRAM), addressToBytes(mint)], ASSOCIATED_TOKEN_PROGRAM);
