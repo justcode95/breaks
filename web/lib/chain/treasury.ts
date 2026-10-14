@@ -2,14 +2,11 @@
 // for breaks) and the two token accounts that hold the buckets. An independent decoder of programs/treasury/src/state.rs
 // and of the SPL token account; the Rust programs' own sample bytes (instruction-vectors.json) pin it.
 
-import { type Address, type Bucket, addressFromBytes, configAddress, vaultAddress } from "./address";
+import { type Address, type Bucket, SYSTEM_PROGRAM, TOKEN_PROGRAM, addressFromBytes, configAddress, vaultAddress } from "./address";
 import { accountReader } from "./accounts";
 import { LoadError } from "./load";
 import { RpcFailure, getAccounts } from "./rpc";
 
-/** The SPL token program: the owner of the vaults. */
-export const TOKEN_PROGRAM: Address = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-const SYSTEM_PROGRAM: Address = "11111111111111111111111111111111";
 const TOKEN_ACCOUNT_LEN = 165;
 
 export interface TreasuryConfig {
