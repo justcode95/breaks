@@ -125,6 +125,56 @@ export function encodeSpot(s: { breakId: bigint; index: number; owner: Address; 
   return concat(disc("Spot"), u(8, s.breakId), u(2, s.index), addressToBytes(s.owner), u(8, s.paid), u(1, s.refunded ? 1 : 0), u(1, s.bump ?? 255));
 }
 
+export interface ConfigFields {
+  admin: Address;
+  keeper: Address;
+  buyer: Address;
+  usdcMint: Address;
+  randomnessProgram: Address;
+  randomnessTimeoutSecs: bigint;
+  nextBreakId: bigint;
+  minWindowSecs: bigint;
+  maxWindowSecs: bigint;
+  maxPaidSpots: number;
+  maxFreeSpots: number;
+  paused: boolean;
+  bump: number;
+}
+
+/** The fields of the Rust program's sample BreaksConfig (`breaks.account.BreaksConfig` in instruction-vectors.json). */
+export function configFieldsFromVector(o: Record<string, any>): ConfigFields {
+  return {
+    admin: o.admin,
+    keeper: o.keeper,
+    buyer: o.buyer,
+    usdcMint: o.usdcMint,
+    randomnessProgram: o.randomnessProgram,
+    randomnessTimeoutSecs: BigInt(o.randomnessTimeoutSecs),
+    nextBreakId: BigInt(o.nextBreakId),
+    minWindowSecs: BigInt(o.minWindowSecs),
+    maxWindowSecs: BigInt(o.maxWindowSecs),
+    maxPaidSpots: o.maxPaidSpots,
+    maxFreeSpots: o.maxFreeSpots,
+    paused: o.paused,
+    bump: o.bump,
+  };
+}
+
+export function encodeConfig(c: ConfigFields): Uint8Array {
+  return concat(
+    disc("BreaksConfig"),
+    ...[c.admin, c.keeper, c.buyer, c.usdcMint, c.randomnessProgram].map(addressToBytes),
+    u(8, c.randomnessTimeoutSecs, true),
+    u(8, c.nextBreakId),
+    u(8, c.minWindowSecs, true),
+    u(8, c.maxWindowSecs, true),
+    u(2, c.maxPaidSpots),
+    u(2, c.maxFreeSpots),
+    u(1, c.paused ? 1 : 0),
+    u(1, c.bump),
+  );
+}
+
 export interface Served {
   data: Uint8Array;
   owner: Address;

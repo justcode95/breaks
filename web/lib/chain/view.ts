@@ -133,3 +133,10 @@ export function headline(b: BreakAccount, nowSecs: number): string {
       return "Being settled";
   }
 }
+
+/** The stage of a break in a few words, for lists: where the sale or the settling stands. */
+export function stageLabel(b: BreakAccount, nowSecs: number): string {
+  const step = STEPS.find((s) => s.status === b.status);
+  // "On sale" and "Drawn" read better than the steps' own words, and a cancelled break has no step.
+  return step && b.status !== "Open" && b.status !== "Drawn" ? step.label : headline(b, nowSecs);
+}

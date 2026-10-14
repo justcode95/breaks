@@ -2,12 +2,9 @@
 
 import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import { inputFromBreak, loadBreak } from "../../lib/chain/load";
-import { chainSetup } from "../../lib/config";
 import { emptyInput, exampleInput } from "../../lib/example";
+import { SETUP } from "../../lib/site";
 import { type VerifyInput, type VerifyResult, verifyDraw } from "../../lib/verify";
-
-// The `NEXT_PUBLIC_` values have to be written out like this for the build to put them into the page.
-const SETUP = chainSetup({ rpcUrl: process.env.NEXT_PUBLIC_SOLANA_RPC_URL, program: process.env.NEXT_PUBLIC_BREAKS_PROGRAM_ID });
 
 type Loading = { state: "idle" } | { state: "loading" } | { state: "error"; message: string } | { state: "loaded"; number: number; status: string; winners: number; notes: string[] };
 
