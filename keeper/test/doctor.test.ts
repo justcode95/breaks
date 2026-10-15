@@ -599,7 +599,7 @@ describe("set up on the chain", () => {
   });
 
   it("fails when the configured break is one the program would refuse, and then has nothing to say about the reserve", async () => {
-    const w = await healthyWorld({ env: { BREAK_PAID_SPOTS: "30" } });
+    const w = await healthyWorld({ env: { BREAK_PAID_SPOTS: "30", BREAK_PACKS: JSON.stringify([{ machine: "pokemon-25", maxPrice: "25000000", count: 32 }]) } });
     const checks = await w.run();
     const check = find(checks, "the configured break is one the program accepts");
     expect(check.status).toBe("fail");
@@ -608,7 +608,46 @@ describe("set up on the chain", () => {
     const window = await healthyWorld({ env: { BREAK_WINDOW_SECS: "120" } });
     expect(find(await window.run(), "the configured break is one the program accepts").detail).toContain("120 s is outside 3600..86400");
     const ok = find(await (await healthyWorld()).run(), "the configured break is one the program accepts");
-    expect(ok.detail).toBe("10 paid spots at $20, 2 free, packs up to $25, open 43200 s");
+    expect(ok.detail).toBe("10 paid spots at $20, 2 free, packs 12 × pokemon-25 up to $25, open 43200 s");
+  });
+
+  describe("a break of several machines", () => {
+    const MIXED = {
+      BREAK_PAID_SPOTS: "6",
+      BREAK_FREE_SPOTS: "2",
+      BREAK_PACKS: JSON.stringify([
+        { machine: "top", maxPrice: "50000000", count: 2 },
+        { machine: "cheap", maxPrice: "10000000", count: 4 },
+        { machine: "mid", maxPrice: "25000000", count: 2 },
+      ]),
+    };
+
+    it("lists the packs cheapest first", async () => {
+      const w = await healthyWorld({ env: MIXED });
+      const check = find(await w.run(), "the configured break is one the program accepts");
+      expect(check.status).toBe("ok");
+      expect(check.detail).toBe("6 paid spots at $20, 2 free, packs 4 × cheap up to $10, 2 × mid up to $25, 2 × top up to $50, open 43200 s");
+    });
+
+    it("measures the reserve against what the whole list needs: $22.50 of subsidy and $47.50 for the holders", async () => {
+      const exact = await healthyWorld({ env: MIXED });
+      exact.fund(22_500_000n, 47_500_000n);
+      expect(find(await exact.run(), "the reserve can pay for the next break").status).toBe("ok");
+      const short = await healthyWorld({ env: MIXED });
+      short.fund(22_499_999n, 47_500_000n);
+      const check = find(await short.run(), "the reserve can pay for the next break");
+      expect(check.status).toBe("warn");
+      expect(check.detail).toContain("99%");
+      expect(check.detail).toContain("subsidy bucket has $22.499999 of $22.5 needed, the holder bucket $47.5 of $47.5");
+    });
+
+    it("fails a list that does not match the spots, before anything is sent", async () => {
+      const w = await healthyWorld({ env: { ...MIXED, BREAK_FREE_SPOTS: "3" } });
+      const parsed = find(await w.run(), "the settings load");
+      expect(parsed.status).toBe("fail");
+      expect(parsed.detail).toContain("BREAK_PACKS");
+      expect(parsed.detail).toContain("lists 8 packs but BREAK_PAID_SPOTS + BREAK_FREE_SPOTS is 9");
+    });
   });
 
   describe("the reserve", () => {
@@ -714,9 +753,10 @@ describe("the keeper's wallet", () => {
   });
 
   it("counts ORAO's fee and a claim for every free spot", async () => {
-    const more = await holding(cycle + 5_000n * 2n - 1n, { BREAK_FREE_SPOTS: "4" });
+    const four = { BREAK_FREE_SPOTS: "4", BREAK_PACKS: JSON.stringify([{ machine: "pokemon-25", maxPrice: "25000000", count: 14 }]) };
+    const more = await holding(cycle + 5_000n * 2n - 1n, four);
     expect(more.status).toBe("warn");
-    expect((await holding(cycle + 5_000n * 2n, { BREAK_FREE_SPOTS: "4" })).status).toBe("ok");
+    expect((await holding(cycle + 5_000n * 2n, four)).status).toBe("ok");
   });
 
   it("says when ORAO's fee could not be counted", async () => {

@@ -6,7 +6,7 @@ import { ORAO_PROGRAM, oraoNetworkState, requestAddress } from "../src/solana/br
 import type { Instruction } from "../src/solana/instruction.js";
 import { signerFromSecretKey } from "../src/solana/keypair.js";
 import { RpcClient } from "../src/solana/rpc.js";
-import { packMachineBytes } from "../src/scheduler/machine.js";
+import { oneMachine } from "./support/packs.js";
 import { BreakScheduler } from "../src/scheduler/scheduler.js";
 import type { SchedulerStore } from "../src/scheduler/store.js";
 import type { BreakAccount } from "../src/solana/breaks.js";
@@ -123,7 +123,7 @@ describe("the scheduler through the real RPC client", () => {
       programs: PROGRAMS,
       keeper: signer.address,
       store,
-      template: { paidSpots: 3, freeSpots: 2, spotPrice: 20_000_000n, maxPackPrice: 25_000_000n, packMachine: packMachineBytes("pokemon-25"), windowSecs: 21_600n },
+      template: { paidSpots: 3, freeSpots: 2, spotPrice: 20_000_000n, packs: oneMachine("pokemon-25", 25_000_000n, 5), windowSecs: 21_600n },
       enabled: true,
       now,
     });
@@ -156,7 +156,7 @@ describe("the scheduler through the real RPC client", () => {
       programs: PROGRAMS,
       keeper: signer.address,
       store,
-      template: { paidSpots: 3, freeSpots: 2, spotPrice: 20_000_000n, maxPackPrice: 25_000_000n, packMachine: packMachineBytes("pokemon-25"), windowSecs: 21_600n },
+      template: { paidSpots: 3, freeSpots: 2, spotPrice: 20_000_000n, packs: oneMachine("pokemon-25", 25_000_000n, 5), windowSecs: 21_600n },
       enabled: true,
       now: () => new Date(Number(w.chain.unixTime) * 1000),
     });

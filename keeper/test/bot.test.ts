@@ -6,7 +6,6 @@ import { SqlBotStore } from "../src/bot/store.js";
 import { ChainWorld } from "../src/bot/world.js";
 import type { JobContext } from "../src/job.js";
 import type { AccountReader } from "../src/pipeline/chain.js";
-import { packMachineBytes } from "../src/scheduler/machine.js";
 import type { BreakTemplate } from "../src/scheduler/policy.js";
 import { ORAO_PROGRAM, type BreakAccount } from "../src/solana/breaks.js";
 import { treasuryAddresses } from "../src/solana/treasury.js";
@@ -14,14 +13,15 @@ import { HOUR, ScriptedPoster, T0, brk, drawn } from "./support/bot.js";
 import { addr, BUYER } from "./support/chain.js";
 import { migratedDb } from "./support/db.js";
 import { MockChain } from "./support/mock-chain.js";
+import { oneMachine } from "./support/packs.js";
+import { packMachineBytes } from "../src/scheduler/machine.js";
 import { KEEPER, PROGRAMS, logger } from "./support/world.js";
 
 const TEMPLATE: BreakTemplate = {
   paidSpots: 10,
   freeSpots: 2,
   spotPrice: 20_000_000n,
-  maxPackPrice: 25_000_000n,
-  packMachine: packMachineBytes("pokemon-25"),
+  packs: oneMachine("pokemon-25", 25_000_000n, 12),
   windowSecs: 43_200n,
 };
 // What TEMPLATE needs unlocked: $50 of subsidy and $50 for the holders.
@@ -112,6 +112,16 @@ function setup(over: { limits?: Partial<BotLimits>; settings?: Partial<BotSettin
 }
 
 describe("what the bot posts, and when", () => {
+  it("measures the next break's reserve against the whole pack list: $22.50 of subsidy and $47.50 for the holders is $70", async () => {
+    const D = 1_000_000n;
+    const group = (machine: string, dollars: bigint, count: number) => ({ machine: packMachineBytes(machine), maxPrice: dollars * D, count });
+    const template = { paidSpots: 6, freeSpots: 2, packs: [group("cheap", 10n, 4), group("mid", 25n, 2), group("top", 50n, 2)] };
+    // Half of each bucket: 50% funded, and the post says what the break needs in all.
+    const t = setup({ template, funds: [11_250_000n, 23_750_000n] });
+    expect((await t.bot.run()).queued).toEqual(["reserve:5:50"]);
+    expect(t.poster.sent).toEqual(["Break #6 is 50% funded 🔥 Unlocks at $70."]);
+  });
+
   it("saves what is worth saying and sends one post per run, oldest first, with a gap between", async () => {
     const t = setup({ funds: [15_000_000n, 15_000_000n], breaks: [brk()] }); // 30% funded, a sale is live
 
@@ -418,9 +428,9 @@ describe("what the bot looks at", () => {
     // no progress to report, though the same funds are 57% of its worst case.
     const part: [bigint, bigint] = [60_000_000n, 50_000_000n];
     await db.exec("truncate bot_posts cascade");
-    expect((await setup({ funds: part, template: { paidSpots: 19 } }).bot.run()).queued).toEqual(["reserve:5:50"]);
+    expect((await setup({ funds: part, template: { paidSpots: 19, packs: oneMachine("pokemon-25", 25_000_000n, 21) } }).bot.run()).queued).toEqual(["reserve:5:50"]);
     await db.exec("truncate bot_posts cascade");
-    expect((await setup({ funds: part, template: { paidSpots: 21 } }).bot.run()).queued).toEqual([]);
+    expect((await setup({ funds: part, template: { paidSpots: 21, packs: oneMachine("pokemon-25", 25_000_000n, 23) } }).bot.run()).queued).toEqual([]);
   });
 
   it("decides from the view it is given: a break that is not final yet is not announced", async () => {

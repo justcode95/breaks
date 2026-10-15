@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { loadConfig, parseConfig } from "../src/config.js";
-import { packMachineBytes } from "../src/scheduler/machine.js";
+import { packMachineLabel } from "../src/scheduler/machine.js";
+import { oneMachine } from "./support/packs.js";
 import { ORAO_PROGRAM } from "../src/solana/breaks.js";
 import { addr } from "./support/chain.js";
 
@@ -16,8 +17,7 @@ const base = {
   BREAK_PAID_SPOTS: "10",
   BREAK_FREE_SPOTS: "2",
   BREAK_SPOT_PRICE: "20000000",
-  BREAK_MAX_PACK_PRICE: "25000000",
-  BREAK_PACK_MACHINE: "pokemon-25",
+  BREAK_PACKS: JSON.stringify([{ machine: "pokemon-25", maxPrice: "25000000", count: 12 }]),
   BREAK_WINDOW_SECS: "43200",
 };
 
@@ -39,7 +39,7 @@ describe("loadConfig", () => {
       indexer: { mint: addr(0xb1), intervalSecs: 900, lagSecs: 120, callsPerRun: 60, pageSize: 25, concurrency: 4 },
       scheduler: {
         enabled: true,
-        template: { paidSpots: 10, freeSpots: 2, spotPrice: 20_000_000n, maxPackPrice: 25_000_000n, packMachine: packMachineBytes("pokemon-25"), windowSecs: 43_200n },
+        template: { paidSpots: 10, freeSpots: 2, spotPrice: 20_000_000n, packs: oneMachine("pokemon-25", 25_000_000n, 12), windowSecs: 43_200n },
       },
       sweep: {
         enabled: false,
@@ -143,9 +143,9 @@ describe("loadConfig", () => {
   });
 
   it("reads the break the scheduler creates and can be told not to create any", () => {
-    const c = loadConfig({ ...base, BREAK_AUTO_CREATE: "false", BREAK_PACK_MACHINE: `0x${"ab".repeat(32)}`, BREAK_FREE_SPOTS: "0" });
+    const c = loadConfig({ ...base, BREAK_AUTO_CREATE: "false", BREAK_PACKS: JSON.stringify([{ machine: `0x${"ab".repeat(32)}`, maxPrice: "25000000", count: 10 }]), BREAK_FREE_SPOTS: "0" });
     expect(c.scheduler.enabled).toBe(false);
-    expect(c.scheduler.template.packMachine).toEqual(new Uint8Array(32).fill(0xab));
+    expect(c.scheduler.template.packs).toEqual([{ machine: new Uint8Array(32).fill(0xab), maxPrice: 25_000_000n, count: 10 }]);
     expect(c.scheduler.template.freeSpots).toBe(0);
     expect(loadConfig({ ...base, BREAK_AUTO_CREATE: "true" }).scheduler.enabled).toBe(true);
     expect(() => loadConfig({ ...base, BREAK_AUTO_CREATE: "yes" })).toThrow(/BREAK_AUTO_CREATE/);
@@ -155,13 +155,61 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, BREAK_PAID_SPOTS: "0" })).toThrow(/BREAK_PAID_SPOTS/);
     expect(() => loadConfig({ ...base, BREAK_FREE_SPOTS: "17" })).toThrow(/BREAK_FREE_SPOTS/);
     expect(() => loadConfig({ ...base, BREAK_SPOT_PRICE: "0" })).toThrow(/BREAK_SPOT_PRICE/);
-    expect(() => loadConfig({ ...base, BREAK_MAX_PACK_PRICE: "-5" })).toThrow(/BREAK_MAX_PACK_PRICE/);
-    expect(() => loadConfig({ ...base, BREAK_SPOT_PRICE: "25000001" })).toThrow(/BREAK_SPOT_PRICE.*BREAK_MAX_PACK_PRICE/);
+    expect(() => loadConfig({ ...base, BREAK_SPOT_PRICE: "25000001" })).toThrow(/BREAK_SPOT_PRICE.*average pack price/);
     expect(loadConfig({ ...base, BREAK_SPOT_PRICE: "25000000" }).scheduler.template.spotPrice).toBe(25_000_000n);
     expect(() => loadConfig({ ...base, BREAK_WINDOW_SECS: "10" })).toThrow(/BREAK_WINDOW_SECS/);
-    expect(() => loadConfig({ ...base, BREAK_PACK_MACHINE: "" })).toThrow(/BREAK_PACK_MACHINE/);
-    expect(() => loadConfig({ ...base, BREAK_PACK_MACHINE: "x".repeat(33) })).toThrow(/BREAK_PACK_MACHINE/);
-    expect(() => loadConfig({ ...base, BREAK_PACK_MACHINE: "0x1234" })).toThrow(/BREAK_PACK_MACHINE/);
+  });
+
+  describe("the pack list", () => {
+    const packs = (...groups: object[]) => ({ ...base, BREAK_PACKS: JSON.stringify(groups) });
+    const MIXED = { ...base, BREAK_PAID_SPOTS: "6", BREAK_FREE_SPOTS: "2" };
+    const mixed = JSON.stringify([
+      { machine: "top", maxPrice: "50000000", count: 2 },
+      { machine: "cheap", maxPrice: "10000000", count: 4 },
+      { machine: "mid", maxPrice: "25000000", count: 2 },
+    ]);
+
+    it("reads a mix of machines and puts it cheapest first, whatever order it is written in", () => {
+      const t = loadConfig({ ...MIXED, BREAK_PACKS: mixed }).scheduler.template;
+      expect(t.packs.map((g) => [packMachineLabel(g.machine), g.maxPrice, g.count])).toEqual([["cheap", 10_000_000n, 4], ["mid", 25_000_000n, 2], ["top", 50_000_000n, 2]]);
+      expect(t.paidSpots + t.freeSpots).toBe(8);
+    });
+
+    it("refuses a list that does not match the spots: one pack per spot", () => {
+      expect(() => loadConfig({ ...base, BREAK_PACKS: mixed })).toThrow(/BREAK_PACKS.*lists 8 packs but BREAK_PAID_SPOTS \+ BREAK_FREE_SPOTS is 12/);
+      expect(() => loadConfig({ ...MIXED, BREAK_FREE_SPOTS: "3" })).toThrow(/BREAK_PACKS.*lists 12 packs but .* is 9/);
+    });
+
+    it("refuses a spot price above the average pack price of the list, and takes one at exactly the average", () => {
+      // $190 over 8 spots: $23.75.
+      expect(() => loadConfig({ ...MIXED, BREAK_PACKS: mixed, BREAK_SPOT_PRICE: "23750001" })).toThrow(/BREAK_SPOT_PRICE.*average pack price/);
+      expect(loadConfig({ ...MIXED, BREAK_PACKS: mixed, BREAK_SPOT_PRICE: "23750000" }).scheduler.template.spotPrice).toBe(23_750_000n);
+    });
+
+    it("refuses more machines than a break can list, and more spots than it can have packs", () => {
+      const nine = Array.from({ length: 9 }, (_, i) => ({ machine: `m${i}`, maxPrice: String(30_000_000 + i), count: 1 }));
+      expect(() => loadConfig({ ...base, BREAK_PAID_SPOTS: "7", BREAK_FREE_SPOTS: "2", BREAK_PACKS: JSON.stringify(nine) })).toThrow(/BREAK_PACKS.*9 groups; a break lists at most 8/);
+      expect(() => loadConfig({ ...packs({ machine: "x", maxPrice: "25000000", count: 65 }), BREAK_PAID_SPOTS: "60", BREAK_FREE_SPOTS: "5" })).toThrow(/at most 64 spots/);
+    });
+
+    it("says what is wrong with the setting itself", () => {
+      for (const [value, words] of [
+        ["not json", /BREAK_PACKS.*not valid JSON/],
+        ["{}", /BREAK_PACKS.*at least one group/],
+        ["[]", /BREAK_PACKS.*at least one group/],
+        [JSON.stringify([{ machine: "", maxPrice: "25000000", count: 12 }]), /BREAK_PACKS.*group 1.*empty/],
+        [JSON.stringify([{ machine: "x".repeat(33), maxPrice: "25000000", count: 12 }]), /BREAK_PACKS.*at most 32/],
+        [JSON.stringify([{ machine: "0x1234", maxPrice: "25000000", count: 12 }]), /BREAK_PACKS.*looks like a hex id/],
+        [JSON.stringify([{ machine: "x", maxPrice: "-5", count: 12 }]), /BREAK_PACKS.*maxPrice must be a whole number/],
+        [JSON.stringify([{ machine: "x", maxPrice: "0", count: 12 }]), /BREAK_PACKS.*maxPrice must be above zero/],
+        [JSON.stringify([{ machine: "x", maxPrice: "25000000", count: 0 }]), /BREAK_PACKS.*count must be a whole number, at least 1/],
+        [JSON.stringify([{ machine: "x", maxPrice: "25000000", count: 1.5 }]), /BREAK_PACKS.*count must be a whole number/],
+        [JSON.stringify([{ machine: "x", price: "25000000", count: 12 }]), /BREAK_PACKS.*"price".*not one of/],
+        [JSON.stringify(["x"]), /BREAK_PACKS.*group 1 must be an object/],
+      ] as const) {
+        expect(() => loadConfig({ ...base, BREAK_PACKS: value }), value).toThrow(words);
+      }
+    });
   });
 
   it("reads the indexer settings and refuses values that would make it unsafe or useless", () => {
@@ -206,7 +254,7 @@ describe("loadConfig", () => {
 
   it("requires an RPC url, a database url, both program ids, the minimum TWAB, the token and the break to create", () => {
     expect(() => loadConfig({})).toThrow(/SOLANA_RPC_URL.*DATABASE_URL|DATABASE_URL.*SOLANA_RPC_URL/);
-    for (const key of ["BREAKS_PROGRAM_ID", "TREASURY_PROGRAM_ID", "MIN_TWAB", "TOKEN_MINT", "BREAK_PAID_SPOTS", "BREAK_FREE_SPOTS", "BREAK_SPOT_PRICE", "BREAK_MAX_PACK_PRICE", "BREAK_PACK_MACHINE", "BREAK_WINDOW_SECS"] as const) {
+    for (const key of ["BREAKS_PROGRAM_ID", "TREASURY_PROGRAM_ID", "MIN_TWAB", "TOKEN_MINT", "BREAK_PAID_SPOTS", "BREAK_FREE_SPOTS", "BREAK_SPOT_PRICE", "BREAK_PACKS", "BREAK_WINDOW_SECS"] as const) {
       const { [key]: _removed, ...rest } = base;
       expect(() => loadConfig(rest)).toThrow(new RegExp(key));
     }
@@ -249,8 +297,8 @@ describe("parseConfig", () => {
     expect(words.problems).toHaveLength(1);
     expect(words.problems[0]).toMatch(/^BREAK_FREE_SPOTS: /);
     expect(words.problems[0]).not.toContain("is not set");
-    const empty = parseConfig({ ...base, BREAK_PACK_MACHINE: "" }) as { problems: string[] };
-    expect(empty.problems.join("\n")).toContain("BREAK_PACK_MACHINE");
+    const empty = parseConfig({ ...base, BREAK_PACKS: JSON.stringify([{ machine: "", maxPrice: "25000000", count: 12 }]) }) as { problems: string[] };
+    expect(empty.problems.join("\n")).toContain("BREAK_PACKS");
     expect(empty.problems.join("\n")).not.toContain("is not set");
   });
 

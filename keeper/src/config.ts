@@ -1,11 +1,11 @@
 import { z } from "zod";
-import { ORAO_PROGRAM, type Programs } from "./solana/breaks.js";
+import { MAX_PACKS, MAX_TIERS, ORAO_PROGRAM, type Programs } from "./solana/breaks.js";
 import { type BreakTemplate } from "./scheduler/policy.js";
 import type { SweepPolicy } from "./sweep/policy.js";
 import type { BotLimits } from "./bot/bot.js";
 import type { BotSettings } from "./bot/policy.js";
 import type { XCredentials } from "./bot/x-poster.js";
-import { packMachineBytes } from "./scheduler/machine.js";
+import { parsePackGroups } from "./scheduler/packs-config.js";
 import { type Address, addressToBytes } from "./solana/pubkey.js";
 
 const isAddress = (s: string) => {
@@ -17,15 +17,6 @@ const isAddress = (s: string) => {
   }
 };
 const address = z.string().refine(isAddress, "not a Solana address (32 bytes, base58)");
-
-const isMachine = (s: string) => {
-  try {
-    packMachineBytes(s);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 /** "25,50,75" as numbers; empty items are ignored. */
 const list = (s: string): number[] =>
@@ -84,9 +75,17 @@ const shape = z.object({
   BREAK_PAID_SPOTS: z.coerce.number().int().min(1).max(65_535),
   BREAK_FREE_SPOTS: z.coerce.number().int().min(0).max(16),
   BREAK_SPOT_PRICE: z.coerce.bigint().positive(),
-  BREAK_MAX_PACK_PRICE: z.coerce.bigint().positive(),
-  // Text of up to 32 bytes, or 0x and 64 hex digits for a raw 32-byte id. Committed on-chain for the whole break.
-  BREAK_PACK_MACHINE: z.string().refine(isMachine, "not a machine label (1 to 32 plain text bytes, or 0x and 64 hex digits)"),
+  // The packs of the break: a JSON list of groups, each a machine (text of up to 32 bytes, or 0x and 64 hex digits for a
+  // raw 32-byte id), the most one pack from it may cost, and how many of the break's packs come from it. One pack per spot,
+  // so the counts add up to BREAK_PAID_SPOTS + BREAK_FREE_SPOTS. See scheduler/packs-config.ts.
+  BREAK_PACKS: z.string().transform((text, ctx) => {
+    const r = parsePackGroups(text);
+    if (!r.ok) {
+      ctx.addIssue({ code: "custom", message: r.error });
+      return z.NEVER;
+    }
+    return r.groups;
+  }),
   // How long the sale and the TWAB window last.
   BREAK_WINDOW_SECS: z.coerce.number().int().min(60),
   // The fee sweep moves money (USDC in the keeper's wallet into the treasury), so it is off until it is turned on.
@@ -149,8 +148,16 @@ const schema = shape.superRefine((e, ctx) => {
       if (e[name] === undefined) ctx.addIssue({ code: "custom", path: [name], message: "is required when BOT_POSTER=x" });
     }
   }
-  if (e.BREAK_SPOT_PRICE > e.BREAK_MAX_PACK_PRICE) {
-    ctx.addIssue({ code: "custom", path: ["BREAK_SPOT_PRICE"], message: "must not be above BREAK_MAX_PACK_PRICE (a markup is not supported)" });
+  const spots = e.BREAK_PAID_SPOTS + e.BREAK_FREE_SPOTS;
+  const packs = e.BREAK_PACKS.reduce((n, g) => n + g.count, 0);
+  if (e.BREAK_PACKS.length > MAX_TIERS) {
+    ctx.addIssue({ code: "custom", path: ["BREAK_PACKS"], message: `has ${e.BREAK_PACKS.length} groups; a break lists at most ${MAX_TIERS} machines` });
+  } else if (spots > MAX_PACKS) {
+    ctx.addIssue({ code: "custom", path: ["BREAK_PAID_SPOTS"], message: `BREAK_PAID_SPOTS + BREAK_FREE_SPOTS is ${spots}; a break has at most ${MAX_PACKS} spots (one pack each)` });
+  } else if (packs !== spots) {
+    ctx.addIssue({ code: "custom", path: ["BREAK_PACKS"], message: `lists ${packs} packs but BREAK_PAID_SPOTS + BREAK_FREE_SPOTS is ${spots}: one pack per spot` });
+  } else if (e.BREAK_SPOT_PRICE > e.BREAK_PACKS.reduce((sum, g) => sum + g.maxPrice * BigInt(g.count), 0n) / BigInt(spots)) {
+    ctx.addIssue({ code: "custom", path: ["BREAK_SPOT_PRICE"], message: "must not be above the average pack price in BREAK_PACKS (a markup is not supported)" });
   }
 });
 
@@ -238,8 +245,7 @@ function build(e: z.infer<typeof schema>): Config {
         paidSpots: e.BREAK_PAID_SPOTS,
         freeSpots: e.BREAK_FREE_SPOTS,
         spotPrice: e.BREAK_SPOT_PRICE,
-        maxPackPrice: e.BREAK_MAX_PACK_PRICE,
-        packMachine: packMachineBytes(e.BREAK_PACK_MACHINE),
+        packs: e.BREAK_PACKS,
         windowSecs: BigInt(e.BREAK_WINDOW_SECS),
       },
     },
