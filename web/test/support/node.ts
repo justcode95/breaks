@@ -1,7 +1,7 @@
 // A pretend Solana node for the purchase: it answers the handful of calls a purchase makes, remembers every call in order, and
 // can be scripted (a network that is not devnet, a balance, what the network says about a transaction poll after poll).
 
-import { base64 } from "@scure/base";
+import { base58, base64 } from "@scure/base";
 import { GENESIS_HASHES } from "../../lib/chain/cluster";
 import type { Address } from "../../lib/chain/address";
 import type { Served } from "./accounts";
@@ -52,6 +52,19 @@ export function rpcNode(script: NodeScript) {
           return s ? { data: [base64.encode(s.data), "base64"], owner: s.owner, lamports: 1, executable: false } : null;
         });
         return reply({ context: { slot: 1 }, value });
+      }
+      case "getProgramAccounts": {
+        // The filters are really applied: the size, and the bytes at an offset, so a wrong offset or size finds nothing.
+        const [program, config] = params as [string, { filters: ({ dataSize: number } | { memcmp: { offset: number; bytes: string } })[] }];
+        const found = [...script.accounts.entries()].filter(([, s]) => {
+          if (s.owner !== program) return false;
+          return config.filters.every((f) => {
+            if ("dataSize" in f) return s.data.length === f.dataSize;
+            const want = base58.decode(f.memcmp.bytes);
+            return want.every((b, i) => s.data[f.memcmp.offset + i] === b);
+          });
+        });
+        return reply(found.map(([pubkey, s]) => ({ pubkey, account: { data: [base64.encode(s.data), "base64"], owner: s.owner, lamports: 1, executable: false } })));
       }
       case "getBalance":
         return reply({ context: { slot: 1 }, value: script.lamports ?? 5_000_000 });

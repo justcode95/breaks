@@ -192,6 +192,15 @@ describe("the treasury page", () => {
   };
   const text = (html: string) => html.replace(/<[^>]*>/g, " ").replace(/&amp;/g, "&").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
 
+  it("shows the reserve bar first when it is told the shape of the next break, and not otherwise", async () => {
+    const treasury: Treasury = await load(world()).promise;
+    const shape = { paidSpots: 10, freeSpots: 2, spotPrice: 20_000_000n, maxPackPrice: 25_000_000n };
+    const withShape = renderToStaticMarkup(createElement(TreasuryDetails, { treasury, program: TREASURY, now: NOW, readAt: NOW - 90, refresh: () => {}, shape }));
+    expect(withShape).toContain("Reserve for the next break");
+    expect(withShape.indexOf("Reserve for the next break")).toBeLessThan(withShape.indexOf("Available for new breaks"));
+    expect(await page()).not.toContain("Reserve for the next break");
+  });
+
   it("says what is available, reserved and held, in total and per bucket", async () => {
     const t = text(await page());
     expect(t).toContain("Available for new breaks $8.50 can fund a break that is not made yet");

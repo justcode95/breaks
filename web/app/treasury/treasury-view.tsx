@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { type Treasury, loadTreasury } from "../../lib/chain/treasury";
-import { TREASURY_SETUP } from "../../lib/site";
+import { BREAK_SHAPE, TREASURY_SETUP } from "../../lib/site";
 import { TreasuryDetails } from "./details";
 
 type State = { state: "loading" } | { state: "error"; message: string } | { state: "loaded"; treasury: Treasury; readAt: number };
@@ -46,7 +46,17 @@ export function TreasuryView() {
           </div>
         </>
       )}
-      {view.state === "loaded" && <TreasuryDetails treasury={view.treasury} program={TREASURY_SETUP.config.treasuryProgram} now={now} readAt={view.readAt} refresh={() => void load()} />}
+      {BREAK_SHAPE.kind === "problem" && <p className="problem" role="alert">The site's settings for the next break are wrong: {BREAK_SHAPE.problem}</p>}
+      {view.state === "loaded" && (
+        <TreasuryDetails
+          treasury={view.treasury}
+          program={TREASURY_SETUP.config.treasuryProgram}
+          now={now}
+          readAt={view.readAt}
+          refresh={() => void load()}
+          {...(BREAK_SHAPE.kind === "on" ? { shape: BREAK_SHAPE.config } : {})}
+        />
+      )}
     </div>
   );
 }

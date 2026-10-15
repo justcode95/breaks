@@ -134,6 +134,11 @@ export function decodeBreak(data: Uint8Array): BreakAccount {
   };
 }
 
+/** The size of a Spot account: the 8-byte account name, then break id, index, owner, price paid, refunded and bump. */
+export const SPOT_ACCOUNT_BYTES = 60;
+/** Where the owner starts in a Spot account: after the 8-byte name, the break id (8) and the index (2). */
+export const SPOT_OWNER_OFFSET = 18;
+
 export interface SpotAccount {
   breakId: bigint;
   index: number;

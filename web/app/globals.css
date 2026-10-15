@@ -1316,3 +1316,60 @@ dd {
   background: var(--live-bg);
   color: var(--live-fg);
 }
+
+/* a table of a few short columns keeps them on a phone: the break link stays on one line and a badge wraps instead of widening it */
+.table-wrap table.compact th[scope="row"] {
+  white-space: nowrap;
+}
+
+.table-wrap table.compact .badge {
+  white-space: normal;
+  border-radius: 1rem;
+  line-height: 1.3;
+  padding-block: 0.25rem;
+}
+
+/* the longer "How it works" cards: a title, a few lines and a link, in wider cards than the home page's one-liners */
+.how.long {
+  grid-template-columns: repeat(auto-fit, minmax(min(19rem, 100%), 1fr));
+}
+
+.how.long li {
+  font-weight: 500;
+}
+
+.how.long .title {
+  display: block;
+  margin-bottom: 0.4rem;
+  font-size: 1.15rem;
+  font-weight: 900;
+}
+
+.how.long p {
+  margin: 0.3rem 0 0.7rem;
+}
+
+.how.long a {
+  font-weight: 800;
+}
+
+/* the reserve bar: the percent big, the striped bar under it, then the two buckets */
+.reserve-percent {
+  margin: 0.2rem 0 0.5rem;
+}
+
+.reserve-percent .amount {
+  margin-right: 0.3rem;
+  color: var(--gold-hi);
+  font-size: 2.3rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.reserve .bar {
+  margin: 0 0 1rem;
+}
+
+.reserve dl {
+  margin: 0.6rem 0;
+}

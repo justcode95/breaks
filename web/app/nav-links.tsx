@@ -1,8 +1,10 @@
 import Link from "next/link";
 
 export const LINKS = [
+  { href: "/how-it-works", label: "How it works" },
   { href: "/breaks", label: "Breaks" },
   { href: "/treasury", label: "Treasury" },
+  { href: "/me", label: "My spots" },
   { href: "/verify", label: "Verify a draw" },
 ] as const;
 
