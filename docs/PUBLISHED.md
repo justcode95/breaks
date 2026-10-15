@@ -100,19 +100,28 @@ website's own implementation (`web/lib/twab/`) is tested against it, so the two 
 
 Set `NEXT_PUBLIC_PUBLISHED_URL` when the site is built to the folder the files are served from (https, or http on this
 machine only; no login, query or fragment in it). When a person loads a break on the "Verify a draw" page, the page
-fetches `<folder>/eligibility/<root>.json` once a list is committed, and `<folder>/pool/<pool hash>.json` once the seed
-is final, **using the root and the pool hash it just read from the break's account**. It then checks each file before
-using it:
+fetches `<folder>/eligibility/<root>.json` once a list is committed, `<folder>/inputs/<inputs hash>.txt` as soon as the
+inputs hash is committed (with the list), and `<folder>/pool/<pool hash>.json` once the seed is final, **using the root, the
+inputs hash and the pool hash it just read from the break's account**. It then checks each file before using it:
 
 - the file is the kind and version it expects, and the root or pool hash inside is the one it is named after;
 - every wallet is a Solana address, every weight a whole number from 1 to 2^64 − 1, no wallet twice, in the tree's order;
 - the wallets and weights, hashed with the page's own tree, give the committed root; their sum is the committed total
   weight and their number the committed count (for the cards: the committed pool hash and the committed number of cards);
+- the balance events: the SHA-256 of the text is the break account's `eligibilityInputsHash`;
 - the file is not larger than 25 MB.
 
 A file that fails any of these is not used: the page says why, in words, and leaves the list or the cards to be pasted. A
 file that is missing, or a host that cannot be reached, is said the same way. Reading the files never stops the break
 from loading. Text read from the files is replaced when another break is loaded; text a person typed is left alone.
+
+With the balance events the page also **checks the weights**: it reads the text strictly, computes every wallet's TWAB by the
+definition above (its own implementation, not the keeper's), and compares each weight on the list with the wallet's TWAB. A
+weight that is equal is as it should be; one that is below the TWAB can only be explained by a cap on a wallet's weight (a rule
+that is still being decided); one that is above it, or for a wallet with no balance events at all, cannot be explained. The
+wallets that have a TWAB above zero and are not on the list are shown too (below the minimum, or left out on purpose: the
+reasons are not published yet). The text's window is compared with the break's `opens_at` to `closes_at`. None of this stops the
+draw itself from being checked.
 
 The only thing a request contains is the file's name (a hash from the chain): no cookies, no `Referer`, no credentials.
 The break's page links the same files.

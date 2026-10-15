@@ -31,6 +31,7 @@ export function BreakDetails({ loaded, now, readAt, program, refresh, publishedU
   const published = publishedUrl
     ? [
         needed.list ? { label: "Eligible wallets", href: publishedFileUrl(publishedUrl, "eligibility", toHex(b.eligibilityRoot)) } : undefined,
+        needed.inputs ? { label: "Balance events", href: publishedFileUrl(publishedUrl, "inputs", toHex(b.eligibilityInputsHash)) } : undefined,
         needed.cards ? { label: "Cards", href: publishedFileUrl(publishedUrl, "pool", toHex(b.poolHash)) } : undefined,
       ].filter((l): l is { label: string; href: string } => l?.href !== undefined)
     : [];

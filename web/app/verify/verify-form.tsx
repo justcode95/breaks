@@ -6,6 +6,7 @@ import { emptyInput, exampleInput } from "../../lib/example";
 import { NOT_PUBLISHED, type Provenance, applyLoad, loadPublishedLists } from "../../lib/published";
 import { PUBLISHED_SETUP, SETUP } from "../../lib/site";
 import { type VerifyInput, type VerifyResult, verifyDraw } from "../../lib/verify";
+import { WeightsSection } from "./weights-section";
 
 type Loading = { state: "idle" } | { state: "loading" } | { state: "error"; message: string } | { state: "loaded"; number: number; status: string; winners: number; notes: string[]; stillToPaste: string[] };
 
@@ -34,7 +35,11 @@ export function VerifyForm() {
   const set = (patch: Partial<VerifyInput>) =>
     setForm((f) => ({
       input: { ...f.input, ...patch },
-      provenance: { holders: f.provenance.holders && patch.holders === undefined, cards: f.provenance.cards && patch.cards === undefined },
+      provenance: {
+        holders: f.provenance.holders && patch.holders === undefined,
+        inputs: f.provenance.inputs && patch.inputs === undefined,
+        cards: f.provenance.cards && patch.cards === undefined,
+      },
     }));
   const setExpected = (patch: Partial<Expected>) => setForm((f) => ({ ...f, input: { ...f.input, expected: { ...f.input.expected, ...patch } } }));
   const submit = (e: FormEvent) => {
@@ -84,8 +89,8 @@ export function VerifyForm() {
                 Fills in the seed, the free spots, the paid spots' wallets, the values to compare with and the winners recorded on the break, read from the chain
                 (finalized). Only the break number is sent to the node.{" "}
                 {PUBLISHED_SETUP.kind === "on"
-                  ? "The eligibility list and the cards are read from the published files and checked against the chain; if they cannot be read, paste them."
-                  : "The eligibility list and the cards are published off chain, so paste those yourself."}
+                  ? "The eligibility list, the balance events behind its weights and the cards are read from the published files and checked against the chain; if they cannot be read, paste them."
+                  : "The eligibility list, the balance events and the cards are published off chain, so paste those yourself."}
               </p>
               <div className="inline">
                 <label htmlFor="number">Break number</label>
@@ -129,6 +134,14 @@ export function VerifyForm() {
           <textarea id="holders" className="mono" rows={8} aria-describedby="holders-hint" value={input.holders} onChange={(e) => set({ holders: e.target.value })} spellCheck={false} />
         </Field>
 
+        <Field
+          id="inputs"
+          label="Balance events (optional)"
+          hint="The published record the weights were computed from: a first line starting breaks:inputs:v1, then one balance change per line, exactly as published. With it, every weight above is checked against the wallet's time-weighted average balance."
+        >
+          <textarea id="inputs" className="mono" rows={4} aria-describedby="inputs-hint" value={input.inputs} onChange={(e) => set({ inputs: e.target.value })} spellCheck={false} />
+        </Field>
+
         <Field id="paid" label="Paid spots (optional)" hint="The buyer's wallet of each paid spot, one per line, in purchase order. Needed with the cards to see who gets which card.">
           <textarea id="paid" className="mono" rows={4} aria-describedby="paid-hint" value={input.paidOwners} onChange={(e) => set({ paidOwners: e.target.value })} spellCheck={false} />
         </Field>
@@ -143,6 +156,9 @@ export function VerifyForm() {
           <div className="grid">
             <Field id="x-root" label="Eligibility root" hint="64 hex digits">
               <input id="x-root" className="mono" value={input.expected.root} onChange={(e) => setExpected({ root: e.target.value })} spellCheck={false} autoComplete="off" />
+            </Field>
+            <Field id="x-inputs" label="Balance-event hash" hint="64 hex digits">
+              <input id="x-inputs" className="mono" value={input.expected.inputsHash} onChange={(e) => setExpected({ inputsHash: e.target.value })} spellCheck={false} autoComplete="off" />
             </Field>
             <Field id="x-pool" label="Pool hash" hint="64 hex digits">
               <input id="x-pool" className="mono" value={input.expected.poolHash} onChange={(e) => setExpected({ poolHash: e.target.value })} spellCheck={false} autoComplete="off" />
@@ -233,6 +249,8 @@ function Result({ result }: { result: VerifyResult }) {
           </>
         )}
       </dl>
+
+      {result.weights && <WeightsSection weights={result.weights} />}
 
       {result.checks.length > 0 && (
         <div className="scroll" role="region" aria-label="Comparison with the break's account" tabIndex={0}>

@@ -34,10 +34,11 @@ function inputOf(c: Case): VerifyInput {
   return {
     seed: c.seed,
     holders: c.leaves.map((l) => `${b58(l.wallet)} ${l.weight}`).join("\n"),
+    inputs: "",
     freeSpots: String(winners),
     paidOwners: Array.from({ length: paid }, (_, i) => base58.encode(new Uint8Array(32).fill(200 + i))).join("\n"),
     cards: [...mints].reverse().join("\n"), // any order
-    expected: { root: c.root.hash, totalWeight: c.root.sum, entryCount: String(c.leaves.length), poolHash: "" },
+    expected: { root: c.root.hash, totalWeight: c.root.sum, entryCount: String(c.leaves.length), inputsHash: "", poolHash: "" },
   };
 }
 
@@ -182,7 +183,7 @@ describe("comparing with the break's account", () => {
   const r = ok(verifyDraw(base));
 
   it("passes when every value matches (upper or lower case)", () => {
-    const e = { root: r.eligibility.root.toUpperCase(), totalWeight: String(r.eligibility.totalWeight), entryCount: String(r.eligibility.entries), poolHash: r.poolHash as string };
+    const e = { root: r.eligibility.root.toUpperCase(), totalWeight: String(r.eligibility.totalWeight), entryCount: String(r.eligibility.entries), inputsHash: "", poolHash: r.poolHash as string };
     const checked = ok(verifyDraw({ ...base, expected: e }));
     expect(checked.checks.map((c) => [c.label, c.matches])).toEqual([
       ["Eligibility root", true],
@@ -193,9 +194,9 @@ describe("comparing with the break's account", () => {
   });
 
   it("flags each value that differs, and one that cannot be checked", () => {
-    const good = { root: r.eligibility.root, totalWeight: String(r.eligibility.totalWeight), entryCount: String(r.eligibility.entries), poolHash: r.poolHash as string };
+    const good = { root: r.eligibility.root, totalWeight: String(r.eligibility.totalWeight), entryCount: String(r.eligibility.entries), inputsHash: "", poolHash: r.poolHash as string };
     const flip = (hex: string) => (hex[0] === "a" ? "b" : "a") + hex.slice(1);
-    const bad = ok(verifyDraw({ ...base, expected: { root: flip(good.root), totalWeight: "1", entryCount: "99", poolHash: flip(good.poolHash) } }));
+    const bad = ok(verifyDraw({ ...base, expected: { root: flip(good.root), totalWeight: "1", entryCount: "99", inputsHash: "", poolHash: flip(good.poolHash) } }));
     expect(bad.checks.map((c) => c.matches)).toEqual([false, false, false, false]);
     const noCards = ok(verifyDraw({ ...base, cards: "", paidOwners: "", expected: { ...good, root: "", totalWeight: "", entryCount: "" } }));
     expect(noCards.checks).toEqual([{ label: "Pool hash", expected: good.poolHash, actual: "no cards given", matches: false }]);
@@ -203,7 +204,7 @@ describe("comparing with the break's account", () => {
 
   it("checks nothing that is left empty, and refuses values that are not numbers or hashes", () => {
     expect(ok(verifyDraw(base)).checks).toEqual([]);
-    const bad = errorsOf(verifyDraw({ ...base, expected: { root: "12", totalWeight: "abc", entryCount: "-1", poolHash: "zz" } }));
+    const bad = errorsOf(verifyDraw({ ...base, expected: { root: "12", totalWeight: "abc", entryCount: "-1", inputsHash: "", poolHash: "zz" } }));
     expect(bad).toEqual(["Expected pool hash: 64 hex digits.", "Expected root: 64 hex digits.", "Expected total weight: a whole number.", "Expected entry count: a whole number."].sort((a, b) => bad.indexOf(a) - bad.indexOf(b)));
     expect(bad).toHaveLength(4);
   });
@@ -212,13 +213,13 @@ describe("comparing with the break's account", () => {
 describe("asking before the list is pasted", () => {
   it("says why the root differs instead of only saying that it does", () => {
     const base = exampleInput();
-    const r = ok(verifyDraw({ ...base, holders: "", freeSpots: "0", paidOwners: "", cards: "", expected: { root: "ab".repeat(32), totalWeight: "130", entryCount: "6", poolHash: "" } }));
+    const r = ok(verifyDraw({ ...base, holders: "", freeSpots: "0", paidOwners: "", cards: "", expected: { root: "ab".repeat(32), totalWeight: "130", entryCount: "6", inputsHash: "", poolHash: "" } }));
     expect(r.checks.map((c) => c.matches)).toEqual([false, false, false]);
     expect(r.notes).toEqual(["The eligibility list is empty, so these inputs commit to the zero root: paste the published list to compare it."]);
   });
 
   it("stays quiet when an empty list is what was committed", () => {
-    const r = ok(verifyDraw({ ...exampleInput(), holders: "", freeSpots: "0", paidOwners: "", cards: "", expected: { root: "0".repeat(64), totalWeight: "0", entryCount: "0", poolHash: "" } }));
+    const r = ok(verifyDraw({ ...exampleInput(), holders: "", freeSpots: "0", paidOwners: "", cards: "", expected: { root: "0".repeat(64), totalWeight: "0", entryCount: "0", inputsHash: "", poolHash: "" } }));
     expect(r.checks.every((c) => c.matches)).toBe(true);
     expect(r.notes).toEqual([]);
   });

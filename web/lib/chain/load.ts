@@ -81,12 +81,13 @@ export function inputFromBreak(loaded: Loaded): FromChain {
   const b = loaded.break;
   // The cancellation is said here and not by the loader: the break page has its own words for it.
   const notes = b.status === "Cancelled" ? ["This break was cancelled: nothing was drawn.", ...loaded.notes] : [...loaded.notes];
-  const expected = { root: "", totalWeight: "", entryCount: "", poolHash: "" };
+  const expected = { root: "", totalWeight: "", entryCount: "", inputsHash: "", poolHash: "" };
 
   if (COMMITTED.includes(b.status)) {
     expected.root = toHex(b.eligibilityRoot);
     expected.totalWeight = b.eligibilityTotalWeight.toString();
     expected.entryCount = String(b.eligibilityCount);
+    expected.inputsHash = toHex(b.eligibilityInputsHash);
   } else if (b.status !== "Cancelled") {
     notes.push("The eligibility list has not been committed yet, so there is nothing to compare it with.");
   }
@@ -99,7 +100,11 @@ export function inputFromBreak(loaded: Loaded): FromChain {
   const winners: FreeWinner[] = b.freeWinners;
   return {
     patch: { seed, freeSpots: String(b.freeSpots), paidOwners: loaded.paidOwners.join("\n"), expected },
-    onChain: { winners: winners.map((w) => ({ wallet: w.wallet, start: w.start, weight: w.weight })), complete: b.status === "Drawn" },
+    onChain: {
+      winners: winners.map((w) => ({ wallet: w.wallet, start: w.start, weight: w.weight })),
+      complete: b.status === "Drawn",
+      window: { start: b.opensAt, end: b.closesAt },
+    },
     notes,
   };
 }

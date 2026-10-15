@@ -6,6 +6,7 @@ import type { PGlite } from "@electric-sql/pglite";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { serializeInputs } from "../src/eligibility/eligibility.js";
+import { type BalanceEvent, twabByOwner } from "../src/eligibility/twab.js";
 import { DbPublisher, SqlEligibilityPlanner } from "../src/eligibility/planner.js";
 import { compareBytes, hashv, toHex, utf8 } from "../src/draw/bytes.js";
 import { poolHash } from "../src/draw/pool.js";
@@ -171,7 +172,41 @@ describe("the published example the website reads", () => {
   const leaves = leavesOf([[1, 10n], [2, 30n], [3, 5n], [4, 50n], [5, 20n], [6, 15n]]);
   const cards = [44, 40, 43, 41, 42].map((n) => addressToBytes(addr(n)));
   const tree = Tree.build(leaves);
-  const made = [eligibilityFile(tree.root.hash, tree.root.sum, leaves), poolFile(poolHash(cards), cards)];
+
+  // The balance events behind those weights, over a 12-hour window: wallet 1 held 10 all along, 2 bought 60 halfway (30), 3 sold
+  // its 10 halfway (5), 4 held 50, 5 held 12 and 8 in two token accounts (20), 6 held 10 and bought 10 more halfway (15). Wallet 7
+  // held 1000 all along and is not on the list.
+  const WINDOW = { start: 1_800_000_000, end: 1_800_043_200 };
+  const MID = WINDOW.start + 21_600;
+  const steps: [owner: number, account: number, time: number, delta: bigint][] = [
+    [7, 107, WINDOW.start - 3000, 1000n],
+    [4, 104, WINDOW.start - 2000, 50n],
+    [1, 101, WINDOW.start - 1000, 10n],
+    [3, 103, WINDOW.start - 1000, 10n],
+    [5, 105, WINDOW.start - 1000, 12n],
+    [6, 106, WINDOW.start - 1000, 10n],
+    [5, 115, WINDOW.start - 500, 8n],
+    [2, 102, MID, 60n],
+    [3, 103, MID, -10n],
+    [6, 106, MID, 10n],
+  ];
+  const held = new Map<number, bigint>();
+  const events: BalanceEvent[] = steps.map(([owner, account, time, delta], i) => {
+    const after = (held.get(account) ?? 0n) + delta;
+    held.set(account, after);
+    return { signature: `example-sig-${i + 1}`, slot: BigInt(time), time, owner: addr(owner), tokenAccount: addr(account), delta, balanceAfter: after };
+  });
+  const inputsText = serializeInputs(events, WINDOW);
+  const made = [eligibilityFile(tree.root.hash, tree.root.sum, leaves), poolFile(poolHash(cards), cards), inputsFile(inputsText)];
+
+  it("has balance events whose time-weighted average balances are the weights on the list, and one wallet that is not on it", () => {
+    const twab = twabByOwner(events, WINDOW);
+    expect([1, 2, 3, 4, 5, 6, 7].map((n) => twab.get(addr(n)))).toEqual([10n, 30n, 5n, 50n, 20n, 15n, 1000n]);
+    // The list is wallets 1 to 6 with exactly those weights.
+    expect(leaves.map((l) => [toBase58(l.wallet), l.weight]).sort()).toEqual([1, 2, 3, 4, 5, 6].map((n) => [addr(n), twab.get(addr(n))]).sort());
+    // And the file is named by the hash of its text, which is what the chain's inputs hash is.
+    expect(inputsFile(inputsText).path).toBe(`inputs/${toHex(hashv(utf8(inputsText)))}.txt`);
+  });
 
   it("is exactly what the keeper writes for this list and these cards, and nothing else", async () => {
     if (process.env.UPDATE_PUBLISHED_EXAMPLE) {
@@ -182,7 +217,11 @@ describe("the published example the website reads", () => {
       }
     }
     for (const f of made) expect(await readFile(join(EXAMPLE, f.path), "utf8"), f.path).toBe(f.body);
-    const found = [...(await readdir(join(EXAMPLE, "eligibility"))).map((n) => `eligibility/${n}`), ...(await readdir(join(EXAMPLE, "pool"))).map((n) => `pool/${n}`)].sort();
+    const found = [
+      ...(await readdir(join(EXAMPLE, "eligibility"))).map((n) => `eligibility/${n}`),
+      ...(await readdir(join(EXAMPLE, "inputs"))).map((n) => `inputs/${n}`),
+      ...(await readdir(join(EXAMPLE, "pool"))).map((n) => `pool/${n}`),
+    ].sort();
     expect(found).toEqual(made.map((f) => f.path).sort());
   });
 });

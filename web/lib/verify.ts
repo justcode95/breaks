@@ -11,6 +11,9 @@ import { U64_MAX, compareBytes, fromHex, toHex } from "./draw/bytes";
 import { assignment, drawFreeWinners, seedFromRandomness } from "./draw/draw";
 import { poolHash, sortedPool } from "./draw/pool";
 import { DrawError, type Leaf, treeRoot } from "./draw/tree";
+import { inputsHash, parseInputs } from "./twab/inputs";
+import { TwabError, twabByOwner } from "./twab/twab";
+import { type ListedWallet, type WeightCheck, checkWeights } from "./twab/weights";
 
 /** The most free spots a break can have (the winner list is stored in the break account). */
 export const MAX_FREE_SPOTS = 16;
@@ -21,6 +24,8 @@ export interface VerifyInput {
   seed: string;
   /** One `wallet weight` per line. */
   holders: string;
+  /** The published balance events the weights were computed from (`breaks:inputs:v1,...`), as they are published. Optional. */
+  inputs: string;
   /** The break's number of free spots. */
   freeSpots: string;
   /** Wallets of the paid spots, one per line, in purchase order. */
@@ -28,13 +33,18 @@ export interface VerifyInput {
   /** Mints of the cards in the pool, one per line, in any order. */
   cards: string;
   /** Values from the break's account to compare with; leave a field empty to skip it. */
-  expected: { root: string; totalWeight: string; entryCount: string; poolHash: string };
+  expected: { root: string; totalWeight: string; entryCount: string; inputsHash: string; poolHash: string };
   /**
    * The free-spot winners recorded on the break's account (when it was loaded from the chain). Each is compared with
    * the winner this draw gives at the same place. `complete` says the draw is finished (status `Drawn`), so that no
    * winner may be missing.
    */
-  onChain?: { winners: { wallet: string; start: bigint; weight: bigint }[]; complete: boolean };
+  onChain?: {
+    winners: { wallet: string; start: bigint; weight: bigint }[];
+    complete: boolean;
+    /** The break's sale window in Unix seconds, which is the window its weights were measured over. */
+    window?: { start: bigint; end: bigint };
+  };
 }
 
 export interface Check {
@@ -63,6 +73,11 @@ export interface SpotCard {
   card: string;
 }
 
+/** What the balance events say about the weights on the list: or why they could not be read or used. */
+export type WeightsReport =
+  | { ok: true; window: { start: number; end: number }; events: number; check: WeightCheck }
+  | { ok: false; errors: string[] };
+
 export interface Verified {
   ok: true;
   seed: { hex: string; derived: boolean };
@@ -72,6 +87,8 @@ export interface Verified {
   poolHash?: string;
   /** Present when cards were given (there is one card per spot). */
   assignment?: SpotCard[];
+  /** Present when the balance events were given: each weight on the list against the wallet's time-weighted average balance. */
+  weights?: WeightsReport;
   checks: Check[];
   /** Things worth saying that are not a match or a difference. */
   notes: string[];
@@ -139,6 +156,7 @@ export function verifyDraw(input: VerifyInput): VerifyResult {
 
   // The eligible holders.
   const leaves: Leaf[] = [];
+  const listed: ListedWallet[] = [];
   const seenAt = new Map<string, number>();
   for (const line of linesOf(input.holders)) {
     const parts = line.text.split(/[\s,;]+/).filter((p) => p !== "");
@@ -163,6 +181,7 @@ export function verifyDraw(input: VerifyInput): VerifyResult {
     }
     seenAt.set(walletText, line.n);
     leaves.push({ wallet, weight: BigInt(weightText) });
+    listed.push({ wallet: walletText, weight: BigInt(weightText) });
   }
   leaves.sort((a, b) => compareBytes(a.wallet, b.wallet));
 
@@ -191,9 +210,11 @@ export function verifyDraw(input: VerifyInput): VerifyResult {
   const want = {
     root: e.root.trim() === "" ? undefined : hexOf(e.root, 32),
     pool: e.poolHash.trim() === "" ? undefined : hexOf(e.poolHash, 32),
+    inputs: e.inputsHash.trim() === "" ? undefined : hexOf(e.inputsHash, 32),
   };
   if (e.root.trim() !== "" && !want.root) fail("Expected root: 64 hex digits.");
   if (e.poolHash.trim() !== "" && !want.pool) fail("Expected pool hash: 64 hex digits.");
+  if (e.inputsHash.trim() !== "" && !want.inputs) fail("Expected inputs hash: 64 hex digits.");
   if (e.totalWeight.trim() !== "" && (!/^\d+$/.test(e.totalWeight.trim()) || BigInt(e.totalWeight.trim()) > U64_MAX)) fail("Expected total weight: a whole number.");
   if (e.entryCount.trim() !== "" && !/^\d+$/.test(e.entryCount.trim())) fail("Expected entry count: a whole number.");
 
@@ -240,12 +261,27 @@ export function verifyDraw(input: VerifyInput): VerifyResult {
   if (want.root) same("Eligibility root", toHex(want.root), root);
   if (e.totalWeight.trim() !== "") same("Total weight", BigInt(e.totalWeight.trim()).toString(), totalWeight.toString());
   if (e.entryCount.trim() !== "") same("Eligible wallets", BigInt(e.entryCount.trim()).toString(), String(leaves.length));
+
+  // The weights against the balance events they come from, when those were given. Whatever is wrong with them is said in the
+  // weights section and never stops the draw from being checked.
+  const notes: string[] = [];
+  let weights: WeightsReport | undefined;
+  if (input.inputs.trim() !== "") {
+    if (want.inputs) same("Balance-event hash", toHex(want.inputs), inputsHash(input.inputs));
+    weights = weighsUp(input.inputs, listed);
+    if (weights.ok && input.onChain?.window) {
+      const w = input.onChain.window;
+      same("Window of the balance events", `${w.start} to ${w.end}`, `${weights.window.start} to ${weights.window.end}`);
+    }
+  } else if (want.inputs) {
+    notes.push(`The balance events were not given, so the weights were not checked against them (the chain commits to them with the inputs hash ${toHex(want.inputs)}).`);
+  }
+
   if (want.pool) {
     if (pool) same("Pool hash", toHex(want.pool), pool);
     else wanted.push({ label: "Pool hash", expected: toHex(want.pool), actual: "no cards given", matches: false });
   }
 
-  const notes: string[] = [];
   // Asking before the list is pasted is the usual way to see "differs" for the root: say why.
   if (leaves.length === 0 && wanted.some((c) => ["Eligibility root", "Total weight", "Eligible wallets"].includes(c.label) && !c.matches)) {
     notes.push("The eligibility list is empty, so these inputs commit to the zero root: paste the published list to compare it.");
@@ -269,6 +305,7 @@ export function verifyDraw(input: VerifyInput): VerifyResult {
     winners,
     ...(pool ? { poolHash: pool } : {}),
     ...(assigned ? { assignment: assigned } : {}),
+    ...(weights ? { weights } : {}),
     checks: wanted,
     notes,
   };
@@ -278,4 +315,16 @@ function refuse(errors: string[]): VerifyResult {
   const shown = errors.slice(0, MAX_ERRORS);
   if (errors.length > shown.length) shown.push(`... and ${errors.length - shown.length} more.`);
   return { ok: false, errors: shown };
+}
+
+/** Each weight on the list against the wallet's time-weighted average balance in the balance events. */
+function weighsUp(text: string, listed: readonly ListedWallet[]): WeightsReport {
+  const parsed = parseInputs(text);
+  if (!parsed.ok) return { ok: false, errors: parsed.errors.map((m) => `Balance events: ${m}`) };
+  try {
+    return { ok: true, window: parsed.window, events: parsed.events.length, check: checkWeights(listed, twabByOwner(parsed.events, parsed.window)) };
+  } catch (err) {
+    if (err instanceof TwabError) return { ok: false, errors: [`Balance events: ${err.message}`] };
+    throw err;
+  }
 }

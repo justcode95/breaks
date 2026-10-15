@@ -80,6 +80,8 @@ export interface BreakAccount {
   eligibilityRoot: Uint8Array;
   eligibilityTotalWeight: bigint;
   eligibilityCount: number;
+  /** The SHA-256 of the published balance-event text the weights were computed from. All zeros until a list is committed. */
+  eligibilityInputsHash: Uint8Array;
   poolSize: number;
   poolHash: Uint8Array;
   /** All zeros until the randomness has been settled. */
@@ -112,7 +114,7 @@ export function decodeBreak(data: Uint8Array): BreakAccount {
   const eligibilityRoot = r.fixed(32);
   const eligibilityTotalWeight = r.u64();
   const eligibilityCount = r.u32();
-  r.fixed(32); // inputs hash
+  const eligibilityInputsHash = r.fixed(32);
   const poolSize = r.u16();
   r.u64(); // pack budget
   const poolHash = r.fixed(32);
@@ -138,6 +140,7 @@ export function decodeBreak(data: Uint8Array): BreakAccount {
     eligibilityRoot,
     eligibilityTotalWeight,
     eligibilityCount,
+    eligibilityInputsHash,
     poolSize,
     poolHash,
     seed,

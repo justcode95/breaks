@@ -2,7 +2,7 @@
 // named by the root or the pool hash, so what comes back is only used when it hashes to that name: the host that served it
 // is never trusted, and a wrong or altered file is refused and reported, not used.
 //
-// The hashing here is the web package's own (lib/draw), the same code the verify page uses, not the keeper's.
+// The hashing here is the web package's own (lib/draw, lib/twab), the same code the verify page uses, not the keeper's.
 
 import { addressToBytes } from "./chain/address";
 import type { BreakAccount } from "./chain/accounts";
@@ -10,6 +10,7 @@ import type { VerifyInput } from "./verify";
 import { U64_MAX, toHex } from "./draw/bytes";
 import { poolHash } from "./draw/pool";
 import { DrawError, type Leaf, treeRoot } from "./draw/tree";
+import { inputsHash } from "./twab/inputs";
 
 /** The most a list may be: a list of tens of thousands of wallets is a few megabytes. */
 export const MAX_BYTES = 25_000_000;
@@ -25,11 +26,16 @@ interface Options {
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
-/** The text of `<base>/<folder>/<hash>.json`, or why there is none. Only the hash is in the request. */
-async function fetchFile(opts: Options, folder: "eligibility" | "pool", hash: string): Promise<Fetched<string>> {
+type Folder = "eligibility" | "pool" | "inputs";
+
+/** The balance events are text, the two lists JSON. */
+const EXTENSION: Record<Folder, string> = { eligibility: "json", pool: "json", inputs: "txt" };
+
+/** The text of `<base>/<folder>/<hash>.<json or txt>`, or why there is none. Only the hash is in the request. */
+async function fetchFile(opts: Options, folder: Folder, hash: string): Promise<Fetched<string>> {
   // The name comes from the chain, as hex; refuse anything else rather than build an address from it.
   if (!HEX64.test(hash)) throw new RangeError("a published file is named by 64 lowercase hex digits");
-  const url = `${opts.baseUrl}/${folder}/${hash}.json`;
+  const url = `${opts.baseUrl}/${folder}/${hash}.${EXTENSION[folder]}`;
   const max = opts.maxBytes ?? MAX_BYTES;
   let res: Response;
   try {
@@ -168,11 +174,28 @@ export async function fetchPool(opts: Options & { expected: PoolExpected }): Pro
   return { ok: true, value: { cards: (doc.cards as string[]).join("\n"), count: mints.length } };
 }
 
+export interface InputsExpected {
+  /** The `inputs_hash` committed on chain with the eligibility list: 64 lowercase hex digits. */
+  inputsHash: string;
+}
+
+/** The balance events a break's weights were computed from, if the file for the committed hash exists and hashes to it. */
+export async function fetchInputs(opts: Options & { expected: InputsExpected }): Promise<Fetched<{ text: string }>> {
+  const got = await fetchFile(opts, "inputs", opts.expected.inputsHash);
+  if (!got.ok) return got;
+  // The record is the text itself: it is what the chain's hash was made from, so a text that hashes to it is the record.
+  const hash = inputsHash(got.value);
+  if (hash !== opts.expected.inputsHash) return invalid(`the text in it hashes to ${hash}, not to the inputs hash that was committed`);
+  return { ok: true, value: { text: got.value } };
+}
+
 export interface PublishedLists {
   /** Set when the eligibility list was read and checked. */
   holders?: string;
   /** Set when the cards were read and checked. */
   cards?: string;
+  /** Set when the balance events were read and they hash to the inputs hash on chain. */
+  inputs?: string;
   /** What happened, in words, for the person to read. */
   notes: string[];
   /** What the person still has to paste, because it was needed and could not be read. */
@@ -181,9 +204,16 @@ export interface PublishedLists {
 
 const isZero = (bytes: Uint8Array) => bytes.every((b) => b === 0);
 
-/** What the verify page needs that is not on chain: the list once one is committed, the cards once the seed is final. */
-export function whatIsNeeded(b: BreakAccount): { list: boolean; cards: boolean } {
-  return { list: b.eligibilityCount > 0 && !isZero(b.eligibilityRoot), cards: (b.status === "Settled" || b.status === "Drawn") && !isZero(b.poolHash) };
+/**
+ * What the verify page needs that is not on chain: the list once one is committed, the balance events its weights come from
+ * (committed with it, also when the list is empty), the cards once the seed is final.
+ */
+export function whatIsNeeded(b: BreakAccount): { list: boolean; inputs: boolean; cards: boolean } {
+  return {
+    list: b.eligibilityCount > 0 && !isZero(b.eligibilityRoot),
+    inputs: !isZero(b.eligibilityInputsHash),
+    cards: (b.status === "Settled" || b.status === "Drawn") && !isZero(b.poolHash),
+  };
 }
 
 /**
@@ -199,6 +229,7 @@ export async function loadPublishedLists(opts: { baseUrl?: string; fetch?: typeo
   // Without a place to read from, the person pastes whatever is needed.
   if (opts.baseUrl === undefined) {
     if (needed.list) out.stillToPaste.push("the eligibility list");
+    if (needed.inputs) out.stillToPaste.push(INPUTS_TO_PASTE);
     if (needed.cards) out.stillToPaste.push("the cards");
     return out;
   }
@@ -213,6 +244,18 @@ export async function loadPublishedLists(opts: { baseUrl?: string; fetch?: typeo
     } else {
       out.stillToPaste.push("the eligibility list");
       out.notes.push(failure("eligibility list", host, r));
+    }
+  }
+
+  if (needed.inputs) {
+    const r = await safely(() => fetchInputs({ ...options, expected: { inputsHash: toHex(b.eligibilityInputsHash) } }));
+    if (r.ok) {
+      out.inputs = r.value.text;
+      const events = Math.max(0, r.value.text.split("\n").length - 2);
+      out.notes.push(`The balance events were read from ${host}: ${events} ${events === 1 ? "event" : "events"}, and they hash to the inputs hash committed on chain.`);
+    } else {
+      out.stillToPaste.push(INPUTS_TO_PASTE);
+      out.notes.push(failure("balance events", host, r));
     }
   }
 
@@ -238,29 +281,34 @@ async function safely<T>(read: () => Promise<Fetched<T>>): Promise<Fetched<T>> {
   }
 }
 
+/** The balance events are optional for the draw itself: they only let the weights be checked. */
+const INPUTS_TO_PASTE = "the balance events (to check the weights)";
+
 function failure(what: string, host: string, r: Extract<Fetched<unknown>, { ok: false }>): string {
+  const plural = what === "cards" || what === "balance events";
   switch (r.kind) {
     case "missing":
-      return `The ${what} ${what === "cards" ? "are" : "is"} not published at ${host} (there is no file for this break's commitment), so paste ${what === "cards" ? "them" : "it"}.`;
+      return `The ${what} ${plural ? "are" : "is"} not published at ${host} (there is no file for this break's commitment), so paste ${plural ? "them" : "it"}.`;
     case "unreachable":
-      return `The ${what} could not be read from ${host} (${r.message}), so paste ${what === "cards" ? "them" : "it"}.`;
+      return `The ${what} could not be read from ${host} (${r.message}), so paste ${plural ? "them" : "it"}.`;
     case "invalid":
       return `The file for the ${what} at ${host} is not what the chain committed to (${r.message}), so it was not used. Paste the ${what} instead.`;
   }
 }
 
 /** The address of a published file, for a link: only for a name that is 64 lowercase hex digits. */
-export function publishedFileUrl(baseUrl: string, folder: "eligibility" | "pool", hash: string): string | undefined {
-  return HEX64.test(hash) ? `${baseUrl}/${folder}/${hash}.json` : undefined;
+export function publishedFileUrl(baseUrl: string, folder: Folder, hash: string): string | undefined {
+  return HEX64.test(hash) ? `${baseUrl}/${folder}/${hash}.${EXTENSION[folder]}` : undefined;
 }
 
 /** Which fields of the verify form hold text that was read from the published files (and not typed or pasted). */
 export interface Provenance {
   holders: boolean;
+  inputs: boolean;
   cards: boolean;
 }
 
-export const NOT_PUBLISHED: Provenance = { holders: false, cards: false };
+export const NOT_PUBLISHED: Provenance = { holders: false, inputs: false, cards: false };
 
 /**
  * The form after a break was loaded. What the chain gave replaces the chain-backed fields. The list and the cards
@@ -271,12 +319,14 @@ export function applyLoad(
   prev: VerifyInput,
   provenance: Provenance,
   loaded: { patch: Partial<VerifyInput>; onChain: NonNullable<VerifyInput["onChain"]> },
-  published: Pick<PublishedLists, "holders" | "cards"> | undefined,
+  published: Pick<PublishedLists, "holders" | "inputs" | "cards"> | undefined,
 ): { input: VerifyInput; provenance: Provenance } {
   const input: VerifyInput = { ...prev, ...loaded.patch, onChain: loaded.onChain };
   if (published?.holders !== undefined) input.holders = published.holders;
   else if (provenance.holders) input.holders = "";
+  if (published?.inputs !== undefined) input.inputs = published.inputs;
+  else if (provenance.inputs) input.inputs = "";
   if (published?.cards !== undefined) input.cards = published.cards;
   else if (provenance.cards) input.cards = "";
-  return { input, provenance: { holders: published?.holders !== undefined, cards: published?.cards !== undefined } };
+  return { input, provenance: { holders: published?.holders !== undefined, inputs: published?.inputs !== undefined, cards: published?.cards !== undefined } };
 }
