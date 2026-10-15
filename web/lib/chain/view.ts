@@ -52,6 +52,27 @@ export function machineLabel(bytes: Uint8Array): string {
   return `0x${hex.slice(0, 6)}…${hex.slice(-4)}`;
 }
 
+/** One line of a break's pack list: a machine, the most a pack from it may cost, and how many of the break's packs come from it. */
+export interface PackGroup {
+  machine: Uint8Array;
+  maxPrice: bigint;
+  count: number;
+}
+
+/** The tiers a break lists with the number of packs from each, in the order the break lists them (cheapest first). */
+export function packGroups(b: Pick<BreakAccount, "tiers" | "packs">): PackGroup[] {
+  return b.tiers.map((t, i) => ({ machine: t.machine, maxPrice: t.maxPrice, count: b.packs.filter((p) => p === i).length }));
+}
+
+/** The pack prices as a few words: "packs up to $25" for one price, "packs $10 to $50" for a mix. */
+export function packPriceRange(b: Pick<BreakAccount, "tiers">): string {
+  const prices = b.tiers.map((t) => t.maxPrice);
+  if (prices.length === 0) return "no packs";
+  const low = prices.reduce((a, p) => (p < a ? p : a));
+  const high = prices.reduce((a, p) => (p > a ? p : a));
+  return low === high ? `packs up to ${money(high)}` : `packs ${money(low)} to ${money(high)}`;
+}
+
 /** A wallet's weight as a share of the list: "12.5%", "<0.01%" when it is real but tiny, "—" when it cannot be one. */
 export function share(weight: bigint, total: bigint): string {
   if (total <= 0n || weight <= 0n) return "0%";

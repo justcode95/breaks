@@ -54,11 +54,11 @@ export class SqlBreakRepo implements BreakRepo {
   constructor(private readonly sql: Sql) {}
 
   async activeBreaks(): Promise<ActiveBreak[]> {
-    const { rows } = await this.sql.query<{ id: string; onchain_id: string; pack_machine: string; status: string }>(
-      `select id::text as id, onchain_id::text as onchain_id, pack_machine, status from breaks
+    const { rows } = await this.sql.query<{ id: string; onchain_id: string; status: string }>(
+      `select id::text as id, onchain_id::text as onchain_id, status from breaks
         where onchain_id is not null and status not in ('delivered', 'cancelled') order by id`,
     );
-    return rows.map((r) => ({ id: r.id, onchainId: BigInt(r.onchain_id), machine: r.pack_machine, status: r.status }));
+    return rows.map((r) => ({ id: r.id, onchainId: BigInt(r.onchain_id), status: r.status }));
   }
 
   async setStatus(id: string, status: DbBreakStatus): Promise<void> {

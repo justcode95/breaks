@@ -157,8 +157,9 @@ export class BreakScheduler {
       paidSpots: template.paidSpots,
       freeSpots: template.freeSpots,
       spotPrice: template.spotPrice,
-      maxPackPrice: template.maxPackPrice,
-      packMachine: template.packMachine,
+      // One machine for every pack: the template has one price. The program takes any cheapest-first list.
+      tiers: [{ machine: template.packMachine, maxPrice: template.maxPackPrice }],
+      packs: Array<number>(template.paidSpots + template.freeSpots).fill(0),
       opensAt: nowSecs,
       closesAt: nowSecs + template.windowSecs,
     });

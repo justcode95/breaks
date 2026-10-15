@@ -16,7 +16,7 @@ export const ACCOUNT_OVERHEAD_BYTES = 128n;
 export const rentExempt = (dataBytes: number): bigint => (ACCOUNT_OVERHEAD_BYTES + BigInt(dataBytes)) * LAMPORTS_PER_BYTE;
 
 /** A break's account: the 8-byte discriminator and `Break::INIT_SPACE` (programs/breaks/src/state.rs). */
-export const BREAK_ACCOUNT_BYTES = 1_073;
+export const BREAK_ACCOUNT_BYTES = 1_418;
 
 /** An SPL token account (the break's USDC escrow). */
 export const TOKEN_ACCOUNT_BYTES = 165;

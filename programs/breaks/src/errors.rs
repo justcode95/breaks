@@ -14,8 +14,8 @@ pub enum BreaksError {
     InvalidSpotCounts,
     #[msg("Prices must be greater than zero")]
     InvalidPrice,
-    #[msg("The spot price may not be above the maximum pack price")]
-    SpotPriceAboveMaxPackPrice,
+    #[msg("The spot price may not be above the average price of the packs in the break")]
+    SpotPriceAboveAveragePack,
     #[msg("The sale window is invalid or outside the configured limits")]
     InvalidWindow,
     #[msg("The break is not in the right status for this action")]
@@ -58,4 +58,17 @@ pub enum BreaksError {
     NotTheDrawnWinner,
     #[msg("This wallet was already drawn")]
     WinnerAlreadyDrawn,
+    #[msg("The pack list is invalid: one pack per spot, every tier used, tiers listed cheapest first")]
+    InvalidPackList,
+    #[msg("The packs that can be bought are worth less than the spots cost: cancel the break")]
+    PacksWorthLessThanSpots,
+}
+
+/// Unit-test helper: the result failed with exactly this program error.
+#[cfg(test)]
+pub fn assert_fails_with<T: std::fmt::Debug>(result: Result<T>, expected: BreaksError) {
+    match result.unwrap_err() {
+        Error::AnchorError(e) => assert_eq!(e.error_code_number, u32::from(expected), "wrong error: {}", e.error_msg),
+        other => panic!("not a program error: {other:?}"),
+    }
 }

@@ -14,6 +14,12 @@ import type { BreakAccount } from "../solana/breaks.js";
 import type { Address } from "../solana/pubkey.js";
 import { openPost, reminderPost, reservePost, resultsPost, shortWallet, winnersPost } from "./templates.js";
 
+/** What the open post says about the packs: the machine's name, or how many machines when there are several. */
+function machinesInPost(b: BreakAccount): string {
+  const names = new Set(b.tiers.map((t) => packMachineLabel(t.machine)));
+  return names.size === 1 ? ([...names][0] as string) : `${names.size} machines`;
+}
+
 export type PostKind = "reserve" | "open" | "reminder" | "winners" | "results";
 
 export interface BotSettings {
@@ -104,7 +110,7 @@ export function desiredPosts(world: World, settings: BotSettings): Draft[] {
           paid: b.paidSpots,
           free: b.freeSpots,
           price: b.spotPrice,
-          machine: packMachineLabel(b.packMachine),
+          machine: machinesInPost(b),
           closesAt: b.closesAt,
         }),
         validUntil: new Date(closesMs),

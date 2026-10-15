@@ -525,6 +525,61 @@ describe("BreakPipeline: before funding", () => {
     expect(w.chain.applied).not.toContain("fund_purchases");
   });
 
+  describe("a break whose packs are worth less than its spots", () => {
+    const tiers = (dollars: bigint) => [{ machine: new Uint8Array(32).fill(0x77), maxPrice: dollars * 1_000_000n }];
+
+    it("is not funded: the program would refuse it, so the pipeline says the admin must cancel it and sends nothing", async () => {
+      const w = world({ status: "EligibilityCommitted" });
+      // The three paid spots cost $20 each; the five packs that would be bought are $15 each at most.
+      w.chain.breaks.get(7n)!.tiers = tiers(15n);
+      const r = await w.pipeline().advance(w.active);
+      expect(r.problem).toMatch(/cost at most 75000000 in all, less than the 3 spot\(s\) paid at 20000000 each on average.*admin must cancel/);
+      expect(w.chain.sendCalls).toBe(0);
+      expect(w.chain.breaks.get(7n)!.status).toBe("EligibilityCommitted");
+    });
+
+    it("is funded when nobody paid for a spot, whatever the packs cost: only the holder bucket pays", async () => {
+      const w = world({ paid: 0, free: 2, status: "Closed" });
+      w.chain.breaks.get(7n)!.tiers = tiers(15n);
+      const r = await w.pipeline().advance(w.active);
+      expect(r.problem).toBeUndefined();
+      expect(w.chain.breaks.get(7n)).toMatchObject({ status: "Funded", poolSize: 2, packBudget: 30_000_000n });
+    });
+
+    it("is funded when the packs are worth exactly what the spots cost", async () => {
+      const w = world({ status: "EligibilityCommitted" });
+      w.chain.breaks.get(7n)!.tiers = tiers(20n);
+      const r = await w.pipeline().advance(w.active);
+      expect(r.problem).toBeUndefined();
+      expect(w.chain.applied).toContain("fund_purchases");
+      expect(w.chain.breaks.get(7n)!.packBudget).toBe(100_000_000n);
+    });
+
+    it("judges the packs that would be bought, not the whole list: a break that did not fill may have lost its expensive ones", async () => {
+      const w = world({ status: "Closed" });
+      const b = w.chain.breaks.get(7n)!;
+      // 3 paid + 2 free spots, $10 packs first and $50 packs last: the whole list averages $26, but with one holder for the two
+      // free spots the pool is 4 packs ($10, $10, $10, $50) and those average $20, the spot price.
+      b.tiers = [{ machine: new Uint8Array(32).fill(1), maxPrice: 10_000_000n }, { machine: new Uint8Array(32).fill(2), maxPrice: 50_000_000n }];
+      b.packs = [0, 0, 0, 1, 1];
+      w.planner.values = { ...w.planner.values, entryCount: 1 };
+      expect((await w.pipeline().advance(w.active)).problem).toBeUndefined();
+      expect(b.poolSize).toBe(4);
+      expect(b.packBudget).toBe(80_000_000n);
+    });
+
+    it("is refused when the pool is cut to the cheap packs: three sold spots and one holder, all packs $10 but the last two", async () => {
+      const w = world({ status: "Closed" });
+      const b = w.chain.breaks.get(7n)!;
+      b.tiers = [{ machine: new Uint8Array(32).fill(1), maxPrice: 10_000_000n }, { machine: new Uint8Array(32).fill(2), maxPrice: 50_000_000n }];
+      b.packs = [0, 0, 0, 0, 1];
+      w.planner.values = { ...w.planner.values, entryCount: 1 }; // 4 packs: $40 for spots that cost $20 each, $10 a pack
+      const r = await w.pipeline().advance(w.active);
+      expect(r.problem).toMatch(/the 4 packs that would be bought cost at most 40000000/);
+      expect(w.chain.applied).toEqual(["commit_eligibility"]);
+    });
+  });
+
   describe("fund_purchases is only sent when everything it depends on is in order", () => {
     it("not while the program is paused", async () => {
       const w = world({ status: "EligibilityCommitted" });

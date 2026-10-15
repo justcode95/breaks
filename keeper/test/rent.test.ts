@@ -43,9 +43,9 @@ describe("rent", () => {
   });
 
   it("costs a new break the rent of its two accounts, the fee, and what a wallet must keep to stay valid", () => {
-    expect(createBreakCost()).toEqual({ rent: 8_358_960n + 2_039_280n, fee: 5_000n, keep: 890_880n, total: 8_358_960n + 2_039_280n + 5_000n + 890_880n });
-    expect(createBreakCost().total).toBe(11_294_120n); // 0.0113 SOL
-    expect(rentExempt(BREAK_ACCOUNT_BYTES)).toBe(8_358_960n);
+    expect(createBreakCost()).toEqual({ rent: 10_760_160n + 2_039_280n, fee: 5_000n, keep: 890_880n, total: 10_760_160n + 2_039_280n + 5_000n + 890_880n });
+    expect(createBreakCost().total).toBe(13_695_320n); // 0.0137 SOL
+    expect(rentExempt(BREAK_ACCOUNT_BYTES)).toBe(10_760_160n);
     expect(SIGNATURE_FEE).toBe(5_000n);
   });
 

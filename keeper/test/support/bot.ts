@@ -2,6 +2,7 @@ import type { PostResult, Poster } from "../../src/bot/poster.js";
 import { packMachineBytes } from "../../src/scheduler/machine.js";
 import type { BreakAccount } from "../../src/solana/breaks.js";
 import { addr } from "./chain.js";
+import { uniformPacks } from "./packs.js";
 
 export const T0 = 1_800_000_000n;
 export const HOUR = 3_600n;
@@ -14,8 +15,7 @@ export function brk(over: Partial<BreakAccount> = {}): BreakAccount {
     paidSpots: 10,
     freeSpots: 2,
     spotPrice: 20_000_000n,
-    maxPackPrice: 25_000_000n,
-    packMachine: packMachineBytes("pokemon-25"),
+    ...uniformPacks(packMachineBytes("pokemon-25"), 25_000_000n, 12),
     opensAt: T0,
     closesAt: T0 + 12n * HOUR,
     spotsSold: 3,

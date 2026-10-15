@@ -1,6 +1,7 @@
 import { poolHash } from "../../src/draw/pool.js";
 import type { BreakAccount, SpotAccount } from "../../src/solana/breaks.js";
 import { type Address, addressFromBytes, addressToBytes } from "../../src/solana/pubkey.js";
+import { uniformPacks } from "./packs.js";
 
 /** A valid-looking address made of one repeated byte. */
 export const addr = (n: number): Address => addressFromBytes(new Uint8Array(32).fill(n));
@@ -41,8 +42,7 @@ export function drawnBreak(opts: { id?: bigint; paid?: number; free?: number; se
     paidSpots: paid,
     freeSpots: free,
     spotPrice: 20_000_000n,
-    maxPackPrice: 25_000_000n,
-    packMachine: new Uint8Array(32).fill(0x77),
+    ...uniformPacks(new Uint8Array(32).fill(0x77), 25_000_000n, paid + free),
     opensAt: 1_800_000_000n,
     closesAt: 1_800_021_600n,
     spotsSold: paid,

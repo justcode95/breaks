@@ -26,8 +26,8 @@ export interface BreakFields {
   paidSpots: number;
   freeSpots: number;
   spotPrice: bigint;
-  maxPackPrice: bigint;
-  packMachine: Uint8Array;
+  tiers: { machine: Uint8Array; maxPrice: bigint }[];
+  packs: number[];
   opensAt: bigint;
   closesAt: bigint;
   spotsSold: number;
@@ -60,8 +60,8 @@ export function breakFieldsFromVector(o: Record<string, any>): BreakFields {
     paidSpots: o.paidSpots,
     freeSpots: o.freeSpots,
     spotPrice: BigInt(o.spotPrice),
-    maxPackPrice: BigInt(o.maxPackPrice),
-    packMachine: hex(o.packMachine),
+    tiers: (o.tiers as { machine: string; maxPrice: string }[]).map((t) => ({ machine: hex(t.machine), maxPrice: BigInt(t.maxPrice) })),
+    packs: o.packs as number[],
     opensAt: BigInt(o.opensAt),
     closesAt: BigInt(o.closesAt),
     spotsSold: o.spotsSold,
@@ -95,8 +95,10 @@ export function encodeBreak(b: BreakFields): Uint8Array {
     u(2, b.paidSpots),
     u(2, b.freeSpots),
     u(8, b.spotPrice),
-    u(8, b.maxPackPrice),
-    b.packMachine,
+    u(1, b.tiers.length),
+    // The program keeps room for 8 tiers and 64 packs whatever the break uses; the rest is zeros.
+    ...Array.from({ length: 8 }, (_, i) => [b.tiers[i]?.machine ?? new Uint8Array(32), u(8, b.tiers[i]?.maxPrice ?? 0n)]).flat(),
+    Uint8Array.from({ length: 64 }, (_, i) => b.packs[i] ?? 0),
     u(8, b.opensAt, true),
     u(8, b.closesAt, true),
     u(2, b.spotsSold),

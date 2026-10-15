@@ -3,6 +3,7 @@
 // raw 32-byte id, as `0x` and 64 hex digits. The database keeps the same text.
 
 import { fromHex, toHex } from "../draw/bytes.js";
+import type { PackTier } from "../solana/breaks.js";
 
 const RAW = /^0x[0-9a-fA-F]{64}$/;
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -37,4 +38,14 @@ export function packMachineLabel(bytes: Uint8Array): string {
     }
   }
   return `0x${toHex(bytes)}`;
+}
+
+/** The machines of a break as one line of text: the label for one machine, the distinct labels joined for several. */
+export function packMachinesLabel(tiers: readonly PackTier[]): string {
+  return [...new Set(tiers.map((t) => packMachineLabel(t.machine)))].join(", ");
+}
+
+/** The highest price of any pack of the break (micro-USDC). */
+export function highestPackPrice(tiers: readonly PackTier[]): bigint {
+  return tiers.reduce((top, t) => (t.maxPrice > top ? t.maxPrice : top), 0n);
 }

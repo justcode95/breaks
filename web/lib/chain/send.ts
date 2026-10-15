@@ -19,7 +19,7 @@ export const BREAKS_ERRORS = [
   "InvalidLimits",
   "InvalidSpotCounts",
   "InvalidPrice",
-  "SpotPriceAboveMaxPackPrice",
+  "SpotPriceAboveAveragePack",
   "InvalidWindow",
   "WrongStatus",
   "NotInSaleWindow",
@@ -41,6 +41,8 @@ export const BREAKS_ERRORS = [
   "InvalidProof",
   "NotTheDrawnWinner",
   "WinnerAlreadyDrawn",
+  "InvalidPackList",
+  "PacksWorthLessThanSpots",
 ] as const;
 
 type ErrorName = (typeof BREAKS_ERRORS)[number];

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { decodeBreak, decodeConfig, decodeSpot } from "../lib/chain/accounts";
+import { MAX_PACKS, MAX_TIERS, decodeBreak, decodeConfig, decodeSpot } from "../lib/chain/accounts";
 import { breakAddress, configAddress, findProgramAddress, isAddress, spotAddress } from "../lib/chain/address";
 import { fromHex, toHex } from "../lib/draw/bytes";
 
@@ -56,8 +56,8 @@ describe("the accounts, as the Rust program writes them", () => {
     expect([b.paidSpots, b.freeSpots, b.spotsSold, b.eligibilityCount, b.poolSize, b.freeWinnerCount]).toEqual([o.paidSpots, o.freeSpots, o.spotsSold, o.eligibilityCount, o.poolSize, o.freeWinnerCount]);
     expect([b.spotPrice, b.opensAt, b.closesAt, b.eligibilityTotalWeight, b.seededAt].map(String)).toEqual([o.spotPrice, o.opensAt, o.closesAt, o.eligibilityTotalWeight, o.seededAt]);
     expect([toHex(b.eligibilityRoot), toHex(b.poolHash), toHex(b.seed)]).toEqual([o.eligibilityRoot, o.poolHash, o.seed]);
-    expect(b.maxPackPrice.toString()).toBe(o.maxPackPrice);
-    expect(toHex(b.packMachine)).toBe(o.packMachine);
+    expect(b.tiers.map((t) => ({ machine: toHex(t.machine), maxPrice: t.maxPrice.toString() }))).toEqual(o.tiers);
+    expect(b.packs).toEqual(o.packs);
     // Only the recorded winners are kept, not the empty slots.
     const winners = (o.freeWinners as { wallet: string; start: string; weight: string }[]).slice(0, o.freeWinnerCount as number);
     expect(b.freeWinners.map((w) => ({ wallet: w.wallet, start: w.start.toString(), weight: w.weight.toString() }))).toEqual(winners);
@@ -102,5 +102,35 @@ describe("the accounts, as the Rust program writes them", () => {
     // freeWinnerCount sits right before the 16 winner slots (48 bytes each) and the two bumps.
     data[data.length - 2 - 16 * 48 - 1] = 17;
     expect(() => decodeBreak(data)).toThrow(/at most 16/);
+  });
+});
+
+describe("a break's pack list", () => {
+  const data = () => fromHex(named("breaks.account.Break").inputs.data as string);
+  // discriminator (8), id (8), status (1), paid spots (2), free spots (2), spot price (8): the tier count follows.
+  const TIER_COUNT_AT = 8 + 8 + 1 + 2 + 2 + 8;
+
+  it("reads the tiers the Rust program wrote, and a tier for every spot, not the empty room after them", () => {
+    const b = decodeBreak(data());
+    expect(b.tiers).toHaveLength(3);
+    expect(b.packs).toHaveLength(b.paidSpots + b.freeSpots);
+    expect(b.packs).toEqual([0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2]);
+  });
+
+  it("refuses an account that names more tiers than a break can hold", () => {
+    const bytes = data();
+    expect(bytes[TIER_COUNT_AT]).toBe(3);
+    bytes[TIER_COUNT_AT] = MAX_TIERS + 1;
+    expect(() => decodeBreak(bytes)).toThrow(/9 tiers/);
+    bytes[TIER_COUNT_AT] = MAX_TIERS;
+    expect(decodeBreak(bytes).tiers).toHaveLength(MAX_TIERS);
+  });
+
+  it("refuses an account with more spots than there is room for packs", () => {
+    const bytes = data();
+    new DataView(bytes.buffer, bytes.byteOffset).setUint16(8 + 8 + 1, MAX_PACKS - 1, true); // paid spots; 2 free follow
+    expect(() => decodeBreak(bytes)).toThrow(/65 spots/);
+    new DataView(bytes.buffer, bytes.byteOffset).setUint16(8 + 8 + 1, MAX_PACKS - 2, true);
+    expect(decodeBreak(bytes).packs).toHaveLength(MAX_PACKS);
   });
 });

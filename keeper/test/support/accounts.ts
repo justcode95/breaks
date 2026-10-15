@@ -9,6 +9,8 @@ import {
   type BreakAccount,
   type BreaksConfigAccount,
   MAX_FREE_SPOTS,
+  MAX_PACKS,
+  MAX_TIERS,
   type RequestState,
   type SpotAccount,
 } from "../../src/solana/breaks.js";
@@ -27,9 +29,16 @@ export function encodeBreak(b: BreakAccount): Uint8Array {
     .u16(b.paidSpots)
     .u16(b.freeSpots)
     .u64(b.spotPrice)
-    .u64(b.maxPackPrice)
-    .fixed(b.packMachine, 32)
-    .i64(b.opensAt)
+    .u8(b.tiers.length);
+  if (b.tiers.length > MAX_TIERS) throw new Error("a break lists at most 8 tiers");
+  // The program keeps room for 8 tiers and 64 packs, whatever the break uses; the rest is zeros.
+  for (let i = 0; i < MAX_TIERS; i++) {
+    const t = b.tiers[i];
+    w.fixed(t ? t.machine : new Uint8Array(32), 32).u64(t ? t.maxPrice : 0n);
+  }
+  if (b.packs.length > MAX_PACKS) throw new Error("a break has at most 64 packs");
+  w.fixed(Uint8Array.from({ length: MAX_PACKS }, (_, i) => b.packs[i] ?? 0), MAX_PACKS);
+  w.i64(b.opensAt)
     .i64(b.closesAt)
     .u16(b.spotsSold)
     .u64(b.lockedSubsidy)

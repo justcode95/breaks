@@ -147,6 +147,17 @@ export const setPaused = (programs: Programs, p: { admin: Address; paused: boole
 export const setRandomness = (programs: Programs, p: { admin: Address; program: Address; timeoutSecs: bigint }) =>
   adminCall(programs, "set_randomness", p.admin, new Writer().address(p.program).i64(p.timeoutSecs));
 
+/** A Collector Crypt machine and the most one pack from it may cost (USDC base units). */
+export interface PackTier {
+  /** 32 bytes naming the machine. */
+  machine: Uint8Array;
+  maxPrice: bigint;
+}
+
+/** Most different tiers one break can list, and most packs (= spots) it can have. The program's limits. */
+export const MAX_TIERS = 8;
+export const MAX_PACKS = 64;
+
 export interface CreateBreakParams {
   keeper: Address;
   usdcMint: Address;
@@ -154,9 +165,13 @@ export interface CreateBreakParams {
   paidSpots: number;
   freeSpots: number;
   spotPrice: bigint;
-  maxPackPrice: bigint;
-  /** The Collector Crypt machine / price tier, 32 bytes, committed for the whole break. */
-  packMachine: Uint8Array;
+  /** The machines the packs come from, 1 to `MAX_TIERS`. */
+  tiers: readonly PackTier[];
+  /**
+   * The tier of each pack, one per spot (paid and free together), cheapest first: a break that does not fill drops
+   * the packs at the end of the list. The program refuses a list that goes down in price or leaves a tier unused.
+   */
+  packs: readonly number[];
   opensAt: bigint;
   closesAt: bigint;
 }
@@ -169,8 +184,8 @@ export function createBreak(programs: Programs, p: CreateBreakParams): Instructi
     .u16(p.paidSpots)
     .u16(p.freeSpots)
     .u64(p.spotPrice)
-    .u64(p.maxPackPrice)
-    .fixed(p.packMachine, 32)
+    .vec(p.tiers, (w, t) => w.fixed(t.machine, 32).u64(t.maxPrice))
+    .vec(p.packs, (w, tier) => w.u8(tier))
     .i64(p.opensAt)
     .i64(p.closesAt);
   return build(programs.breaks, "create_break", args, [
@@ -394,8 +409,10 @@ export interface BreakAccount {
   paidSpots: number;
   freeSpots: number;
   spotPrice: bigint;
-  maxPackPrice: bigint;
-  packMachine: Uint8Array;
+  /** The machines the packs come from (only the ones the break uses). */
+  tiers: PackTier[];
+  /** The tier of each pack, in the order the packs are included: cheapest first. One per spot, paid and free together. */
+  packs: number[];
   opensAt: bigint;
   closesAt: bigint;
   spotsSold: number;
@@ -426,14 +443,23 @@ export function decodeBreak(data: Uint8Array): BreakAccount {
   const statusIndex = r.u8();
   const status = BREAK_STATUSES[statusIndex];
   if (!status) throw new RangeError(`unknown break status ${statusIndex}`);
+  const paidSpots = r.u16();
+  const freeSpots = r.u16();
+  const spotPrice = r.u64();
+  const tierCount = r.u8();
+  if (tierCount > MAX_TIERS) throw new RangeError(`${tierCount} tiers; at most ${MAX_TIERS}`);
+  const allTiers = Array.from({ length: MAX_TIERS }, () => ({ machine: r.fixed(32), maxPrice: r.u64() }));
+  const allPacks = r.fixed(MAX_PACKS);
+  const spots = paidSpots + freeSpots;
+  if (spots > MAX_PACKS) throw new RangeError(`${spots} spots; at most ${MAX_PACKS}`);
   return {
     id,
     status,
-    paidSpots: r.u16(),
-    freeSpots: r.u16(),
-    spotPrice: r.u64(),
-    maxPackPrice: r.u64(),
-    packMachine: r.fixed(32),
+    paidSpots,
+    freeSpots,
+    spotPrice,
+    tiers: allTiers.slice(0, tierCount),
+    packs: Array.from(allPacks.subarray(0, spots)),
     opensAt: r.i64(),
     closesAt: r.i64(),
     spotsSold: r.u16(),
@@ -460,6 +486,22 @@ export function decodeBreak(data: Uint8Array): BreakAccount {
     bump: r.u8(),
     escrowBump: r.u8(),
   };
+}
+
+/** The most each pack of the break may cost, in list order (cheapest first). */
+export function packPrices(b: Pick<BreakAccount, "tiers" | "packs">): bigint[] {
+  return b.packs.map((tier) => {
+    const t = b.tiers[tier];
+    if (!t) throw new RangeError(`a pack names tier ${tier}, which the break does not list`);
+    return t.maxPrice;
+  });
+}
+
+/** What the first `count` packs of the list cost at most: the budget `fund_purchases` pays for a pool of that size. */
+export function packCost(b: Pick<BreakAccount, "tiers" | "packs">, count: number): bigint {
+  const prices = packPrices(b);
+  if (!Number.isInteger(count) || count < 0 || count > prices.length) throw new RangeError(`no ${count} packs in a list of ${prices.length}`);
+  return prices.slice(0, count).reduce((sum, p) => sum + p, 0n);
 }
 
 export interface BreaksConfigAccount {

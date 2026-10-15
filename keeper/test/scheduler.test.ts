@@ -21,6 +21,7 @@ const TEMPLATE: BreakTemplate = {
   packMachine: packMachineBytes("pokemon-25"),
   windowSecs: 43_200n,
 };
+const TIERS = [{ machine: TEMPLATE.packMachine, maxPrice: TEMPLATE.maxPackPrice }];
 // What TEMPLATE needs unlocked: 10 * (25 - 20) = $50 of subsidy and 2 * 25 = $50 for the holders.
 const NEED = 50_000_000n;
 
@@ -83,8 +84,8 @@ function setup(over: { template?: Partial<BreakTemplate>; enabled?: boolean; ret
         paidSpots: 10,
         freeSpots: 2,
         spotPrice: 20_000_000n,
-        maxPackPrice: 25_000_000n,
-        packMachine: packMachineBytes("by-hand"),
+        tiers: [{ machine: packMachineBytes("by-hand"), maxPrice: 25_000_000n }],
+        packs: Array<number>(12).fill(0),
         opensAt: BigInt(clock.t),
         closesAt: BigInt(clock.t) + 43_200n,
         ...over,
@@ -133,7 +134,7 @@ describe("BreakScheduler", () => {
       expect((await short.scheduler.run()).kind).toBe("reserve");
       expect(short.chain.sendCalls).toBe(0);
       // The program model, asked directly, refuses the same break: the check is not more generous than the chain.
-      const refused = await short.createByHand(0n, { packMachine: TEMPLATE.packMachine });
+      const refused = await short.createByHand(0n, { tiers: TIERS });
       expect(refused).toMatchObject({ outcome: "failed", reason: "InsufficientAvailable" });
     });
   });
@@ -146,8 +147,7 @@ describe("BreakScheduler", () => {
       expect(s.chain.applied).toEqual(["create_break"]);
 
       const b = s.chain.breaks.get(0n)!;
-      expect(b).toMatchObject({ status: "Open", paidSpots: 10, freeSpots: 2, spotPrice: 20_000_000n, maxPackPrice: 25_000_000n, opensAt: BigInt(T0), closesAt: BigInt(T0) + 43_200n, lockedSubsidy: NEED, lockedHolder: NEED });
-      expect(b.packMachine).toEqual(TEMPLATE.packMachine);
+      expect(b).toMatchObject({ status: "Open", paidSpots: 10, freeSpots: 2, spotPrice: 20_000_000n, tiers: TIERS, packs: Array<number>(12).fill(0), opensAt: BigInt(T0), closesAt: BigInt(T0) + 43_200n, lockedSubsidy: NEED, lockedHolder: NEED });
       expect(s.chain.treasury.config).toMatchObject({ lockedSubsidy: NEED, lockedHolder: NEED });
       expect(s.chain.config.nextBreakId).toBe(1n);
     });
@@ -240,7 +240,7 @@ describe("BreakScheduler", () => {
   describe("copying breaks from the chain", () => {
     it("picks up a break whose creation landed but whose bookkeeping was lost, and does not create another", async () => {
       const s = setup({ funds: [10n * NEED, 10n * NEED] });
-      await s.createByHand(0n, { packMachine: TEMPLATE.packMachine });
+      await s.createByHand(0n, { tiers: TIERS });
       // A new process: nothing in memory, nothing in the database.
       const fresh = new BreakScheduler({ chain: s.chain, programs: PROGRAMS, keeper: KEEPER, store: s.store, template: TEMPLATE, enabled: true, now: () => new Date(T0 * 1000) });
       const r = await fresh.run();
@@ -368,15 +368,28 @@ describe("SqlSchedulerStore", () => {
     expect(await s.store.openOnchainIds()).toEqual([1n, 5n]);
   });
 
+  it("summarises a break with several machines: the machines joined, and the highest pack price", async () => {
+    const { s, b } = await breakAccount(3n, {
+      tiers: [
+        { machine: packMachineBytes("cheap"), maxPrice: 10_000_000n },
+        { machine: packMachineBytes("mid"), maxPrice: 25_000_000n },
+        { machine: packMachineBytes("cheap"), maxPrice: 40_000_000n },
+        { machine: packMachineBytes("top"), maxPrice: 50_000_000n },
+      ],
+    });
+    await s.store.recordBreak(b);
+    expect(await rows()).toMatchObject([{ onchain_id: "3", pack_machine: "cheap, mid, top", max_pack_price: "50000000" }]);
+  });
+
   it("keeps a machine id that is not text as hex", async () => {
-    const { s, b } = await breakAccount(7n, { packMachine: new Uint8Array(32).fill(0xff) });
+    const { s, b } = await breakAccount(7n, { tiers: [{ machine: new Uint8Array(32).fill(0xff), maxPrice: 25_000_000n }] });
     await s.store.recordBreak(b);
     expect((await rows())[0]!.pack_machine).toBe(`0x${"ff".repeat(32)}`);
   });
 });
 
 describe("the keeper's SOL", () => {
-  const COST = 11_294_120n; // rent of the break and its escrow, the fee, and what the wallet keeps: src/solana/rent.ts
+  const COST = 13_695_320n; // rent of the break and its escrow, the fee, and what the wallet keeps: src/solana/rent.ts
 
   it("holds back a break the keeper cannot pay for and says how much it has and needs, without sending anything", async () => {
     const s = setup({ sol: 1_000_000n });
@@ -392,7 +405,7 @@ describe("the keeper's SOL", () => {
     expect((await s.scheduler.run()).kind).toBe("funds");
     s.chain.solBalances.set(KEEPER, COST + 7n);
     expect((await s.scheduler.run()).kind).toBe("created");
-    // 8,358,960 + 2,039,280 of rent and the 5,000 fee are paid; what is left is what must stay.
+    // 10,760,160 + 2,039,280 of rent and the 5,000 fee are paid; what is left is what must stay.
     expect(s.chain.solBalances.get(KEEPER)).toBe(890_887n);
   });
 
@@ -405,7 +418,7 @@ describe("the keeper's SOL", () => {
     expect(await short.scheduler.run()).toMatchObject({ kind: "funds", have: COST - 1n, needed: COST });
     expect(short.chain.sendCalls).toBe(0);
     // The program model, asked directly, refuses the same break: the check is not more generous than the chain.
-    const refused = await short.createByHand(0n, { packMachine: TEMPLATE.packMachine });
+    const refused = await short.createByHand(0n, { tiers: TIERS });
     expect(refused).toMatchObject({ outcome: "failed", reason: "InsufficientFundsForRent" });
     expect(short.chain.solBalances.get(KEEPER)).toBe(COST - 1n);
   });
@@ -471,13 +484,13 @@ describe("schedulerJob", () => {
     expect(t.errors).toHaveLength(2);
   });
 
-  const funds = (have: bigint): SchedulerReport => ({ kind: "funds", have, needed: 11_294_120n, recorded: [] });
+  const funds = (have: bigint): SchedulerReport => ({ kind: "funds", have, needed: 13_695_320n, recorded: [] });
 
   it("says the keeper is short of SOL, with what it has and needs, then stays quiet while nothing changes", async () => {
     const t = run([funds(1_000n), funds(1_000n), funds(1_000n)]);
     for (let i = 0; i < 3; i++) await t.job.run(t.ctx);
     expect(t.errors).toEqual(["the keeper wallet cannot pay for a new break: top it up with SOL"]);
-    expect(t.lines[0]).toBe('the keeper wallet cannot pay for a new break: top it up with SOL {"lamports":"1000","needed":"11294120"}');
+    expect(t.lines[0]).toBe('the keeper wallet cannot pay for a new break: top it up with SOL {"lamports":"1000","needed":"13695320"}');
   });
 
   it("says it again when the balance moves, and once an hour while it stays short", async () => {

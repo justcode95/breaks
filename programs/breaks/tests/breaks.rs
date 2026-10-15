@@ -8,7 +8,7 @@ use anchor_lang::InstructionData;
 use breaks::{
     errors::BreaksError,
     randomness::{draw_seed, parse_request, RequestState},
-    state::{BreakStatus, Spot},
+    state::{BreakStatus, PackTier, Spot},
     BreakCancelled, BreakClosed, BreakCreated, CreateBreakParams, EligibilityCommitted, FreeWinnerClaimed,
     PoolCommitted, PurchasesFunded, RandomnessRequested, RandomnessSettled, SpotBought, SpotRefunded,
 };
@@ -148,11 +148,12 @@ fn create_break_locks_the_worst_case_in_the_treasury_and_opens_an_escrow() {
     assert_eq!(env.locked(), (50 * USDC, 50 * USDC));
     let b = env.brk(0);
     assert_eq!(b.status, BreakStatus::Open);
+    assert_eq!((b.paid_spots, b.free_spots, b.spot_price), (10, 2, 20 * USDC));
     assert_eq!(
-        (b.paid_spots, b.free_spots, b.spot_price, b.max_pack_price),
-        (10, 2, 20 * USDC, 25 * USDC)
+        (b.tier_count, b.tiers[0], b.pack_prices()),
+        (1, tier(7, 25), vec![25 * USDC; 12])
     );
-    assert_eq!((b.pack_machine, b.opens_at, b.closes_at), ([7; 32], T0, T0 + 6 * HOUR));
+    assert_eq!((b.opens_at, b.closes_at), (T0, T0 + 6 * HOUR));
     assert_eq!(
         (b.locked_subsidy, b.locked_holder, b.spots_sold),
         (50 * USDC, 50 * USDC, 0)
@@ -231,7 +232,7 @@ fn create_break_rejects_bad_parameters() {
         (
             "free packs",
             CreateBreakParams {
-                max_pack_price: 0,
+                tiers: vec![tier(7, 0)],
                 ..params()
             },
             BreaksError::InvalidPrice,
@@ -242,7 +243,65 @@ fn create_break_rejects_bad_parameters() {
                 spot_price: 26 * USDC,
                 ..params()
             },
-            BreaksError::SpotPriceAboveMaxPackPrice,
+            BreaksError::SpotPriceAboveAveragePack,
+        ),
+        (
+            "no tiers",
+            CreateBreakParams {
+                tiers: vec![],
+                ..params()
+            },
+            BreaksError::InvalidPackList,
+        ),
+        (
+            "nine tiers",
+            CreateBreakParams {
+                tiers: (1..=9).map(|d| tier(d as u8, 20 + d)).collect(),
+                packs: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 8],
+                ..params()
+            },
+            BreaksError::InvalidPackList,
+        ),
+        (
+            "one pack too few",
+            CreateBreakParams {
+                packs: vec![0; 11],
+                ..params()
+            },
+            BreaksError::InvalidPackList,
+        ),
+        (
+            "one pack too many",
+            CreateBreakParams {
+                packs: vec![0; 13],
+                ..params()
+            },
+            BreaksError::InvalidPackList,
+        ),
+        (
+            "a pack names a tier that is not listed",
+            CreateBreakParams {
+                packs: [vec![0; 11], vec![1]].concat(),
+                ..params()
+            },
+            BreaksError::InvalidPackList,
+        ),
+        (
+            "a tier nobody uses",
+            CreateBreakParams {
+                tiers: vec![tier(7, 25), tier(8, 30)],
+                ..params()
+            },
+            BreaksError::InvalidPackList,
+        ),
+        (
+            "expensive packs first",
+            CreateBreakParams {
+                tiers: vec![tier(7, 25), tier(8, 30)],
+                packs: [vec![1], vec![0; 11]].concat(),
+                ..params()
+            },
+            BreaksError::InvalidPackList,
         ),
         (
             "window too short",
@@ -289,24 +348,13 @@ fn create_break_rejects_bad_parameters() {
 fn create_break_fails_when_either_bucket_cannot_cover_the_worst_case() {
     let mut env = Env::ready();
     // Subsidy: 20 spots topped up by $40 = $800 > $700 available.
-    let too_much_subsidy = CreateBreakParams {
-        paid_spots: 20,
-        spot_price: 10 * USDC,
-        max_pack_price: 50 * USDC,
-        free_spots: 0,
-        ..params()
-    };
+    let too_much_subsidy = uniform(20, 0, 10, 50);
     assert_fails_with(
         env.create_break_with(too_much_subsidy),
         treasury_code(TreasuryError::InsufficientAvailable),
     );
     // Holder: 6 free packs of $60 = $360 > $300 available.
-    let too_much_holder = CreateBreakParams {
-        free_spots: 6,
-        max_pack_price: 60 * USDC,
-        spot_price: 60 * USDC,
-        ..params()
-    };
+    let too_much_holder = uniform(10, 6, 60, 60);
     assert_fails_with(
         env.create_break_with(too_much_holder),
         treasury_code(TreasuryError::InsufficientAvailable),
@@ -320,12 +368,7 @@ fn create_break_fails_when_either_bucket_cannot_cover_the_worst_case() {
 fn two_breaks_cannot_reserve_the_same_money() {
     let mut env = Env::ready();
     // Each of these locks $300 of subsidy: 20 spots x ($25 - $10).
-    let big = CreateBreakParams {
-        paid_spots: 20,
-        free_spots: 0,
-        spot_price: 10 * USDC,
-        ..params()
-    };
+    let big = uniform(20, 0, 10, 25);
     env.create_break_with(big.clone()).unwrap();
     env.create_break_with(big.clone()).unwrap();
     assert_eq!(env.locked(), (600 * USDC, 0));
@@ -335,13 +378,7 @@ fn two_breaks_cannot_reserve_the_same_money() {
         treasury_code(TreasuryError::InsufficientAvailable),
     );
     // A smaller one still fits: 5 spots x $15 = $75.
-    env.create_break_with(CreateBreakParams {
-        paid_spots: 5,
-        free_spots: 0,
-        spot_price: 10 * USDC,
-        ..params()
-    })
-    .unwrap();
+    env.create_break_with(uniform(5, 0, 10, 25)).unwrap();
     assert_eq!(env.locked(), (675 * USDC, 0));
     assert_eq!(env.config().next_break_id, 3);
 }
@@ -435,11 +472,7 @@ fn spots_are_sold_only_inside_the_window() {
 #[test]
 fn a_sold_out_break_takes_no_more_spots() {
     let mut env = Env::ready();
-    env.create_break_with(CreateBreakParams {
-        paid_spots: 2,
-        ..params()
-    })
-    .unwrap();
+    env.create_break_with(uniform(2, 2, 20, 25)).unwrap();
     let (alice, alice_usdc) = env.user(100 * USDC);
     env.buy_spot(&alice, alice_usdc, 0, 0).unwrap();
     env.buy_spot(&alice, alice_usdc, 0, 1).unwrap();
@@ -588,6 +621,106 @@ fn funding_a_full_break_uses_the_whole_reservation() {
     );
     assert_eq!(env.locked(), (0, 0));
     assert_eq!(env.brk(id).pool_size, 12);
+}
+
+// ---- packs of different prices in one break
+
+#[test]
+fn a_mixed_break_locks_by_the_average_pack_price() {
+    let mut env = Env::ready();
+    let keeper = env.keeper.insecure_clone();
+    let i = env.create_break_ix(&keeper.pubkey(), mixed());
+    let meta = send(&mut env.svm, &keeper, &[], &[i]).unwrap();
+
+    // $190 of packs over 8 spots is $23.75 each. The 2 free spots are $47.50 from the holder bucket; the 6 paid spots
+    // bring in $120, so the subsidy bucket reserves the remaining $22.50.
+    assert_eq!(env.locked(), (22_500_000, 47_500_000));
+    let b = env.brk(0);
+    assert_eq!(b.tier_count, 3);
+    assert_eq!(b.tiers[..3], [tier(1, 10), tier(2, 25), tier(3, 50)]);
+    assert_eq!(b.tiers[3..], [PackTier::default(); 5]);
+    assert_eq!(b.pack_prices(), [10, 10, 10, 10, 25, 25, 50, 50].map(|d| d * USDC));
+    assert_eq!(b.packs[8..], [0u8; 56]);
+    assert_eq!((b.locked_subsidy, b.locked_holder), (22_500_000, 47_500_000));
+
+    let event: BreakCreated = find_event(&meta.logs).expect("BreakCreated event");
+    assert_eq!(event.tiers, vec![tier(1, 10), tier(2, 25), tier(3, 50)]);
+    assert_eq!(event.packs, vec![0, 0, 0, 0, 1, 1, 2, 2]);
+    assert_eq!((event.locked_subsidy, event.locked_holder), (22_500_000, 47_500_000));
+}
+
+#[test]
+fn a_full_mixed_break_buys_every_pack() {
+    let mut env = Env::ready();
+    let (id, _buyers) = mixed_closed(&mut env, 6, 5);
+    let meta = env.fund(id).unwrap();
+
+    // All 8 packs: $190, of which the buyers paid $120 and the two buckets $22.50 and $47.50.
+    assert_eq!(env.balance(&env.buyer_usdc), 190 * USDC);
+    assert_eq!(env.balance(&escrow_pda(&break_pda(id))), 0);
+    assert_eq!(env.balance(&subsidy_vault()), 700 * USDC - 22_500_000);
+    assert_eq!(env.balance(&holder_vault()), 300 * USDC - 47_500_000);
+    assert_eq!(env.locked(), (0, 0));
+    let b = env.brk(id);
+    assert_eq!(
+        (b.status, b.pool_size, b.pack_budget),
+        (BreakStatus::Funded, 8, 190 * USDC)
+    );
+
+    let event: PurchasesFunded = find_event(&meta.logs).expect("PurchasesFunded event");
+    assert_eq!(
+        (event.from_escrow, event.from_subsidy, event.from_holder),
+        (120 * USDC, 22_500_000, 47_500_000)
+    );
+    assert_eq!((event.unlocked_subsidy, event.unlocked_holder), (0, 0));
+}
+
+#[test]
+fn a_mixed_break_that_does_not_fill_drops_its_most_expensive_packs() {
+    let mut env = Env::ready();
+    // All 6 paid spots sold but only 1 eligible holder: 7 packs, so one of the two $50 packs is not bought.
+    // $10 x 4 + $25 x 2 + $50 = $140, which is exactly $20 a pack: the spot price.
+    let (id, _buyers) = mixed_closed(&mut env, 6, 1);
+    let meta = env.fund(id).unwrap();
+
+    assert_eq!(env.balance(&env.buyer_usdc), 140 * USDC);
+    // The buyers' $120 and $20 from the holder bucket; the subsidy bucket is not needed at all.
+    assert_eq!(env.balance(&subsidy_vault()), 700 * USDC);
+    assert_eq!(env.balance(&holder_vault()), 280 * USDC);
+    assert_eq!(env.locked(), (0, 0));
+    let b = env.brk(id);
+    assert_eq!((b.pool_size, b.pack_budget), (7, 140 * USDC));
+
+    let event: PurchasesFunded = find_event(&meta.logs).expect("PurchasesFunded event");
+    assert_eq!(
+        (event.from_escrow, event.from_subsidy, event.from_holder),
+        (120 * USDC, 0, 20 * USDC)
+    );
+    assert_eq!(
+        (event.unlocked_subsidy, event.unlocked_holder),
+        (22_500_000, 27_500_000)
+    );
+}
+
+#[test]
+fn a_break_whose_packs_are_worth_less_than_its_spots_is_cancelled_and_refunded() {
+    let mut env = Env::ready();
+    // Only 4 spots sold: with the 2 free spots the pool is the 6 cheapest packs, $90 or $15 each, for spots that cost $20.
+    let (id, buyers) = mixed_closed(&mut env, 4, 5);
+    assert_fails_with(env.fund(id), code(BreaksError::PacksWorthLessThanSpots));
+    assert_eq!(env.brk(id).status, BreakStatus::EligibilityCommitted);
+    assert_eq!(env.balance(&env.buyer_usdc), 0);
+    assert_eq!(env.locked(), (22_500_000, 47_500_000));
+
+    // The admin cancels, the reservation is released and every buyer gets the whole $20 back.
+    env.cancel(id).unwrap();
+    assert_eq!(env.locked(), (0, 0));
+    let (anyone, _) = env.user(0);
+    for (index, (_, usdc)) in buyers.iter().enumerate() {
+        env.refund(&anyone, id, index as u16, *usdc).unwrap();
+        assert_eq!(env.balance(usdc), 20 * USDC);
+    }
+    assert_eq!(env.balance(&escrow_pda(&break_pda(id))), 0);
 }
 
 #[test]
@@ -1488,6 +1621,36 @@ fn the_config_cannot_allow_more_free_spots_than_the_winner_list_holds() {
     }
     .data();
     assert_fails_with(env.send_as_authority(&[i]), code(BreaksError::InvalidLimits));
+}
+
+#[test]
+fn the_config_cannot_allow_more_spots_than_a_break_has_packs() {
+    let mut env = Env::base();
+    let initialize = |env: &Env, max_paid_spots: u16, max_free_spots: u16| {
+        let mut i = env.initialize_ix(&env.authority.pubkey(), env.breaks_programdata);
+        i.data = breaks::instruction::Initialize {
+            params: breaks::InitializeParams {
+                admin: env.admin.pubkey(),
+                keeper: env.keeper.pubkey(),
+                buyer: env.buyer.pubkey(),
+                min_window_secs: 6 * HOUR,
+                max_window_secs: 24 * HOUR,
+                max_paid_spots,
+                max_free_spots,
+                randomness_program: mock_orao::ID,
+                randomness_timeout_secs: HOUR,
+            },
+        }
+        .data();
+        i
+    };
+    // 65 spots would need 65 packs, and a break lists at most 64.
+    let too_many = initialize(&env, 60, 5);
+    assert_fails_with(env.send_as_authority(&[too_many]), code(BreaksError::InvalidLimits));
+    let exactly = initialize(&env, 48, 16);
+    env.send_as_authority(&[exactly]).unwrap();
+    let c = env.config();
+    assert_eq!((c.max_paid_spots, c.max_free_spots), (48, 16));
 }
 
 // ---------------------------------------------------------------- the whole flow

@@ -5,6 +5,7 @@ import { MockCardTransfer } from "../src/delivery/mock-transfer.js";
 import { MemoryDeliveryStore } from "../src/delivery/store.js";
 import { assignCards } from "../src/draw/pool.js";
 import { PackBuyer, packBuyerJob } from "../src/packs/buyer.js";
+import { packMachineBytes } from "../src/scheduler/machine.js";
 import { MockPackProvider } from "../src/packs/mock-provider.js";
 import { pipelineJob } from "../src/pipeline/job.js";
 import { SqlEligibilityStore } from "../src/pipeline/eligibility-store.js";
@@ -40,8 +41,36 @@ describe("FundedBreaks", () => {
     const w = world();
     const { funded } = sourcesOf(w);
     expect(await funded.breaksToBuy()).toEqual([
-      { breakId: "7", poolSize: 5, machine: "pokemon-25", maxPackPrice: 25_000_000n, packBudget: 125_000_000n },
+      { breakId: "7", poolSize: 5, packs: Array.from({ length: 5 }, () => ({ machine: "w".repeat(32), maxPrice: 25_000_000n })), packBudget: 125_000_000n },
     ]);
+  });
+
+  it("plans a mixed break from its list: the first pool_size packs, each from its own machine and with its own cap", async () => {
+    const w = world();
+    const b = w.chain.breaks.get(7n)!;
+    b.tiers = [
+      { machine: packMachineBytes("cheap"), maxPrice: 10_000_000n },
+      { machine: packMachineBytes("top"), maxPrice: 50_000_000n },
+    ];
+    b.packs = [0, 0, 1, 1, 1];
+    b.packBudget = 170_000_000n;
+    const cheap = { machine: "cheap", maxPrice: 10_000_000n };
+    const top = { machine: "top", maxPrice: 50_000_000n };
+    const { funded } = sourcesOf(w);
+    expect(await funded.breaksToBuy()).toEqual([{ breakId: "7", poolSize: 5, packs: [cheap, cheap, top, top, top], packBudget: 170_000_000n }]);
+
+    // A break that did not fill buys only the first packs of the list: the cheapest, never a later one.
+    b.poolSize = 3;
+    b.packBudget = 70_000_000n;
+    expect(await funded.breaksToBuy()).toEqual([{ breakId: "7", poolSize: 3, packs: [cheap, cheap, top], packBudget: 70_000_000n }]);
+  });
+
+  it("does not plan a pool that is bigger than the pack list, and says so", async () => {
+    const w = world();
+    w.chain.breaks.get(7n)!.poolSize = 6;
+    const { funded, errors } = sourcesOf(w);
+    expect(await funded.breaksToBuy()).toEqual([]);
+    expect(errors).toEqual(["pack plan refused: the pool is bigger than the pack list"]);
   });
 
   it("skips breaks that are not funded, and breaks missing on-chain", async () => {
@@ -276,7 +305,7 @@ describe("against the real schema", () => {
     // `other` has no on-chain id yet, so it is not active.
     expect((await repo.activeBreaks()).find((b) => b.id === other)).toBeUndefined();
     const mine = (await repo.activeBreaks()).find((b) => b.id === id);
-    expect(mine).toEqual({ id, onchainId: 1001n, machine: "pokemon-25", status: "scheduled" });
+    expect(mine).toEqual({ id, onchainId: 1001n, status: "scheduled" });
 
     for (const status of ["funded", "pool_committed", "randomness_requested", "settled", "drawn"] as DbBreakStatus[]) {
       await repo.setStatus(id, status);

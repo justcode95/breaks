@@ -7,14 +7,17 @@ import { buildDeliveryPlan } from "../delivery/plan.js";
 import type { DeliveryProgress, DeliverySource } from "../delivery/deliverer.js";
 import type { Logger } from "../job.js";
 import type { PackStore } from "../packs/store.js";
+import { packMachineLabel } from "../scheduler/machine.js";
 import {
   type BreakAccount,
+  type PackTier,
   type Programs,
   breakAddress,
   configAddress,
   decodeBreak,
   decodeBreaksConfig,
   decodeSpot,
+  packPrices,
   spotAddress,
 } from "../solana/breaks.js";
 import type { Address } from "../solana/pubkey.js";
@@ -44,15 +47,22 @@ export class FundedBreaks implements BreakSource {
     for (const active of await this.deps.repo.activeBreaks()) {
       const b = await readBreak(this.deps, active);
       if (b?.status !== "Funded") continue;
-      plans.push({
-        breakId: active.id,
-        poolSize: b.poolSize,
-        machine: active.machine,
-        maxPackPrice: b.maxPackPrice,
-        packBudget: b.packBudget,
-      });
+      const plan = this.planFor(active, b);
+      if (plan) plans.push(plan);
     }
     return plans;
+  }
+
+  /** The packs to buy are the first `pool_size` of the break's list, each from its own tier. */
+  private planFor(active: ActiveBreak, b: BreakAccount): BreakPlan | undefined {
+    if (b.poolSize > b.packs.length) {
+      this.deps.log.error("pack plan refused: the pool is bigger than the pack list", { break: active.id, poolSize: b.poolSize, packs: b.packs.length });
+      return undefined;
+    }
+    const packs = packPrices(b)
+      .slice(0, b.poolSize)
+      .map((maxPrice, i) => ({ machine: packMachineLabel((b.tiers[b.packs[i] as number] as PackTier).machine), maxPrice }));
+    return { breakId: active.id, poolSize: b.poolSize, packs, packBudget: b.packBudget };
   }
 
   async report(plan: BreakPlan, progress: BreakProgress): Promise<void> {
