@@ -471,6 +471,38 @@ describe("the jobs, with the fee sweep", () => {
     expect(ledger.rows).toEqual([{ kind: "deposit", asset: "USDC", amount: "200000000" }]);
   });
 
+  it("the scheduler waits, and says so, while the keeper's wallet cannot pay for a break, then creates it once topped up", async () => {
+    const w = world({ status: "Open", id: 8n });
+    const { log, errors } = logger();
+    w.chain.breaks.clear();
+    w.chain.spots.clear();
+    w.chain.config.nextBreakId = 0n;
+    // The treasury can pay for the break (its worst case is $15 of subsidy and $50 for the holders); the keeper has too little SOL.
+    w.chain.treasury.subsidyVault = 140_000_000n;
+    w.chain.treasury.holderVault = 60_000_000n;
+    w.chain.solBalances.set(KEEPER, 1_000_000n);
+    await shared.exec("truncate breaks, indexed_accounts, balance_events, indexer_state cascade");
+
+    const jobs = await buildJobs(config, { sql: shared, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log, now: w.clock.now });
+    let clock = Number(w.chain.unixTime) * 1000;
+    const runner = createRunner(jobs, { now: () => new Date(clock), log });
+    const tick = async () => {
+      w.chain.unixTime = BigInt(Math.floor(clock / 1000));
+      await runner.tick();
+      clock += 1000;
+    };
+    for (let i = 0; i < 3; i++) await tick();
+    expect(w.chain.applied).toEqual([]);
+    // (At startup the keeper also warns that it could not pay for a randomness request: a separate message, about a later step.)
+    const aboutBreak = () => errors.filter((e) => e.includes("a new break"));
+    expect(aboutBreak()).toEqual(["the keeper wallet cannot pay for a new break: top it up with SOL"]);
+
+    w.chain.solBalances.set(KEEPER, 50_000_000n);
+    for (let i = 0; i < 2; i++) await tick();
+    expect(w.chain.applied).toEqual(["create_break"]);
+    expect(aboutBreak()).toHaveLength(1);
+  });
+
   it("builds no sweep job while the sweep is off", async () => {
     const w = world();
     const jobs = await buildJobs(config, { sql: shared, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log: logger().log });

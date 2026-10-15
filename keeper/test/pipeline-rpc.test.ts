@@ -33,6 +33,7 @@ async function connected() {
   const w = world();
   // The program model must expect the key we actually sign with.
   w.chain.config = { ...w.chain.config, keeper: signer.address };
+  w.chain.solBalances.set(signer.address, 5_000_000_000n); // the keeper pays the rent of what `create_break` makes
   const node = new FakeNode();
   const seen: string[] = [];
   node.readAccount = (address) => w.chain.getAccountData(address);

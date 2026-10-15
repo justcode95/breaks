@@ -9,13 +9,17 @@
 //   1. every break the chain has and the database lacks is copied into the database (a break created by an
 //      interrupted run, or by hand with the keeper key, is picked up, with the chain's values);
 //   2. nothing is created while a break is still selling;
-//   3. `create_break` is sent for exactly the next id. A resend of the same send is safe: the break account is a PDA of
+//   3. the keeper's wallet must hold enough SOL for the rent of what `create_break` makes (a break and its escrow), the fee
+//      and what a wallet has to keep; if not, nothing is sent and the job says to top it up (the program would refuse it);
+//   4. `create_break` is sent for exactly the next id. A resend of the same send is safe: the break account is a PDA of
 //      the next id, so once one lands every other attempt at that id is refused by the program.
 
 import type { Job } from "../job.js";
 import type { ChainClient } from "../pipeline/chain.js";
 import { type BreakAccount, type BreaksConfigAccount, type Programs, breakAddress, configAddress, createBreak, decodeBreak, decodeBreaksConfig } from "../solana/breaks.js";
 import type { Address } from "../solana/pubkey.js";
+import { createBreakCost } from "../solana/rent.js";
+import type { WalletReader } from "../sweep/wallet.js";
 import { type BreakTemplate, type ReserveProgress, templateProblem } from "./policy.js";
 import { readReserve } from "./reserve.js";
 import type { SchedulerStore } from "./store.js";
@@ -27,6 +31,8 @@ export type SchedulerOutcome =
   | { kind: "selling"; breakId: bigint }
   /** The reserve cannot pay for the worst case yet. */
   | { kind: "reserve"; progress: ReserveProgress }
+  /** The keeper's wallet does not hold enough SOL for the rent of a new break. Needs a person. */
+  | { kind: "funds"; have: bigint; needed: bigint }
   /** `create_break` landed. */
   | { kind: "created"; breakId: bigint; signature: string }
   /** `create_break` was sent and nothing is known about it yet; the next run finds out from the chain. */
@@ -51,10 +57,15 @@ export interface SchedulerDeps {
   template: BreakTemplate;
   /** False: breaks are still copied from the chain, but none is created. */
   enabled: boolean;
+  /** Reads the keeper's SOL. Without it the scheduler does not check, and a break the keeper cannot pay for is refused by the program. */
+  wallet?: WalletReader;
   now?: () => Date;
   /** How long to wait after a refused `create_break` before trying again. Default 60 s. */
   retryAfterMs?: number;
 }
+
+/** How often the job repeats that the keeper's wallet is short of SOL while it stays that way. */
+const SHORT_REMINDER_MS = 3_600_000;
 
 /** Most breaks copied from the chain in one run. */
 const MAX_RECORDED_PER_RUN = 25;
@@ -92,6 +103,12 @@ export class BreakScheduler {
 
       const progress = await this.reserve();
       if (!progress.enough) return { kind: "reserve", progress };
+
+      if (this.deps.wallet) {
+        const have = await this.deps.wallet.lamports(this.deps.keeper);
+        const needed = createBreakCost().total;
+        if (have < needed) return { kind: "funds", have, needed };
+      }
 
       return this.create(config, nowSecs);
     };
@@ -167,6 +184,7 @@ export class BreakScheduler {
 export function schedulerJob(opts: { scheduler: BreakScheduler; intervalMs: number }): Job {
   let lastPercent: number | undefined;
   let lastProblem: string | undefined;
+  let lastShort: { have: bigint; at: number } | undefined;
   return {
     name: "scheduler",
     intervalMs: opts.intervalMs,
@@ -174,6 +192,7 @@ export function schedulerJob(opts: { scheduler: BreakScheduler; intervalMs: numb
       const r = await opts.scheduler.run();
       for (const id of r.recorded) ctx.log.info("break recorded from the chain", { break: String(id) });
       if (r.kind !== "problem") lastProblem = undefined;
+      if (r.kind !== "funds") lastShort = undefined;
       switch (r.kind) {
         case "created":
           lastPercent = undefined;
@@ -196,6 +215,16 @@ export function schedulerJob(opts: { scheduler: BreakScheduler; intervalMs: numb
             });
           }
           break;
+        case "funds": {
+          // Said when it starts, when the balance moves and once an hour after that: the operator has to act, and a log that
+          // repeats every few seconds would bury everything else.
+          const at = ctx.now().getTime();
+          if (!lastShort || lastShort.have !== r.have || at - lastShort.at >= SHORT_REMINDER_MS) {
+            lastShort = { have: r.have, at };
+            ctx.log.error("the keeper wallet cannot pay for a new break: top it up with SOL", { lamports: String(r.have), needed: String(r.needed) });
+          }
+          break;
+        }
         case "problem":
           if (r.problem !== lastProblem) {
             lastProblem = r.problem;
