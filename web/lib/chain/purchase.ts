@@ -7,7 +7,7 @@ import { SolanaSignAndSendTransaction, type SolanaSignAndSendTransactionFeature 
 import type { Wallet, WalletAccount } from "@wallet-standard/base";
 import { base58 } from "@scure/base";
 import { CHAIN, displayName, endSentence, errorText } from "../wallet/wallets";
-import { type BreakAccount, type ConfigAccount, decodeBreak, decodeConfig } from "./accounts";
+import { type BreakAccount, type ConfigAccount, SPOT_ACCOUNT_BYTES, decodeBreak, decodeConfig } from "./accounts";
 import { type Address, breakAddress, configAddress } from "./address";
 import { loadUsdcBalance } from "./balance";
 import { buySpotInstruction, checkAfford, checkSale } from "./buy";
@@ -17,8 +17,7 @@ import { type RpcOptions, RpcFailure, getAccounts, rpc } from "./rpc";
 import { buildTransaction } from "./transaction";
 import { sol } from "./view";
 
-/** The size of a Spot account: the 8-byte account name, then break id, index, owner, price paid, refunded and bump. */
-export const SPOT_ACCOUNT_BYTES = 60;
+export { SPOT_ACCOUNT_BYTES };
 /** What one signature costs on Solana. A purchase has one. */
 export const SIGNATURE_FEE_LAMPORTS = 5000n;
 

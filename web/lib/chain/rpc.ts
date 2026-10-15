@@ -72,3 +72,30 @@ async function batch(opts: RpcOptions & { commitment?: "finalized" | "confirmed"
     return { data: base64.decode(data), owner: v.owner };
   });
 }
+
+export interface ProgramAccount {
+  address: Address;
+  account: RpcAccount;
+}
+
+/**
+ * The accounts of `program` that are exactly `dataSize` bytes long and hold `bytes` (an address) at `offset`: the node does the
+ * searching, so what comes back still has to be checked by whoever asked (an account is only the program's if its owner says so
+ * and its address is the one it should have).
+ */
+export async function getProgramAccounts(
+  opts: RpcOptions & { program: Address; dataSize: number; memcmp: { offset: number; bytes: Address }; commitment?: "finalized" | "confirmed" },
+): Promise<ProgramAccount[]> {
+  const result = await rpc<unknown>(opts, "getProgramAccounts", [
+    opts.program,
+    { encoding: "base64", commitment: opts.commitment ?? "finalized", filters: [{ dataSize: opts.dataSize }, { memcmp: { offset: opts.memcmp.offset, bytes: opts.memcmp.bytes } }] },
+  ]);
+  if (!Array.isArray(result)) throw new RpcFailure("the node's answer was not a list of accounts");
+  return result.map((entry: { pubkey?: unknown; account?: { data?: unknown; owner?: unknown } } | null) => {
+    const data = Array.isArray(entry?.account?.data) ? entry?.account?.data[0] : undefined;
+    if (typeof entry?.pubkey !== "string" || typeof data !== "string" || typeof entry.account?.owner !== "string") {
+      throw new RpcFailure("the node's answer for an account was malformed");
+    }
+    return { address: entry.pubkey, account: { data: base64.decode(data), owner: entry.account.owner } };
+  });
+}
