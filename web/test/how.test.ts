@@ -45,6 +45,9 @@ describe("the How it works page", () => {
     expect(body).toContain("One pack is bought and pulled for every spot that was filled");
     expect(body).toContain("a paid spot nobody bought is simply not bought");
     expect(body).toContain("Only then is randomness requested, so nobody can know the answer before the lists are fixed.");
+    expect(body).toContain("A break names its packs when it is created, from one machine or from several, and that list never changes.");
+    expect(body).toContain("A break lists its packs from the cheapest to the most expensive and the first ones are the ones bought, so a break that does not fill loses its most expensive packs.");
+    expect(body).toContain("If the packs that would be bought are worth less than the spots cost on average, the break is cancelled before anything is bought and the spots are refunded.");
     expect(body).toContain("every paid spot can be refunded to the wallet that bought it");
   });
 

@@ -11,5 +11,5 @@ export const BREAK_SHAPE = breakShapeSetup({
   paidSpots: process.env.NEXT_PUBLIC_BREAK_PAID_SPOTS,
   freeSpots: process.env.NEXT_PUBLIC_BREAK_FREE_SPOTS,
   spotPrice: process.env.NEXT_PUBLIC_BREAK_SPOT_PRICE,
-  maxPackPrice: process.env.NEXT_PUBLIC_BREAK_MAX_PACK_PRICE,
+  packs: process.env.NEXT_PUBLIC_BREAK_PACKS,
 });

@@ -1,9 +1,16 @@
 import type { Treasury } from "../lib/chain/treasury";
-import { type BreakShape, reserveProgress } from "../lib/chain/reserve";
+import { type BreakShape, type PackGroup, averagePackPrice, reserveProgress } from "../lib/chain/reserve";
 import { money, percent as barWidth } from "../lib/chain/view";
 
 /** "$20", or "nothing" for a bucket the break does not need. */
 const need = (micro: bigint): string => (micro === 0n ? "nothing" : money(micro));
+
+/** A machine as the keeper's settings name it: the text as it is, a raw 32-byte id shortened. React escapes the text. */
+const machineName = (label: string): string => (/^0x[0-9a-fA-F]{64}$/.test(label) ? `${label.slice(0, 8)}…${label.slice(-4)}` : label);
+
+/** "packs up to $25" when every pack may cost the same, otherwise each machine with how many packs come from it and its price. */
+const packsText = (packs: readonly PackGroup[]): string =>
+  packs.length === 1 ? `packs up to ${money((packs[0] as PackGroup).maxPrice)}` : `packs ${packs.map((g) => `${g.count} × ${machineName(g.machine)} up to ${money(g.maxPrice)}`).join(", ")}`;
 
 /**
  * How far the reserve is from paying for the next break: a bar, the two buckets against what the break needs from each, and what is
@@ -47,9 +54,9 @@ export function ReserveCard({ shape, treasury }: { shape: BreakShape; treasury: 
       </dl>
       <p className="hint">
         Worst case for {shape.paidSpots} paid {shape.paidSpots === 1 ? "spot" : "spots"} at {money(shape.spotPrice)} and {shape.freeSpots} free{" "}
-        {shape.freeSpots === 1 ? "spot" : "spots"}, with packs up to {money(shape.maxPackPrice)}: the subsidy bucket must be able to top up every paid spot
-        ({need(r.required.subsidy)}) and the holder bucket to pay a whole pack for every free spot ({need(r.required.holder)}). This is the shape the site was
-        set up with for the next break.
+        {shape.freeSpots === 1 ? "spot" : "spots"}, with {packsText(shape.packs)}: the holder bucket must be able to pay every free spot at the average pack price,{" "}
+        {money(averagePackPrice(shape))} ({need(r.required.holder)} in all), and the subsidy bucket the rest of what the packs cost beyond what the paid spots bring in (
+        {need(r.required.subsidy)}). This is the shape the site was set up with for the next break.
       </p>
     </section>
   );
