@@ -16,8 +16,8 @@ export class PublishedMismatch extends Error {
   }
 }
 
-/** Only the names `files.ts` makes: a folder, 64 hex digits and `.json`. Nothing else is written, whatever is asked. */
-const NAME = /^(eligibility|pool)\/[0-9a-f]{64}\.json$/;
+/** Only the names `files.ts` makes: a folder, 64 hex digits and the folder's extension. Nothing else is written, whatever is asked. */
+const NAME = /^(?:(?:eligibility|pool)\/[0-9a-f]{64}\.json|inputs\/[0-9a-f]{64}\.txt)$/;
 
 /** Writes into a directory a web server (or anything else) serves. A file appears whole or not at all. */
 export class DirSink implements FileSink {

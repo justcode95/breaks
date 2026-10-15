@@ -1,12 +1,13 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { beforeAll, describe, expect, it } from "vitest";
 import { type AppConfig, RANDOMNESS_REQUEST_RENT, buildJobs, checkSchema, sqlFromPool, verifyKeeperIdentity, verifyMint } from "../src/app.js";
-import { toHex } from "../src/draw/bytes.js";
+import { serializeInputs } from "../src/eligibility/eligibility.js";
+import { hashv, toHex, utf8 } from "../src/draw/bytes.js";
 import { assignCards } from "../src/draw/pool.js";
 import { Tree } from "../src/draw/tree.js";
 import { createRunner } from "../src/job.js";
@@ -488,7 +489,7 @@ describe("the jobs, with the lists published as files", () => {
     const jobs = await buildJobs(on({ intervalSecs: 45 }), { sql: shared, chain: w.chain, finalized: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log });
     expect(jobs.map((j) => j.name)).toEqual(["indexer", "scheduler", "publish", "pipeline", "pack-buyer", "delivery"]);
     expect(jobs.find((j) => j.name === "publish")?.intervalMs).toBe(45_000);
-    expect(infos).toContain("publishing eligibility lists and card pools as files");
+    expect(infos).toContain("publishing eligibility lists, the balance events behind them and card pools as files");
   });
 
   it("needs a chain reader at the finalized commitment: nothing is published against a commitment that could roll back", async () => {
@@ -503,11 +504,15 @@ describe("the jobs, with the lists published as files", () => {
     const breakId = await insertBreak(shared);
     await shared.query("update breaks set onchain_id = 31, status = 'eligibility_committed' where id = $1::bigint", [breakId]);
     await shared.query("insert into twab_snapshots (break_id, wallet, twab, weight, eligible) values ($1::bigint, $2, 7, 7, true)", [breakId, addr(31)]);
+    // The record of the inputs the planner would have published: its SHA-256 is what the chain committed.
+    const inputs = serializeInputs([{ signature: "sig-31", slot: 5n, time: 1_800_000_010, owner: addr(31), tokenAccount: addr(32), delta: 7n, balanceAfter: 7n }], { start: 1_800_000_000, end: 1_800_043_200 });
+    const inputsHash = toHex(hashv(utf8(inputs)));
+    await shared.query("insert into published_documents (sha256, content_type, body) values ($1, 'text/plain; charset=utf-8', $2) on conflict do nothing", [inputsHash, inputs]);
     await shared.query(
-      "insert into eligibility_lists (break_id, root, total_weight, entry_count, inputs_hash, list_uri, inputs_uri) values ($1::bigint, decode($2, 'hex'), 7, 1, decode($3, 'hex'), 'db:x', 'db:y')",
-      [breakId, toHex(tree.root.hash), "11".repeat(32)],
+      "insert into eligibility_lists (break_id, root, total_weight, entry_count, inputs_hash, list_uri, inputs_uri) values ($1::bigint, decode($2, 'hex'), 7, 1, decode($3, 'hex'), 'db:x', $4)",
+      [breakId, toHex(tree.root.hash), inputsHash, `db:sha256:${inputsHash}`],
     );
-    const account = encodeBreak(brk({ id: 31n, status: "EligibilityCommitted", eligibilityRoot: tree.root.hash, eligibilityTotalWeight: 7n, eligibilityCount: 1 }));
+    const account = encodeBreak(brk({ id: 31n, status: "EligibilityCommitted", eligibilityRoot: tree.root.hash, eligibilityTotalWeight: 7n, eligibilityCount: 1, eligibilityInputsHash: hashv(utf8(inputs)) }));
     const finalized = { getAccountData: async (a: string) => (a === breakAddress(PROGRAMS, 31n) ? account : undefined) };
     const w = world({ status: "Open", id: 8n }); // its chain knows nothing of break 31
     const dir = await mkdtemp(join(tmpdir(), "app-publish-"));
@@ -517,6 +522,9 @@ describe("the jobs, with the lists published as files", () => {
       await jobs.find((j) => j.name === "publish")!.run({ now: w.clock.now, log });
       expect(errors).toEqual([]);
       expect(await readdir(join(dir, "eligibility"))).toEqual([`${toHex(tree.root.hash)}.json`]);
+      // The balance events behind the weights go out too, under the hash the chain holds, byte for byte.
+      expect(await readdir(join(dir, "inputs"))).toEqual([`${inputsHash}.txt`]);
+      expect(await readFile(join(dir, "inputs", `${inputsHash}.txt`), "utf8")).toBe(inputs);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

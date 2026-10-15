@@ -3,12 +3,13 @@
 // fetched under is not the list.
 //
 //   eligibility/<root>.json      root = the Merkle root committed in `commit_eligibility` (64 hex digits)
+//   inputs/<inputs hash>.txt     inputs hash = the `inputs_hash` of `commit_eligibility`: the SHA-256 of this very text
 //   pool/<pool hash>.json        pool hash = what `commit_pool` committed (64 hex digits)
 //
 // The bytes of a file are fixed by the data alone (compact JSON, a newline at the end, entries in the order the tree
 // sorts them), so publishing the same list twice writes the same file. docs/PUBLISHED.md describes the formats.
 
-import { toHex } from "../draw/bytes.js";
+import { hashv, toHex, utf8 } from "../draw/bytes.js";
 import { sortedPool } from "../draw/pool.js";
 import type { Leaf } from "../draw/tree.js";
 import { addressFromBytes } from "../solana/pubkey.js";
@@ -36,6 +37,15 @@ export function eligibilityFile(root: Uint8Array, totalWeight: bigint, leaves: r
         entries: leaves.map((l) => ({ wallet: addressFromBytes(l.wallet), weight: l.weight.toString() })),
       }) + "\n",
   };
+}
+
+/**
+ * The balance events the weights were computed from, exactly as `serializeInputs` wrote them. The name is the SHA-256 of the
+ * text, so a file can never carry a name that is not its hash: whether that hash is the one the chain committed is for the
+ * exporter to check.
+ */
+export function inputsFile(text: string): PublishedFile {
+  return { path: `inputs/${toHex(hashv(utf8(text)))}.txt`, body: text };
 }
 
 /** The cards that were pulled, sorted by mint: the pool whose hash `hash` was committed on chain. */

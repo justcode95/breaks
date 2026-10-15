@@ -1,18 +1,20 @@
-// Publishes a break's eligibility list and card pool as files named by the hashes the chain committed.
+// Publishes a break's eligibility list, the balance events behind it and its card pool as files named by the hashes the
+// chain committed.
 //
 // A file is written only when the data the keeper holds provably hashes to what the chain (read at `finalized`) says
-// was committed: the rebuilt Merkle root, total weight and wallet count for the list, the pool hash and size for the
-// cards. A list that does not match is reported and never published. Files are never overwritten, and a run first
-// looks for the file by name, so a quiet run reads nothing from the chain.
+// was committed: the rebuilt Merkle root, total weight and wallet count for the list, the SHA-256 of the balance-event
+// text for the record of the inputs, the pool hash and size for the cards. Data that does not match is reported and never
+// published. Files are never overwritten, and a run first looks for the file by name, so a quiet run reads nothing from
+// the chain (and a busy one reads each break once).
 
 import { equalBytes, toHex } from "../draw/bytes.js";
 import { poolHash } from "../draw/pool.js";
 import { Tree } from "../draw/tree.js";
 import type { Job } from "../job.js";
 import type { AccountReader } from "../pipeline/chain.js";
-import { type Programs, breakAddress, decodeBreak } from "../solana/breaks.js";
+import { type BreakAccount, type Programs, breakAddress, decodeBreak } from "../solana/breaks.js";
 import { addressToBytes } from "../solana/pubkey.js";
-import { eligibilityFile, poolFile } from "./files.js";
+import { eligibilityFile, inputsFile, poolFile } from "./files.js";
 import type { FileSink } from "./sink.js";
 import type { Candidate, PublishStore } from "./store.js";
 
@@ -40,28 +42,31 @@ export class PublishExporter {
   async run(): Promise<PublishReport> {
     const report: PublishReport = { written: [], problems: [] };
     for (const c of await this.deps.store.candidates()) {
-      // Each list is its own step: a problem with the cards must not hold back a list that is fine, and what was
-      // written is reported even when the other step failed.
+      // Each file is its own step: a problem with the cards must not hold back a list that is fine, and what was
+      // written is reported even when another step failed. The break's account is read once for all of them.
+      let read: Promise<BreakAccount> | undefined;
+      const chain = () => (read ??= this.onChain(c));
       const errors: string[] = [];
-      for (const step of [() => this.eligibility(c), () => this.pool(c)]) {
+      for (const step of [() => this.eligibility(c, chain), () => this.inputs(c, chain), () => this.pool(c, chain)]) {
         try {
           report.written.push(...(await step()));
         } catch (err) {
           errors.push(err instanceof Error ? err.message : String(err));
         }
       }
-      if (errors.length > 0) report.problems.push({ breakId: c.breakId, message: errors.join("; ") });
+      // Steps that hit the same trouble (no account on chain) say it once.
+      if (errors.length > 0) report.problems.push({ breakId: c.breakId, message: [...new Set(errors)].join("; ") });
     }
     return report;
   }
 
-  private async eligibility(c: Candidate): Promise<string[]> {
+  private async eligibility(c: Candidate, chain: () => Promise<BreakAccount>): Promise<string[]> {
     // An empty list is a zero root with nothing behind it: there is nothing to publish.
     if (c.entryCount === 0 || c.root === undefined) return [];
     const path = `eligibility/${c.root}.json`;
     if (await this.deps.sink.exists(path)) return [];
 
-    const b = await this.onChain(c);
+    const b = await chain();
     const leaves = await this.deps.store.leaves(c.breakId);
     if (leaves.length === 0) throw new Error("the stored eligibility list is empty but a list was committed");
     const tree = Tree.build(leaves);
@@ -73,13 +78,36 @@ export class PublishExporter {
     return this.write(eligibilityFile(tree.root.hash, tree.root.sum, leaves));
   }
 
-  private async pool(c: Candidate): Promise<string[]> {
+  /**
+   * The balance events the weights were computed from. Unlike the list it is published even when nobody was eligible: that
+   * is exactly when a reader wants to see why. The file is the stored text as it is; what makes it the right one is that its
+   * SHA-256 is the `inputs_hash` the chain committed.
+   */
+  private async inputs(c: Candidate, chain: () => Promise<BreakAccount>): Promise<string[]> {
+    if (c.inputsHash === undefined) return [];
+    if (await this.deps.sink.exists(`inputs/${c.inputsHash}.txt`)) return [];
+
+    const b = await chain();
+    const committed = toHex(b.eligibilityInputsHash);
+    if (committed !== c.inputsHash) {
+      throw new Error(`the stored record of the inputs (hash ${c.inputsHash}) is not what was committed on chain (inputs hash ${committed}); nothing was published`);
+    }
+    const text = await this.deps.store.inputsText(c.breakId);
+    if (text === undefined) throw new Error("the stored record of the inputs cannot be read, though its hash was committed");
+    const file = inputsFile(text);
+    if (file.path !== `inputs/${committed}.txt`) {
+      throw new Error(`the stored record of the inputs does not hash to the inputs hash committed on chain (${committed}); nothing was published`);
+    }
+    return this.write(file);
+  }
+
+  private async pool(c: Candidate, chain: () => Promise<BreakAccount>): Promise<string[]> {
     if (!SEEDED.has(c.status) || c.cards.length === 0) return [];
     const mints = c.cards.map(addressToBytes);
     const hash = poolHash(mints);
     if (await this.deps.sink.exists(`pool/${toHex(hash)}.json`)) return [];
 
-    const b = await this.onChain(c);
+    const b = await chain();
     if (b.status !== "Settled" && b.status !== "Drawn") throw new Error(`the break is ${b.status} on chain, not yet settled, so its cards are not published`);
     if (!equalBytes(hash, b.poolHash) || mints.length !== b.poolSize) {
       throw new Error(
