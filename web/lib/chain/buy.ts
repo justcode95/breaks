@@ -20,7 +20,7 @@ export interface Instruction {
 }
 
 /** Anchor's name for an instruction: the first 8 bytes of the hash of `global:<name>`. */
-const discriminator = (name: string): Uint8Array => hashv(utf8(`global:${name}`)).slice(0, 8);
+export const discriminator = (name: string): Uint8Array => hashv(utf8(`global:${name}`)).slice(0, 8);
 
 /**
  * `buy_spot(index)`: the buyer pays the break's spot price in USDC from `buyerUsdc` into the break's escrow and gets spot

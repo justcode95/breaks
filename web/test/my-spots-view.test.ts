@@ -2,11 +2,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MySpotsView } from "../app/me/rows";
 import { decodeBreak } from "../lib/chain/accounts";
 import type { Mine, MyFreeWin, MySpot } from "../lib/chain/mine";
 import { type BreakFields, breakFieldsFromVector, encodeBreak } from "./support/accounts";
+import { buttons } from "./support/tree";
 import { fill } from "./support/wallet";
 
 const vectors: { cases: { name: string; outputs?: Record<string, any> | null }[] } = JSON.parse(
@@ -65,7 +66,7 @@ describe("the page of a wallet's spots", () => {
     const html = render(mine({ spots: [refundable, refunded] }));
     expect(html).toContain('<span class="badge waiting">Cancelled: can be refunded</span>');
     expect(html).toContain('<span class="badge off">Refunded</span>');
-    expect(text(html)).toContain("A cancelled break's spots are paid back to the wallet that bought them. Anyone can send the refund; this site cannot send it yet.");
+    expect(text(html)).toContain("A cancelled break's spots are paid back to the wallet that bought them. Anyone can send the refund. This site cannot send it yet.");
     expect(text(render(mine({ spots: [refunded] })))).not.toContain("paid back to the wallet");
     expect(text(render(mine({ spots: [spot(3, 0)] })))).not.toContain("paid back to the wallet");
   });
@@ -96,5 +97,46 @@ describe("the page of a wallet's spots", () => {
   it("says when only the newest spots are shown", () => {
     expect(text(render(mine({ spots: [spot(3, 0)], truncated: true })))).toContain("Only the newest spots are shown.");
     expect(text(render(mine({ spots: [spot(3, 0)] })))).not.toContain("Only the newest spots are shown.");
+  });
+
+  describe("with refunds", () => {
+    const withRefund = (m: Mine, over: { busy?: boolean; onRefund?: (s: MySpot) => void } = {}) =>
+      createElement(MySpotsView, { mine: m, now: NOW, onRefund: over.onRefund ?? (() => {}), busy: over.busy ?? false });
+
+    it("offers a button only for a spot of a cancelled break that has not been refunded, saying the spot and the amount", () => {
+      const refundable = spot(3, 1, { status: "Cancelled", paid: 15_500_000n });
+      const elements = withRefund(mine({ spots: [refundable, spot(2, 0, { status: "Cancelled", refunded: true }), spot(1, 0, { status: "Open" }), spot(4, 0, { status: "Drawn" })] }));
+      const found = buttons(elements);
+      expect(found.map((b) => b.text)).toEqual(["Refund $15.50"]);
+      expect(found[0]?.className).toBe("secondary");
+      const html = renderToStaticMarkup(elements);
+      expect(html).toContain('aria-label="Refund spot #2 of break #3"');
+      expect(html).not.toContain("disabled");
+    });
+
+    it("has no button when the page has no way to send a refund", () => {
+      expect(buttons(createElement(MySpotsView, { mine: mine({ spots: [spot(3, 0, { status: "Cancelled" })] }), now: NOW }))).toEqual([]);
+    });
+
+    it("calls the handler with the spot of that row", () => {
+      const first = spot(3, 0, { status: "Cancelled" });
+      const second = spot(2, 5, { status: "Cancelled" });
+      const onRefund = vi.fn();
+      const found = buttons(withRefund(mine({ spots: [first, second] }), { onRefund }));
+      expect(found).toHaveLength(2);
+      found[1]?.onClick?.();
+      expect(onRefund).toHaveBeenCalledExactlyOnceWith(second);
+    });
+
+    it("disables the buttons while a refund runs, since one runs at a time", () => {
+      const html = renderToStaticMarkup(withRefund(mine({ spots: [spot(3, 0, { status: "Cancelled" })] }), { busy: true }));
+      expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Refund \$20<\/button>/);
+    });
+
+    it("says to use the button to send the refund, instead of that the site cannot", () => {
+      const html = renderToStaticMarkup(withRefund(mine({ spots: [spot(3, 0, { status: "Cancelled" })] })));
+      expect(text(html)).toContain("Anyone can send the refund. Use the button to send yours.");
+      expect(text(html)).not.toContain("this site cannot send it");
+    });
   });
 });
