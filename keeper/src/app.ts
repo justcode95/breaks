@@ -107,7 +107,7 @@ export async function checkSchema(sql: Sql): Promise<string[]> {
  * Refuses a TOKEN_MINT that is not an initialized token mint on this cluster. With a wrong address the indexer would
  * find nothing, claim to have read everything, and every break would get an empty eligibility list.
  */
-export async function verifyMint(chain: ChainClient, mint: Address): Promise<void> {
+export async function verifyMint(chain: AccountReader, mint: Address): Promise<void> {
   const data = await chain.getAccountData(mint);
   if (!data) throw new Error(`TOKEN_MINT ${mint} does not exist on this cluster`);
   // A mint is 82 bytes (is_initialized at 45). Token-2022 mints are longer (padded to 165, then the account type 1 = mint).
@@ -120,7 +120,7 @@ export async function verifyMint(chain: ChainClient, mint: Address): Promise<voi
  * Refuses to run with the wrong key: if the breaks program is initialized, its keeper must be the key we sign
  * with, or every step would be refused. Returns false if the program is not initialized yet.
  */
-export async function verifyKeeperIdentity(chain: ChainClient, config: Pick<Config, "programs">, keeper: Address): Promise<boolean> {
+export async function verifyKeeperIdentity(chain: AccountReader, config: Pick<Config, "programs">, keeper: Address): Promise<boolean> {
   const data = await chain.getAccountData(configAddress(config.programs));
   if (!data) return false;
   const onChain = decodeBreaksConfig(data).keeper;

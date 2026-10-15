@@ -22,3 +22,17 @@ export function decodeTokenAccount(data: Uint8Array): TokenAccount {
     amount: view.getBigUint64(64, true),
   };
 }
+
+export interface Mint {
+  /** Total supply in base units. */
+  supply: bigint;
+  decimals: number;
+  initialized: boolean;
+}
+
+/** Reads a mint (the token program's `Mint`, 82 bytes; Token-2022 mints start the same way): supply at 36, decimals at 44, initialized at 45. */
+export function decodeMint(data: Uint8Array): Mint {
+  if (data.length < 82) throw new RangeError(`a token mint is at least 82 bytes, got ${data.length}`);
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  return { supply: view.getBigUint64(36, true), decimals: data[44] as number, initialized: data[45] === 1 };
+}

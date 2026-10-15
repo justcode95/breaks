@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, parseConfig } from "../src/config.js";
 import { packMachineBytes } from "../src/scheduler/machine.js";
 import { ORAO_PROGRAM } from "../src/solana/breaks.js";
 import { addr } from "./support/chain.js";
@@ -220,5 +220,48 @@ describe("loadConfig", () => {
 
   it("lets the VRF program be changed, as the admin can switch it on-chain", () => {
     expect(loadConfig({ ...base, VRF_PROGRAM_ID: addr(77) }).vrf.program).toBe(addr(77));
+  });
+});
+
+describe("parseConfig", () => {
+  it("returns the configuration when it is valid, the same one loadConfig returns", () => {
+    expect(parseConfig(base)).toEqual({ config: loadConfig(base) });
+  });
+
+  it("returns every problem, one per setting, instead of throwing", () => {
+    const parsed = parseConfig({ ...base, MIN_TWAB: "a lot", BREAK_FREE_SPOTS: "17", TOKEN_MINT: undefined });
+    expect("problems" in parsed).toBe(true);
+    const problems = (parsed as { problems: string[] }).problems;
+    expect(problems.filter((p) => p.startsWith("MIN_TWAB:"))).toHaveLength(1);
+    expect(problems.some((p) => p.startsWith("BREAK_FREE_SPOTS:"))).toBe(true);
+    expect(problems).toContain("TOKEN_MINT: is not set");
+    expect(problems).toHaveLength(3);
+  });
+
+  it("says that a setting is not set only when it is not set at all, and keeps the parser's words for a bad value", () => {
+    const missing = parseConfig({ ...base, MIN_TWAB: undefined, BREAK_PAID_SPOTS: undefined, BREAK_SPOT_PRICE: undefined }) as { problems: string[] };
+    expect(missing.problems).toEqual(expect.arrayContaining(["MIN_TWAB: is not set", "BREAK_PAID_SPOTS: is not set", "BREAK_SPOT_PRICE: is not set"]));
+    const bad = parseConfig({ ...base, MIN_TWAB: "a lot", BREAK_PAID_SPOTS: "0" }) as { problems: string[] };
+    expect(bad.problems.join("\n")).not.toContain("is not set");
+    expect(bad.problems.some((p) => p.startsWith("MIN_TWAB: "))).toBe(true);
+    // A number that is not one comes out of the parser as NaN, the same as a missing one: it is not "not set".
+    const words = parseConfig({ ...base, BREAK_FREE_SPOTS: "many" }) as { problems: string[] };
+    expect(words.problems).toHaveLength(1);
+    expect(words.problems[0]).toMatch(/^BREAK_FREE_SPOTS: /);
+    expect(words.problems[0]).not.toContain("is not set");
+    const empty = parseConfig({ ...base, BREAK_PACK_MACHINE: "" }) as { problems: string[] };
+    expect(empty.problems.join("\n")).toContain("BREAK_PACK_MACHINE");
+    expect(empty.problems.join("\n")).not.toContain("is not set");
+  });
+
+  it("does not replace a rule's own message with 'is not set' (a setting another setting requires)", () => {
+    const parsed = parseConfig({ ...base, BOT_ENABLED: "true", BOT_POSTER: "x" }) as { problems: string[] };
+    expect(parsed.problems).toContain("X_CONSUMER_KEY: is required when BOT_POSTER=x");
+  });
+
+  it("is what loadConfig reports, joined", () => {
+    const env = { ...base, MIN_TWAB: undefined, TOKEN_MINT: "nope" };
+    const problems = (parseConfig(env) as { problems: string[] }).problems;
+    expect(() => loadConfig(env)).toThrow(`Invalid keeper config: ${problems.join("; ")}`);
   });
 });

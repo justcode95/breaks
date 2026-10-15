@@ -47,6 +47,21 @@ describe("RpcChainClient: reading", () => {
     expect(call?.params[1]).toMatchObject({ encoding: "base64", commitment: "confirmed" });
   });
 
+  it("tells whether the account is a program and how many lamports it holds, and can ask for only a part of its data", async () => {
+    const node = new FakeNode();
+    node.accounts.set("Prog", Uint8Array.of(1, 2, 3, 4, 5, 6));
+    node.owners.set("Prog", "Loader");
+    node.executables.add("Prog");
+    node.lamports.set("Prog", 1_141_440n);
+    node.accounts.set("Plain", Uint8Array.of(9));
+    const rpc = new RpcClient({ url: "http://fake", fetch: node.fetch, sleep: node.sleep, retries: 0 });
+    expect(await rpc.getAccountInfo("Prog", { commitment: "finalized" })).toEqual({ data: Uint8Array.of(1, 2, 3, 4, 5, 6), owner: "Loader", slot: 500, lamports: 1_141_440n, executable: true });
+    expect(await rpc.getAccountInfo("Prog", { commitment: "confirmed", dataSlice: { offset: 1, length: 3 } })).toMatchObject({ data: Uint8Array.of(2, 3, 4) });
+    expect(node.requests[1]?.params[1]).toEqual({ encoding: "base64", commitment: "confirmed", dataSlice: { offset: 1, length: 3 } });
+    expect(node.requests[0]?.params[1]).not.toHaveProperty("dataSlice");
+    expect(await rpc.getAccountInfo("Plain", { commitment: "confirmed" })).toMatchObject({ executable: false, lamports: 1n });
+  });
+
   it("retries a read that was refused as too early, then gives up with the node's message", async () => {
     const ok = await setup((n) => {
       n.accounts.set("Acct", Uint8Array.of(9));

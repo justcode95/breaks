@@ -185,13 +185,27 @@ export type Config = {
   };
 };
 
-export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
+/** The configuration, or every problem with it, one line each (`NAME: what is wrong`). */
+export function parseConfig(env: Record<string, string | undefined>): { config: Config } | { problems: string[] } {
   const parsed = schema.safeParse(env);
   if (!parsed.success) {
-    const problems = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
-    throw new Error(`Invalid keeper config: ${problems}`);
+    // A setting that is not there at all is said so, instead of with the parser's "expected string, received undefined".
+    const problems = parsed.error.issues.map((i) => {
+      const name = i.path.join(".");
+      return `${name}: ${env[name] === undefined && /received (undefined|NaN)/.test(i.message) ? "is not set" : i.message}`;
+    });
+    return { problems };
   }
-  const e = parsed.data;
+  return { config: build(parsed.data) };
+}
+
+export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
+  const parsed = parseConfig(env);
+  if ("problems" in parsed) throw new Error(`Invalid keeper config: ${parsed.problems.join("; ")}`);
+  return parsed.config;
+}
+
+function build(e: z.infer<typeof schema>): Config {
   return {
     cluster: e.SOLANA_CLUSTER,
     rpcUrl: e.SOLANA_RPC_URL,
