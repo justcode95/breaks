@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { PGlite } from "@electric-sql/pglite";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -161,6 +161,29 @@ describe("the format of the published files", () => {
     const big = 18_446_744_073_709_551_000n;
     const f = eligibilityFile(new Uint8Array(32).fill(1), big, [{ wallet: addressToBytes(addr(1)), weight: big }]);
     expect(JSON.parse(f.body).entries[0].weight).toBe("18446744073709551000");
+  });
+});
+
+// The files the website's tests read (web/test/published.test.ts): made here by the keeper's own code, so the producer and
+// the consumer of the format cannot drift apart. `UPDATE_PUBLISHED_EXAMPLE=1 pnpm --filter keeper test` rewrites them.
+describe("the published example the website reads", () => {
+  const EXAMPLE = join(import.meta.dirname, "..", "..", "docs", "published-example");
+  const leaves = leavesOf([[1, 10n], [2, 30n], [3, 5n], [4, 50n], [5, 20n], [6, 15n]]);
+  const cards = [44, 40, 43, 41, 42].map((n) => addressToBytes(addr(n)));
+  const tree = Tree.build(leaves);
+  const made = [eligibilityFile(tree.root.hash, tree.root.sum, leaves), poolFile(poolHash(cards), cards)];
+
+  it("is exactly what the keeper writes for this list and these cards, and nothing else", async () => {
+    if (process.env.UPDATE_PUBLISHED_EXAMPLE) {
+      await rm(EXAMPLE, { recursive: true, force: true });
+      for (const f of made) {
+        await mkdir(dirname(join(EXAMPLE, f.path)), { recursive: true });
+        await writeFile(join(EXAMPLE, f.path), f.body, "utf8");
+      }
+    }
+    for (const f of made) expect(await readFile(join(EXAMPLE, f.path), "utf8"), f.path).toBe(f.body);
+    const found = [...(await readdir(join(EXAMPLE, "eligibility"))).map((n) => `eligibility/${n}`), ...(await readdir(join(EXAMPLE, "pool"))).map((n) => `pool/${n}`)].sort();
+    expect(found).toEqual(made.map((f) => f.path).sort());
   });
 });
 

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { loadBreak } from "../../../lib/chain/load";
-import { SETUP } from "../../../lib/site";
+import { PUBLISHED_SETUP, SETUP } from "../../../lib/site";
 import { BuyPanel } from "./buy-panel";
 import { BreakDetails, type Loaded } from "./details";
 
@@ -71,6 +71,7 @@ export function BreakView({ number }: { number: number }) {
                 readAt={view.readAt}
                 program={SETUP.config.breaksProgram}
                 refresh={() => void load()}
+                publishedUrl={PUBLISHED_SETUP.kind === "on" ? PUBLISHED_SETUP.config.baseUrl : undefined}
                 buy={<BuyPanel b={view.loaded.break} number={number} now={now} config={SETUP.config} reload={reload} />}
               />
               {view.refreshError && <p className="problem">Could not read the break again: {view.refreshError}</p>}
