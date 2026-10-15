@@ -1,9 +1,9 @@
 // The break scheduler: creates the next break when the treasury can pay for its worst case.
 //
 // Rules (CLAUDE.md, "Breaks are fee-funded from the first one"): no team pre-funding, so a break is only created when
-// the buckets can cover `paid_spots × (max_pack_price − spot_price)` and `free_spots × max_pack_price`; the program
-// checks that itself (the treasury refuses the lock), this checks first so it never sends a transaction that cannot
-// work. One break sells at a time: the next one starts when the previous sale has ended, if the reserve allows.
+// the buckets can cover the worst case of the break's pack list (`policy.ts`, `worstCase`: the free spots at the average
+// pack price from the holder bucket, the rest of what the buyers do not pay from the subsidy bucket); the program checks
+// that itself (the treasury refuses the lock), this checks first so it never sends a transaction that cannot work. One break sells at a time: the next one starts when the previous sale has ended, if the reserve allows.
 //
 // It starts every run from the chain, never from notes of its own:
 //   1. every break the chain has and the database lacks is copied into the database (a break created by an
@@ -20,7 +20,7 @@ import { type BreakAccount, type BreaksConfigAccount, type Programs, breakAddres
 import type { Address } from "../solana/pubkey.js";
 import { createBreakCost } from "../solana/rent.js";
 import type { WalletReader } from "../sweep/wallet.js";
-import { type BreakTemplate, type ReserveProgress, templateProblem } from "./policy.js";
+import { type BreakTemplate, type ReserveProgress, packListOf, templateProblem } from "./policy.js";
 import { readReserve } from "./reserve.js";
 import type { SchedulerStore } from "./store.js";
 
@@ -157,9 +157,7 @@ export class BreakScheduler {
       paidSpots: template.paidSpots,
       freeSpots: template.freeSpots,
       spotPrice: template.spotPrice,
-      // One machine for every pack: the template has one price. The program takes any cheapest-first list.
-      tiers: [{ machine: template.packMachine, maxPrice: template.maxPackPrice }],
-      packs: Array<number>(template.paidSpots + template.freeSpots).fill(0),
+      ...packListOf(template),
       opensAt: nowSecs,
       closesAt: nowSecs + template.windowSecs,
     });

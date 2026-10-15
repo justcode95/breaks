@@ -1,24 +1,62 @@
 import { describe, expect, it } from "vitest";
 import { packMachineBytes, packMachineLabel } from "../src/scheduler/machine.js";
-import { type BreakTemplate, reserveProgress, templateProblem, unlocked, worstCase } from "../src/scheduler/policy.js";
+import { type BreakTemplate, type PackGroup, packListOf, reserveProgress, templateProblem, unlocked, worstCase } from "../src/scheduler/policy.js";
 import type { BreaksConfigAccount } from "../src/solana/breaks.js";
 import { addr } from "./support/chain.js";
+import { oneMachine } from "./support/packs.js";
 
 const SPOT = 20_000_000n;
 const PACK = 25_000_000n;
-const shape = { paidSpots: 10, freeSpots: 2, spotPrice: SPOT, maxPackPrice: PACK };
+const D = 1_000_000n;
+/** A break of one machine at one price, with `paid` + `free` spots. */
+const uniform = (paid: number, free: number, spot = SPOT, pack = PACK) => ({ paidSpots: paid, freeSpots: free, spotPrice: spot, packs: oneMachine("pokemon-25", pack, paid + free) });
+const shape = uniform(10, 2);
+const group = (machine: string, dollars: bigint, count: number): PackGroup => ({ machine: packMachineBytes(machine), maxPrice: dollars * D, count });
+/** 6 paid and 2 free spots at $20; four $10 packs, two $25 and two $50: the mixed break of the Rust tests. */
+const mixed = { paidSpots: 6, freeSpots: 2, spotPrice: SPOT, packs: [group("cheap", 10n, 4), group("mid", 25n, 2), group("top", 50n, 2)] };
+/** 13 paid and 2 free spots; thirteen $250 packs and two $1,000 grails. */
+const grails = { paidSpots: 13, freeSpots: 2, spotPrice: 300n * D, packs: [group("filler", 250n, 13), group("grail", 1000n, 2)] };
 
 describe("worstCase", () => {
-  it("tops up every paid spot to the pack price and pays a whole pack for every free spot", () => {
+  it("tops up every paid spot to the pack price and pays a whole pack for every free spot, for packs at one price", () => {
     // The same numbers as `creation_locks_cover_the_worst_case` in programs/breaks/src/math.rs.
     expect(worstCase(shape)).toEqual({ subsidy: 50_000_000n, holder: 50_000_000n });
-    expect(worstCase({ ...shape, spotPrice: PACK })).toEqual({ subsidy: 0n, holder: 50_000_000n });
-    expect(worstCase({ ...shape, freeSpots: 0 })).toEqual({ subsidy: 50_000_000n, holder: 0n });
+    expect(worstCase(uniform(10, 2, PACK))).toEqual({ subsidy: 0n, holder: 50_000_000n });
+    expect(worstCase(uniform(10, 0))).toEqual({ subsidy: 50_000_000n, holder: 0n });
   });
 
-  it("refuses a spot above the pack price and amounts that do not fit in a u64", () => {
-    expect(() => worstCase({ ...shape, spotPrice: PACK + 1n })).toThrow(/above the maximum pack price/);
-    expect(() => worstCase({ ...shape, spotPrice: 1n, maxPackPrice: (1n << 64n) - 1n })).toThrow(/u64/);
+  it("pays the free spots at the average pack price and the rest of what the buyers do not pay from the subsidy bucket, for a mix", () => {
+    // The numbers of `a_mixed_break_locks_by_the_average_pack_price` in the Rust unit tests and the on-chain tests.
+    expect(worstCase(mixed)).toEqual({ subsidy: 22_500_000n, holder: 47_500_000n });
+    expect(worstCase(grails)).toEqual({ subsidy: 650n * D, holder: 700n * D });
+    // At the average price (350) the buyers pay for everything but the free spots.
+    expect(worstCase({ ...grails, spotPrice: 350n * D })).toEqual({ subsidy: 0n, holder: 700n * D });
+  });
+
+  it("rounds the average down, like the program", () => {
+    // Prices of 10, 10, 10 and 11 micro-dollars: 41 in all, 10.25 on average, so 10. The holder bucket pays 1 × 10 and the
+    // subsidy bucket the other 41 − 3 × 10 − 10 = 1 (the dust the program's `rounding_dust` test is about).
+    const packs: PackGroup[] = [{ machine: packMachineBytes("a"), maxPrice: 10n, count: 3 }, { machine: packMachineBytes("b"), maxPrice: 11n, count: 1 }];
+    expect(worstCase({ paidSpots: 3, freeSpots: 1, spotPrice: 10n, packs })).toEqual({ subsidy: 1n, holder: 10n });
+    // And the spot price may be 10, the rounded average, but not 11.
+    expect(() => worstCase({ paidSpots: 3, freeSpots: 1, spotPrice: 11n, packs })).toThrow(/above the average pack price/);
+  });
+
+  it("refuses a spot above the average pack price, a list that does not match the spots, and amounts that do not fit in a u64", () => {
+    expect(() => worstCase({ ...mixed, spotPrice: 23_750_001n })).toThrow(/above the average pack price/);
+    expect(() => worstCase({ ...shape, spotPrice: PACK + 1n })).toThrow(/above the average pack price/);
+    expect(() => worstCase({ ...mixed, paidSpots: 7 })).toThrow(/pack list has 8 packs for 9 spots/);
+    expect(() => worstCase({ ...mixed, packs: [] })).toThrow(/0 packs for 8 spots/);
+    expect(() => worstCase({ ...uniform(1, 1, 1n, (1n << 64n) - 1n) })).toThrow(/u64/);
+  });
+});
+
+describe("packListOf", () => {
+  it("lists the tiers as they are and the tier of each pack, one per spot", () => {
+    const { tiers, packs } = packListOf(mixed);
+    expect(tiers.map((t) => [packMachineLabel(t.machine), t.maxPrice])).toEqual([["cheap", 10n * D], ["mid", 25n * D], ["top", 50n * D]]);
+    expect(packs).toEqual([0, 0, 0, 0, 1, 1, 2, 2]);
+    expect(packListOf(shape).packs).toEqual(Array(12).fill(0));
   });
 });
 
@@ -45,8 +83,14 @@ describe("reserveProgress", () => {
   });
 
   it("ignores a bucket that needs nothing", () => {
-    expect(reserveProgress({ ...shape, spotPrice: PACK }, { subsidy: 0n, holder: 25_000_000n })).toMatchObject({ percent: 50, enough: false });
-    expect(reserveProgress({ ...shape, spotPrice: PACK, freeSpots: 0 }, { subsidy: 0n, holder: 0n })).toMatchObject({ percent: 100, enough: true });
+    expect(reserveProgress(uniform(10, 2, PACK), { subsidy: 0n, holder: 25_000_000n })).toMatchObject({ percent: 50, enough: false });
+    expect(reserveProgress(uniform(10, 0, PACK), { subsidy: 0n, holder: 0n })).toMatchObject({ percent: 100, enough: true });
+  });
+
+  it("measures a mix against what the whole list needs", () => {
+    expect(reserveProgress(mixed, { subsidy: 22_500_000n, holder: 47_500_000n })).toMatchObject({ enough: true, percent: 100, requiredSubsidy: 22_500_000n, requiredHolder: 47_500_000n });
+    expect(reserveProgress(mixed, { subsidy: 22_499_999n, holder: 47_500_000n })).toMatchObject({ enough: false, percent: 99 });
+    expect(reserveProgress(mixed, { subsidy: 11_250_000n, holder: 47_500_000n })).toMatchObject({ enough: false, percent: 50 });
   });
 });
 
@@ -66,22 +110,47 @@ describe("templateProblem", () => {
     paused: false,
     bump: 255,
   };
-  const template: BreakTemplate = { ...shape, packMachine: packMachineBytes("pokemon-25"), windowSecs: 43_200n };
+  const template: BreakTemplate = { ...shape, windowSecs: 43_200n };
+  const mixedTemplate: BreakTemplate = { ...mixed, windowSecs: 43_200n };
 
   it("accepts a break the program accepts, including the limits themselves", () => {
     expect(templateProblem(template, config)).toBeUndefined();
-    expect(templateProblem({ ...template, paidSpots: 20, freeSpots: 6, windowSecs: 21_600n }, config)).toBeUndefined();
-    expect(templateProblem({ ...template, paidSpots: 1, freeSpots: 0, windowSecs: 86_400n }, config)).toBeUndefined();
+    expect(templateProblem({ ...uniform(20, 6), windowSecs: 21_600n }, config)).toBeUndefined();
+    expect(templateProblem({ ...uniform(1, 0), windowSecs: 86_400n }, config)).toBeUndefined();
+    expect(templateProblem(mixedTemplate, config)).toBeUndefined();
+    // A spot at exactly the average pack price, and a list of exactly 8 groups.
+    expect(templateProblem({ ...mixedTemplate, spotPrice: 23_750_000n }, config)).toBeUndefined();
+    const eight = Array.from({ length: 8 }, (_, i) => group(`m${i}`, BigInt(30 + i), 1));
+    expect(templateProblem({ paidSpots: 6, freeSpots: 2, spotPrice: 30n * D, packs: eight, windowSecs: 43_200n }, config)).toBeUndefined();
   });
 
   it("names what the program would refuse", () => {
-    expect(templateProblem({ ...template, paidSpots: 0 }, config)).toMatch(/paid spots 0/);
-    expect(templateProblem({ ...template, paidSpots: 21 }, config)).toMatch(/paid spots 21/);
-    expect(templateProblem({ ...template, freeSpots: 7 }, config)).toMatch(/free spots 7/);
-    expect(templateProblem({ ...template, spotPrice: PACK + 1n }, config)).toMatch(/above the maximum pack price/);
-    expect(templateProblem({ ...template, spotPrice: 0n }, config)).toMatch(/above zero/);
+    expect(templateProblem({ ...uniform(0, 2), windowSecs: 43_200n }, config)).toMatch(/paid spots 0/);
+    expect(templateProblem({ ...uniform(21, 2), windowSecs: 43_200n }, config)).toMatch(/paid spots 21/);
+    expect(templateProblem({ ...uniform(10, 7), windowSecs: 43_200n }, config)).toMatch(/free spots 7/);
+    expect(templateProblem({ ...template, spotPrice: 0n }, config)).toMatch(/spot price must be above zero/);
     expect(templateProblem({ ...template, windowSecs: 21_599n }, config)).toMatch(/window/);
     expect(templateProblem({ ...template, windowSecs: 86_401n }, config)).toMatch(/window/);
+  });
+
+  it("names what the program would refuse about the pack list", () => {
+    expect(templateProblem({ ...template, spotPrice: PACK + 1n }, config)).toMatch(/above the average pack price \(25000000\)/);
+    expect(templateProblem({ ...mixedTemplate, spotPrice: 23_750_001n }, config)).toMatch(/above the average pack price \(23750000\)/);
+    expect(templateProblem({ ...template, packs: [] }, config)).toMatch(/0 groups; the program takes 1 to 8/);
+    const nine = Array.from({ length: 9 }, (_, i) => group(`m${i}`, BigInt(30 + i), 1));
+    expect(templateProblem({ ...template, paidSpots: 7, freeSpots: 2, packs: nine }, config)).toMatch(/9 groups; the program takes 1 to 8/);
+    expect(templateProblem({ ...mixedTemplate, packs: [group("a", 0n, 8)] }, config)).toMatch(/pack prices must be above zero/);
+    expect(templateProblem({ ...mixedTemplate, packs: [group("a", 10n, 8), group("b", 20n, 0)] }, config)).toMatch(/at least one pack/);
+    expect(templateProblem({ ...mixedTemplate, packs: [group("a", 10n, 8), group("b", 20n, 1.5)] }, config)).toMatch(/at least one pack/);
+    expect(templateProblem({ ...mixedTemplate, packs: [group("a", 10n, 4), group("b", 25n, 2), group("c", 50n, 1)] }, config)).toMatch(/packs add up to 7 but the break has 8 spots/);
+    expect(templateProblem({ ...mixedTemplate, packs: [...mixed.packs, group("d", 60n, 1)] }, config)).toMatch(/packs add up to 9 but the break has 8 spots/);
+    expect(templateProblem({ ...mixedTemplate, packs: [group("top", 50n, 2), group("mid", 25n, 2), group("cheap", 10n, 4)] }, config)).toMatch(/not listed cheapest first/);
+  });
+
+  it("names a list of more than 64 packs, if the program's limits were ever raised that far", () => {
+    const big = { ...config, maxPaidSpots: 65_535, maxFreeSpots: 16 };
+    expect(templateProblem({ ...uniform(60, 5, 10n * D, 10n * D), windowSecs: 43_200n }, big)).toMatch(/65 packs; a break has at most 64/);
+    expect(templateProblem({ ...uniform(60, 4, 10n * D, 10n * D), windowSecs: 43_200n }, big)).toBeUndefined();
   });
 });
 

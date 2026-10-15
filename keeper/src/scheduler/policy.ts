@@ -1,32 +1,62 @@
 // The rules for starting a break, as pure functions: what the treasury must hold, how far the reserve is from that,
 // and whether the break the keeper is configured to make is one the program accepts.
 
-import type { BreaksConfigAccount } from "../solana/breaks.js";
+import { MAX_PACKS, MAX_TIERS, type BreaksConfigAccount, type PackTier } from "../solana/breaks.js";
+
+/** Packs of one machine that may all cost up to the same price: one tier of the break's pack list. */
+export interface PackGroup {
+  /** 32 bytes naming the machine, committed for the whole break. */
+  machine: Uint8Array;
+  /** The most one pack from this machine may cost, micro-USDC. */
+  maxPrice: bigint;
+  /** How many of the break's packs come from it. */
+  count: number;
+}
 
 export interface BreakTemplate {
   paidSpots: number;
   freeSpots: number;
   /** Micro-USDC. */
   spotPrice: bigint;
-  /** The most one pack may cost, micro-USDC. */
-  maxPackPrice: bigint;
-  /** 32 bytes, committed for the whole break. */
-  packMachine: Uint8Array;
+  /**
+   * The packs of the break, cheapest first, as groups. The counts add up to `paidSpots + freeSpots`: one pack per spot.
+   * The first `pool_size` packs are the ones bought, so a break that does not fill drops the most expensive.
+   */
+  packs: PackGroup[];
   /** How long the sale (and the TWAB window) lasts. */
   windowSecs: bigint;
 }
 
 const U64_MAX = (1n << 64n) - 1n;
 
+/** The tiers and the tier of each pack, as `create_break` takes them. */
+export function packListOf(t: Pick<BreakTemplate, "packs">): { tiers: PackTier[]; packs: number[] } {
+  return {
+    tiers: t.packs.map((g) => ({ machine: g.machine, maxPrice: g.maxPrice })),
+    packs: t.packs.flatMap((g, tier) => Array<number>(g.count).fill(tier)),
+  };
+}
+
+/** What the packs of the list cost at most in all, and how many there are. */
+function listTotals(t: Pick<BreakTemplate, "packs">): { total: bigint; count: number } {
+  return { total: t.packs.reduce((sum, g) => sum + g.maxPrice * BigInt(g.count), 0n), count: t.packs.reduce((n, g) => n + g.count, 0) };
+}
+
 /**
- * What the treasury must have unlocked to create the break (programs/breaks `creation_locks`): every paid spot filled
- * (the subsidy bucket tops each up to the pack price) and every free spot drawn (the holder bucket pays a whole pack).
+ * What the treasury must have unlocked to create the break (programs/breaks `creation_locks`): every paid spot filled, so
+ * every pack in the list is bought. A free spot is paid by the holder bucket at the average pack price (rounded down) and
+ * the subsidy bucket pays what the buyers do not: the sum of the prices less the paid spots at the spot price less the
+ * free spots. The spot price may not be above the average pack price.
  */
-export function worstCase(t: Pick<BreakTemplate, "paidSpots" | "freeSpots" | "spotPrice" | "maxPackPrice">): { subsidy: bigint; holder: bigint } {
-  if (t.spotPrice > t.maxPackPrice) throw new RangeError("the spot price is above the maximum pack price");
-  const subsidy = BigInt(t.paidSpots) * (t.maxPackPrice - t.spotPrice);
-  const holder = BigInt(t.freeSpots) * t.maxPackPrice;
-  if (subsidy > U64_MAX || holder > U64_MAX) throw new RangeError("the amounts do not fit in a u64");
+export function worstCase(t: Pick<BreakTemplate, "paidSpots" | "freeSpots" | "spotPrice" | "packs">): { subsidy: bigint; holder: bigint } {
+  const spots = t.paidSpots + t.freeSpots;
+  const { total, count } = listTotals(t);
+  if (spots === 0 || count !== spots) throw new RangeError(`the pack list has ${count} packs for ${spots} spots`);
+  if (total > U64_MAX) throw new RangeError("the amounts do not fit in a u64");
+  const average = total / BigInt(spots);
+  if (t.spotPrice > average) throw new RangeError("the spot price is above the average pack price");
+  const holder = BigInt(t.freeSpots) * average;
+  const subsidy = total - BigInt(t.paidSpots) * t.spotPrice - holder;
   return { subsidy, holder };
 }
 
@@ -45,7 +75,7 @@ export interface ReserveProgress {
 }
 
 export function reserveProgress(
-  t: Pick<BreakTemplate, "paidSpots" | "freeSpots" | "spotPrice" | "maxPackPrice">,
+  t: Pick<BreakTemplate, "paidSpots" | "freeSpots" | "spotPrice" | "packs">,
   available: { subsidy: bigint; holder: bigint },
 ): ReserveProgress {
   const need = worstCase(t);
@@ -70,8 +100,16 @@ export function reserveProgress(
 export function templateProblem(t: BreakTemplate, config: BreaksConfigAccount): string | undefined {
   if (t.paidSpots < 1 || t.paidSpots > config.maxPaidSpots) return `paid spots ${t.paidSpots} is outside 1..${config.maxPaidSpots} that the program allows`;
   if (t.freeSpots < 0 || t.freeSpots > config.maxFreeSpots) return `free spots ${t.freeSpots} is outside 0..${config.maxFreeSpots} that the program allows`;
-  if (t.spotPrice <= 0n || t.maxPackPrice <= 0n) return "the prices must be above zero";
-  if (t.spotPrice > t.maxPackPrice) return "the spot price is above the maximum pack price";
+  if (t.spotPrice <= 0n) return "the spot price must be above zero";
+  if (t.packs.length < 1 || t.packs.length > MAX_TIERS) return `the pack list has ${t.packs.length} groups; the program takes 1 to ${MAX_TIERS}`;
+  if (t.packs.some((g) => g.maxPrice <= 0n)) return "the pack prices must be above zero";
+  if (t.packs.some((g) => !Number.isInteger(g.count) || g.count < 1)) return "every group of packs needs at least one pack";
+  const { total, count } = listTotals(t);
+  if (count !== t.paidSpots + t.freeSpots) return `the packs add up to ${count} but the break has ${t.paidSpots + t.freeSpots} spots (paid and free): one pack per spot`;
+  if (count > MAX_PACKS) return `${count} packs; a break has at most ${MAX_PACKS}`;
+  if (t.packs.some((g, i) => i > 0 && g.maxPrice < (t.packs[i - 1] as PackGroup).maxPrice)) return "the packs are not listed cheapest first";
+  const average = total / BigInt(count);
+  if (t.spotPrice > average) return `the spot price is above the average pack price (${average}): a markup is not supported`;
   if (t.windowSecs < config.minWindowSecs || t.windowSecs > config.maxWindowSecs) {
     return `the window of ${t.windowSecs} s is outside ${config.minWindowSecs}..${config.maxWindowSecs} s that the program allows`;
   }

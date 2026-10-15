@@ -24,6 +24,7 @@ import { associatedTokenAddress } from "../src/solana/pubkey.js";
 import { ORAO_PROGRAM } from "../src/solana/breaks.js";
 import { addr, BUYER } from "./support/chain.js";
 import { MockChain } from "./support/mock-chain.js";
+import { oneMachine } from "./support/packs.js";
 import { KEEPER, PROGRAMS } from "./support/world.js";
 
 const D = 1_000_000n;
@@ -179,7 +180,7 @@ describe("a list of one tier", () => {
       packs: Array<number>(paid + free).fill(0),
     });
     expect(created.outcome).toBe("confirmed");
-    const { subsidy, holder } = worstCase({ paidSpots: paid, freeSpots: free, spotPrice: spot * D, maxPackPrice: pack * D });
+    const { subsidy, holder } = worstCase({ paidSpots: paid, freeSpots: free, spotPrice: spot * D, packs: oneMachine("m", pack * D, paid + free) });
     expect(chain.treasury.config).toMatchObject({ lockedSubsidy: subsidy, lockedHolder: holder });
   });
 });

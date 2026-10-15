@@ -9,6 +9,7 @@ import { ORAO_PROGRAM, createBreak } from "../src/solana/breaks.js";
 import { addr, BUYER } from "./support/chain.js";
 import { migratedDb } from "./support/db.js";
 import { MockChain } from "./support/mock-chain.js";
+import { oneMachine } from "./support/packs.js";
 import { KEEPER, PROGRAMS, logger } from "./support/world.js";
 
 const T0 = 1_800_000_000;
@@ -17,11 +18,10 @@ const TEMPLATE: BreakTemplate = {
   paidSpots: 10,
   freeSpots: 2,
   spotPrice: 20_000_000n,
-  maxPackPrice: 25_000_000n,
-  packMachine: packMachineBytes("pokemon-25"),
+  packs: oneMachine("pokemon-25", 25_000_000n, 12),
   windowSecs: 43_200n,
 };
-const TIERS = [{ machine: TEMPLATE.packMachine, maxPrice: TEMPLATE.maxPackPrice }];
+const TIERS = [{ machine: packMachineBytes("pokemon-25"), maxPrice: 25_000_000n }];
 // What TEMPLATE needs unlocked: 10 * (25 - 20) = $50 of subsidy and 2 * 25 = $50 for the holders.
 const NEED = 50_000_000n;
 
@@ -136,6 +136,51 @@ describe("BreakScheduler", () => {
       // The program model, asked directly, refuses the same break: the check is not more generous than the chain.
       const refused = await short.createByHand(0n, { tiers: TIERS });
       expect(refused).toMatchObject({ outcome: "failed", reason: "InsufficientAvailable" });
+    });
+  });
+
+  describe("a break of several machines", () => {
+    const D = 1_000_000n;
+    const group = (machine: string, dollars: bigint, count: number) => ({ machine: packMachineBytes(machine), maxPrice: dollars * D, count });
+    // 6 paid spots at $20 and 2 free: four $10 packs, two $25 and two $50. $190 over 8 spots is $23.75 on average, so the
+    // free spots are $47.50 from the holder bucket and the subsidy bucket reserves $190 − 6 × $20 − $47.50 = $22.50.
+    const MIXED = { paidSpots: 6, freeSpots: 2, packs: [group("cheap", 10n, 4), group("mid", 25n, 2), group("top", 50n, 2)] };
+    const SUBSIDY = 22_500_000n;
+    const HOLDER = 47_500_000n;
+
+    it("sends the list in order and reserves what the whole list needs", async () => {
+      const s = setup({ template: MIXED, funds: [SUBSIDY, HOLDER] });
+      expect(await s.scheduler.run()).toMatchObject({ kind: "created", breakId: 0n });
+      const b = s.chain.breaks.get(0n)!;
+      expect(b.tiers.map((t) => [Buffer.from(t.machine).toString().replace(/\0+$/, ""), t.maxPrice])).toEqual([["cheap", 10n * D], ["mid", 25n * D], ["top", 50n * D]]);
+      expect(b.packs).toEqual([0, 0, 0, 0, 1, 1, 2, 2]);
+      expect(b).toMatchObject({ paidSpots: 6, freeSpots: 2, lockedSubsidy: SUBSIDY, lockedHolder: HOLDER });
+      expect(s.chain.treasury.config).toMatchObject({ lockedSubsidy: SUBSIDY, lockedHolder: HOLDER });
+    });
+
+    it("agrees with the program model at the boundary: one micro-dollar short waits, and the model refuses the same break", async () => {
+      const short = setup({ template: MIXED, funds: [SUBSIDY - 1n, HOLDER] });
+      expect(await short.scheduler.run()).toMatchObject({ kind: "reserve", progress: { percent: 99, enough: false, requiredSubsidy: SUBSIDY, requiredHolder: HOLDER } });
+      expect(short.chain.sendCalls).toBe(0);
+      const refused = await short.createByHand(0n, { paidSpots: 6, freeSpots: 2, tiers: MIXED.packs.map((g) => ({ machine: g.machine, maxPrice: g.maxPrice })), packs: [0, 0, 0, 0, 1, 1, 2, 2] });
+      expect(refused).toMatchObject({ outcome: "failed", reason: "InsufficientAvailable" });
+      const holder = setup({ template: MIXED, funds: [SUBSIDY, HOLDER - 1n] });
+      expect(await holder.scheduler.run()).toMatchObject({ kind: "reserve", progress: { percent: 99 } });
+    });
+
+    it("does not send a break the program would refuse: a spot price above the average pack price", async () => {
+      const s = setup({ template: { ...MIXED, spotPrice: 23_750_001n }, funds: [10n * SUBSIDY, 10n * HOLDER] });
+      const r = await s.scheduler.run();
+      expect(r).toMatchObject({ kind: "problem" });
+      expect(JSON.stringify(r)).toContain("above the average pack price");
+      expect(s.chain.sendCalls).toBe(0);
+    });
+
+    it("copies a break of several machines into the database as a summary: the machines joined and the highest price", async () => {
+      const s = setup({ template: MIXED, funds: [SUBSIDY, HOLDER] });
+      await s.scheduler.run();
+      await s.scheduler.run();
+      expect(await rows()).toMatchObject([{ onchain_id: "0", pack_machine: "cheap, mid, top", max_pack_price: "50000000", paid_spots: 6, free_spots: 2 }]);
     });
   });
 

@@ -12,7 +12,8 @@ import type { TokenReader } from "../indexer/reader.js";
 import { readTransaction } from "../indexer/parse.js";
 import type { AccountReader } from "../pipeline/chain.js";
 import { OraoVrf } from "../pipeline/vrf.js";
-import { reserveProgress, templateProblem, unlocked } from "../scheduler/policy.js";
+import { packMachineLabel } from "../scheduler/machine.js";
+import { type PackGroup, reserveProgress, templateProblem, unlocked } from "../scheduler/policy.js";
 import { configAddress, decodeBreaksConfig, treasuryAuthorityAddress } from "../solana/breaks.js";
 import { assertCluster } from "../solana/cluster.js";
 import { UPGRADEABLE_LOADER } from "../solana/instruction.js";
@@ -99,6 +100,8 @@ export function amount(value: bigint, decimals: number): string {
   return `${group(whole)}${frac ? `.${frac}` : ""}`;
 }
 const usd = (micro: bigint) => `$${amount(micro, 6)}`;
+/** "4 × pokemon-10 up to $10, 2 × grail-50 up to $50": the packs of the configured break, cheapest first. */
+const describePacks = (groups: readonly PackGroup[]) => groups.map((g) => `${g.count} × ${packMachineLabel(g.machine)} up to ${usd(g.maxPrice)}`).join(", ");
 const sol = (lamports: bigint) => `${amount(lamports, 9)} SOL`;
 
 // ---------------------------------------------------------------------------------------------- rules
@@ -576,7 +579,7 @@ const DEFS: Def[] = [
       const t = cfg.scheduler.template;
       return problem
         ? fail(problem, "change the BREAK_* settings, or the admin's limits")
-        : ok(`${t.paidSpots} paid spots at ${usd(t.spotPrice)}, ${t.freeSpots} free, packs up to ${usd(t.maxPackPrice)}, open ${t.windowSecs} s`);
+        : ok(`${t.paidSpots} paid spots at ${usd(t.spotPrice)}, ${t.freeSpots} free, packs ${describePacks(t.packs)}, open ${t.windowSecs} s`);
     },
   },
   {

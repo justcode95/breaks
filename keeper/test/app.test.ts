@@ -17,6 +17,7 @@ import { encodeBreak } from "./support/accounts.js";
 import { ScriptedPoster, brk } from "./support/bot.js";
 import { addr } from "./support/chain.js";
 import { insertBreak, migratedDb } from "./support/db.js";
+import { oneMachine } from "./support/packs.js";
 import { packMachineBytes } from "../src/scheduler/machine.js";
 import { MINT, TokenLedger } from "./support/token-ledger.js";
 import { ANSWER, KEEPER, ORAO_TREASURY, PROGRAMS, logger, world } from "./support/world.js";
@@ -42,7 +43,7 @@ const config: AppConfig = {
   },
   scheduler: {
     enabled: true,
-    template: { paidSpots: 3, freeSpots: 2, spotPrice: 20_000_000n, maxPackPrice: 25_000_000n, packMachine: packMachineBytes("pokemon-25"), windowSecs: 21_600n },
+    template: { paidSpots: 3, freeSpots: 2, spotPrice: 20_000_000n, packs: oneMachine("pokemon-25", 25_000_000n, 5), windowSecs: 21_600n },
   },
 };
 
@@ -430,6 +431,84 @@ describe("the jobs, from an empty chain", () => {
     expect(new Set(winners).size).toBe(2);
     const delivered = await db.query<{ status: string }>("select d.status from deliveries d join breaks b on b.id = d.break_id where b.onchain_id = 0");
     expect(delivered.rows).toHaveLength(5);
+  });
+});
+
+describe("the jobs, with a pack list of several machines", () => {
+  const D = 1_000_000n;
+  const group = (machine: string, dollars: bigint, count: number) => ({ machine: packMachineBytes(machine), maxPrice: dollars * D, count });
+  // 3 paid spots at $20 and 2 free: two $10 packs, two $25 and one $50: $120, or $24 on average. The free spots are $48 from
+  // the holder bucket, the buyers pay $60 and the subsidy bucket the other $12.
+  const template = { paidSpots: 3, freeSpots: 2, spotPrice: 20_000_000n, packs: [group("cheap", 10n, 2), group("mid", 25n, 2), group("top", 50n, 1)], windowSecs: 21_600n };
+
+  /** Runs the keeper from an empty chain, with the mock pack provider's live price set to `price`, until `done` or 40 ticks. */
+  async function run(price: bigint, done: (status: string | undefined) => boolean) {
+    const db = shared;
+    const w = world({ status: "Open", id: 8n });
+    const { log, errors } = logger();
+    w.chain.breaks.clear();
+    w.chain.spots.clear();
+    w.chain.config.nextBreakId = 0n;
+    w.chain.treasury.subsidyVault = 12_000_000n;
+    w.chain.treasury.holderVault = 48_000_000n;
+
+    let clock = Number(w.chain.unixTime) * 1000;
+    const startSecs = clock / 1000;
+    await db.exec("truncate breaks, indexed_accounts, balance_events, indexer_state cascade");
+    await db.query("delete from exclusions");
+    const ledger = new TokenLedger(startSecs - 5000);
+    const holders = [1, 2, 3, 4, 5, 6].map((n) => ledger.holder(`holder${n}`));
+    ledger.at(startSecs - 4000);
+    for (const [i, h] of holders.entries()) ledger.mintTo(h, BigInt((i + 1) * 1000));
+
+    const cfg = { ...config, mockPackPrice: price, scheduler: { enabled: true, template } };
+    const jobs = await buildJobs(cfg, { sql: db, chain: w.chain, reader: ledger, wallets: w.chain, keeper: KEEPER, log, now: () => new Date(clock) });
+    const runner = createRunner(jobs, { now: () => new Date(clock), log });
+    const status = async () => (await db.query<{ status: string }>("select status from breaks where onchain_id = 0")).rows[0]?.status;
+    const tick = async () => {
+      w.chain.unixTime = BigInt(Math.floor(clock / 1000));
+      await runner.tick();
+      clock += 1000;
+    };
+
+    await tick();
+    await tick();
+    const created = w.chain.breaks.get(0n)!;
+    for (let i = 0; i < 3; i++) w.chain.addSpot({ breakId: 0n, index: i, owner: addr(10 + i), paid: 20_000_000n, refunded: false, bump: 255 });
+    created.spotsSold = 3;
+    clock = (Number(created.closesAt) + 120 + 120 + 10) * 1000;
+    for (let i = 0; i < 40 && !done(await status()); i++) {
+      await tick();
+      const b = w.chain.breaks.get(0n)!;
+      if (b.status === "RandomnessRequested") w.chain.fulfill(requestAddress(ORAO_PROGRAM, b.randomnessRequestId), ANSWER);
+    }
+    return { db, w, errors, status };
+  }
+
+  it("creates the break with the list, funds exactly its packs, buys each one and delivers every card", async () => {
+    const { db, w, errors, status } = await run(10n * D, (st) => st === "delivered");
+    expect(await status()).toBe("delivered");
+    expect(errors).toEqual([]);
+    const b = w.chain.breaks.get(0n)!;
+    expect(b.packs).toEqual([0, 0, 1, 1, 2]);
+    expect(b.tiers.map((t) => t.maxPrice)).toEqual([10n * D, 25n * D, 50n * D]);
+    // $120 of packs: $60 from the buyers, $12 from the subsidy bucket and $48 from the holder bucket. Nothing is left.
+    expect(b.packBudget).toBe(120n * D);
+    expect(w.chain.treasury).toMatchObject({ subsidyVault: 0n, holderVault: 0n });
+    expect(w.chain.treasury.config).toMatchObject({ lockedSubsidy: 0n, lockedHolder: 0n });
+    const row = (await db.query<{ pack_machine: string; max_pack_price: string }>("select pack_machine, max_pack_price::text from breaks where onchain_id = 0")).rows[0]!;
+    expect(row).toEqual({ pack_machine: "cheap, mid, top", max_pack_price: "50000000" });
+    expect((await db.query("select d.status from deliveries d join breaks b on b.id = d.break_id where b.onchain_id = 0")).rows).toHaveLength(5);
+  });
+
+  it("buys a pack only while the live price is within that pack's own cap: at $25 the two $10 packs wait", async () => {
+    const { db, w, errors, status } = await run(25n * D, () => false);
+    // The break is paid for, but only the three packs that allow $25 are bought; the pipeline waits for the other two.
+    expect(["funded", "eligibility_committed"]).toContain(await status());
+    expect(w.chain.breaks.get(0n)!.status).toBe("Funded");
+    const packs = (await db.query<{ pack_index: number; status: string }>("select p.pack_index, p.status from packs p join breaks b on b.id = p.break_id where b.onchain_id = 0 order by p.pack_index")).rows;
+    expect(packs.map((p) => [p.pack_index, p.status])).toEqual([[0, "planned"], [1, "planned"], [2, "pulled"], [3, "pulled"], [4, "pulled"]]);
+    expect(errors).toEqual([]);
   });
 });
 
