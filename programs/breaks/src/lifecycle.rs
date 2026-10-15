@@ -4,8 +4,8 @@ use treasury::state::Bucket;
 
 use crate::{
     errors::BreaksError,
-    math,
-    state::{Break, BreakStatus, BreaksConfig, Spot},
+    math, packs,
+    state::{Break, BreakStatus, BreaksConfig, PackTier, Spot, MAX_PACKS, MAX_TIERS},
     treasury_cpi::TreasuryCtx,
     BREAK_SEED, CONFIG_SEED, ESCROW_SEED, SPOT_SEED, TREASURY_AUTHORITY_SEED,
 };
@@ -18,8 +18,10 @@ pub struct CreateBreakParams {
     pub paid_spots: u16,
     pub free_spots: u16,
     pub spot_price: u64,
-    pub max_pack_price: u64,
-    pub pack_machine: [u8; 32],
+    /// The machines the packs come from (1 to `MAX_TIERS`), each with the most one pack from it may cost.
+    pub tiers: Vec<PackTier>,
+    /// The tier of each pack, one per spot (paid and free together), cheapest first. See `packs::check_list`.
+    pub packs: Vec<u8>,
     pub opens_at: i64,
     pub closes_at: i64,
 }
@@ -65,7 +67,8 @@ impl<'info> CreateBreak<'info> {
             p.paid_spots >= 1 && p.paid_spots <= config.max_paid_spots && p.free_spots <= config.max_free_spots,
             BreaksError::InvalidSpotCounts
         );
-        require!(p.spot_price > 0 && p.max_pack_price > 0, BreaksError::InvalidPrice);
+        require!(p.spot_price > 0, BreaksError::InvalidPrice);
+        packs::check_list(&p.tiers, &p.packs, p.paid_spots, p.free_spots)?;
 
         let now = Clock::get()?.unix_timestamp;
         let window = p.closes_at.checked_sub(p.opens_at).ok_or(BreaksError::InvalidWindow)?;
@@ -74,8 +77,12 @@ impl<'info> CreateBreak<'info> {
             BreaksError::InvalidWindow
         );
 
-        let (lock_subsidy, lock_holder) =
-            math::creation_locks(p.paid_spots, p.free_spots, p.spot_price, p.max_pack_price)?;
+        let (lock_subsidy, lock_holder) = math::creation_locks(
+            p.paid_spots,
+            p.free_spots,
+            p.spot_price,
+            &packs::prices(&p.tiers, &p.packs),
+        )?;
 
         let id = config.next_break_id;
         config.next_break_id = id.checked_add(1).ok_or(BreaksError::MathOverflow)?;
@@ -86,8 +93,11 @@ impl<'info> CreateBreak<'info> {
         b.paid_spots = p.paid_spots;
         b.free_spots = p.free_spots;
         b.spot_price = p.spot_price;
-        b.max_pack_price = p.max_pack_price;
-        b.pack_machine = p.pack_machine;
+        b.tier_count = p.tiers.len() as u8;
+        b.tiers = [PackTier::default(); MAX_TIERS];
+        b.tiers[..p.tiers.len()].copy_from_slice(&p.tiers);
+        b.packs = [0; MAX_PACKS];
+        b.packs[..p.packs.len()].copy_from_slice(&p.packs);
         b.opens_at = p.opens_at;
         b.closes_at = p.closes_at;
         b.spots_sold = 0;
@@ -125,8 +135,8 @@ impl<'info> CreateBreak<'info> {
             paid_spots: p.paid_spots,
             free_spots: p.free_spots,
             spot_price: p.spot_price,
-            max_pack_price: p.max_pack_price,
-            pack_machine: p.pack_machine,
+            tiers: p.tiers,
+            packs: p.packs,
             opens_at: p.opens_at,
             closes_at: p.closes_at,
             locked_subsidy: lock_subsidy,
@@ -328,7 +338,7 @@ impl<'info> FundPurchases<'info> {
             b.free_spots,
             b.eligibility_count,
             b.spot_price,
-            b.max_pack_price,
+            &b.pack_prices(),
             b.locked_subsidy,
             b.locked_holder,
         )?;
@@ -398,8 +408,8 @@ pub struct BreakCreated {
     pub paid_spots: u16,
     pub free_spots: u16,
     pub spot_price: u64,
-    pub max_pack_price: u64,
-    pub pack_machine: [u8; 32],
+    pub tiers: Vec<PackTier>,
+    pub packs: Vec<u8>,
     pub opens_at: i64,
     pub closes_at: i64,
     pub locked_subsidy: u64,

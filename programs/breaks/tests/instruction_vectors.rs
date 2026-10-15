@@ -6,7 +6,7 @@ use anchor_lang::{AccountSerialize, InstructionData, ToAccountMetas};
 use breaks::{
     accounts, instruction,
     randomness::{draw_seed, request_address, request_id},
-    state::{Break, BreakStatus, BreaksConfig, FreeWinner, Spot, MAX_FREE_SPOTS},
+    state::{Break, BreakStatus, BreaksConfig, FreeWinner, PackTier, Spot, MAX_FREE_SPOTS, MAX_PACKS, MAX_TIERS},
     CreateBreakParams, InitializeParams, ProofStepArg,
 };
 use solana_address::Address;
@@ -136,19 +136,26 @@ fn breaks_instruction_vectors() {
         &admin_only(),
     ));
 
+    // A mixed break: 6 paid spots and 2 free ones, packs from three machines, cheapest first.
     cases.push(instruction_case(
         "breaks.create_break",
         &format!(
-            "{{ \"keeper\": \"{keeper}\", \"usdcMint\": \"{mint}\", \"breakId\": \"{break_id}\", \"paidSpots\": 10, \"freeSpots\": 2, \"spotPrice\": \"20000000\", \"maxPackPrice\": \"25000000\", \"packMachine\": \"{}\", \"opensAt\": \"1800000000\", \"closesAt\": \"1800021600\" }}",
-            hex(&arr32(0x77))
+            "{{ \"keeper\": \"{keeper}\", \"usdcMint\": \"{mint}\", \"breakId\": \"{break_id}\", \"paidSpots\": 6, \"freeSpots\": 2, \"spotPrice\": \"20000000\", \"tiers\": [ {{ \"machine\": \"{}\", \"maxPrice\": \"10000000\" }}, {{ \"machine\": \"{}\", \"maxPrice\": \"25000000\" }}, {{ \"machine\": \"{}\", \"maxPrice\": \"50000000\" }} ], \"packs\": [0, 0, 0, 0, 1, 1, 2, 2], \"opensAt\": \"1800000000\", \"closesAt\": \"1800021600\" }}",
+            hex(&arr32(0x71)),
+            hex(&arr32(0x72)),
+            hex(&arr32(0x73))
         ),
         &instruction::CreateBreak {
             params: CreateBreakParams {
-                paid_spots: 10,
+                paid_spots: 6,
                 free_spots: 2,
                 spot_price: 20_000_000,
-                max_pack_price: 25_000_000,
-                pack_machine: arr32(0x77),
+                tiers: vec![
+                    PackTier { machine: arr32(0x71), max_price: 10_000_000 },
+                    PackTier { machine: arr32(0x72), max_price: 25_000_000 },
+                    PackTier { machine: arr32(0x73), max_price: 50_000_000 },
+                ],
+                packs: vec![0, 0, 0, 0, 1, 1, 2, 2],
                 opens_at: 1_800_000_000,
                 closes_at: 1_800_021_600,
             },
@@ -397,14 +404,30 @@ fn breaks_instruction_vectors() {
         start: 40,
         weight: u64::MAX / 3,
     };
+    let mut sample_tiers = [PackTier::default(); MAX_TIERS];
+    sample_tiers[0] = PackTier {
+        machine: arr32(0x71),
+        max_price: 10_000_000,
+    };
+    sample_tiers[1] = PackTier {
+        machine: arr32(0x72),
+        max_price: 25_000_000,
+    };
+    sample_tiers[2] = PackTier {
+        machine: arr32(0x73),
+        max_price: 50_000_000,
+    };
+    let mut sample_packs = [0u8; MAX_PACKS];
+    sample_packs[..12].copy_from_slice(&[0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2]);
     let sample_break = Break {
         id: 7,
         status: BreakStatus::Settled,
         paid_spots: 10,
         free_spots: 2,
         spot_price: 20_000_000,
-        max_pack_price: 25_000_000,
-        pack_machine: arr32(0x77),
+        tier_count: 3,
+        tiers: sample_tiers,
+        packs: sample_packs,
         opens_at: 1_800_000_000,
         closes_at: 1_800_021_600,
         spots_sold: 8,
@@ -415,7 +438,7 @@ fn breaks_instruction_vectors() {
         eligibility_count: 5,
         eligibility_inputs_hash: arr32(0x22),
         pool_size: 10,
-        pack_budget: 250_000_000,
+        pack_budget: 200_000_000,
         pool_hash: arr32(0x33),
         randomness_attempt: 1,
         randomness_request_id: arr32(0x5e),
@@ -443,8 +466,10 @@ fn breaks_instruction_vectors() {
         })
         .collect();
     let break_json = format!(
-        "{{ \"id\": \"7\", \"status\": \"Settled\", \"paidSpots\": 10, \"freeSpots\": 2, \"spotPrice\": \"20000000\", \"maxPackPrice\": \"25000000\", \"packMachine\": \"{}\", \"opensAt\": \"1800000000\", \"closesAt\": \"1800021600\", \"spotsSold\": 8, \"lockedSubsidy\": \"1\", \"lockedHolder\": \"2\", \"eligibilityRoot\": \"{}\", \"eligibilityTotalWeight\": \"1200\", \"eligibilityCount\": 5, \"eligibilityInputsHash\": \"{}\", \"poolSize\": 10, \"packBudget\": \"250000000\", \"poolHash\": \"{}\", \"randomnessAttempt\": 1, \"randomnessRequestId\": \"{}\", \"randomnessRequestedAt\": \"1800030000\", \"seed\": \"{}\", \"seededAt\": \"1800030100\", \"freeWinnerCount\": 2, \"freeWinners\": [ {} ], \"bump\": 254, \"escrowBump\": 253 }}",
-        hex(&arr32(0x77)),
+        "{{ \"id\": \"7\", \"status\": \"Settled\", \"paidSpots\": 10, \"freeSpots\": 2, \"spotPrice\": \"20000000\", \"tiers\": [ {{ \"machine\": \"{}\", \"maxPrice\": \"10000000\" }}, {{ \"machine\": \"{}\", \"maxPrice\": \"25000000\" }}, {{ \"machine\": \"{}\", \"maxPrice\": \"50000000\" }} ], \"packs\": [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2], \"opensAt\": \"1800000000\", \"closesAt\": \"1800021600\", \"spotsSold\": 8, \"lockedSubsidy\": \"1\", \"lockedHolder\": \"2\", \"eligibilityRoot\": \"{}\", \"eligibilityTotalWeight\": \"1200\", \"eligibilityCount\": 5, \"eligibilityInputsHash\": \"{}\", \"poolSize\": 10, \"packBudget\": \"200000000\", \"poolHash\": \"{}\", \"randomnessAttempt\": 1, \"randomnessRequestId\": \"{}\", \"randomnessRequestedAt\": \"1800030000\", \"seed\": \"{}\", \"seededAt\": \"1800030100\", \"freeWinnerCount\": 2, \"freeWinners\": [ {} ], \"bump\": 254, \"escrowBump\": 253 }}",
+        hex(&arr32(0x71)),
+        hex(&arr32(0x72)),
+        hex(&arr32(0x73)),
         hex(&arr32(0x11)),
         hex(&arr32(0x22)),
         hex(&arr32(0x33)),

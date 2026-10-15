@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { type BotSettings, type World, desiredPosts } from "../src/bot/policy.js";
+import { packMachineBytes } from "../src/scheduler/machine.js";
 import type { BreakAccount } from "../src/solana/breaks.js";
 import { HOUR, T0, brk } from "./support/bot.js";
 import { addr } from "./support/chain.js";
@@ -21,6 +22,19 @@ describe("the sale", () => {
     expect(d).toMatchObject({ kind: "open", breakId: 4n, dedupeKey: "open:4" });
     expect(d?.body).toBe("Break #5 is LIVE — 10 paid spots @ $20 + 2 FREE holder spots. Packs: pokemon-25. Closes Jan 15, 20:00 UTC.");
     expect(d?.validUntil).toEqual(at(12n * HOUR));
+  });
+
+  it("says how many machines the packs come from when there are several, and the machine's name when there is one", () => {
+    const cheap = { machine: packMachineBytes("cheap"), maxPrice: 10_000_000n };
+    const top = { machine: packMachineBytes("top"), maxPrice: 50_000_000n };
+    const three = { machine: packMachineBytes("mid"), maxPrice: 25_000_000n };
+    const body = (b: BreakAccount) => desiredPosts(world({ breaks: [b] }), SETTINGS)[0]?.body;
+    expect(body(brk({ tiers: [cheap, three, top], packs: [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2] }))).toBe(
+      "Break #5 is LIVE — 10 paid spots @ $20 + 2 FREE holder spots. Packs: 3 machines. Closes Jan 15, 20:00 UTC.",
+    );
+    // Two tiers from one machine (say, two prices) are still one machine.
+    const same = { machine: packMachineBytes("cheap"), maxPrice: 25_000_000n };
+    expect(body(brk({ tiers: [cheap, same], packs: [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1] }))).toContain("Packs: cheap.");
   });
 
   it("announces nothing for a sale that is over, closed, cancelled, or a break that is further along", () => {

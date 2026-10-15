@@ -5,6 +5,16 @@ import { hashv, utf8 } from "../draw/bytes";
 import { type Address, addressFromBytes } from "./address";
 
 export const MAX_FREE_SPOTS = 16;
+/** The program's limits on a break's pack list: how many tiers it can name and how many packs (= spots) it can have. */
+export const MAX_TIERS = 8;
+export const MAX_PACKS = 64;
+
+/** A Collector Crypt machine and the most one pack from it may cost (USDC base units). */
+export interface PackTier {
+  /** 32 bytes naming the machine. */
+  machine: Uint8Array;
+  maxPrice: bigint;
+}
 
 export type BreakStatus = "Open" | "Closed" | "EligibilityCommitted" | "Funded" | "PoolCommitted" | "RandomnessRequested" | "Settled" | "Drawn" | "Cancelled";
 
@@ -60,10 +70,10 @@ export interface BreakAccount {
   paidSpots: number;
   freeSpots: number;
   spotPrice: bigint;
-  /** The most a pack can cost, committed when the break was created (USDC base units). */
-  maxPackPrice: bigint;
-  /** The 32 bytes naming the Collector Crypt machine / price tier, committed when the break was created. */
-  packMachine: Uint8Array;
+  /** The machines the packs come from, each with the most one pack from it may cost; committed when the break was created. */
+  tiers: PackTier[];
+  /** The tier of each pack, one per spot (paid and free together), cheapest first: a break that does not fill drops the packs at the end. */
+  packs: number[];
   opensAt: bigint;
   closesAt: bigint;
   spotsSold: number;
@@ -89,8 +99,11 @@ export function decodeBreak(data: Uint8Array): BreakAccount {
   const paidSpots = r.u16();
   const freeSpots = r.u16();
   const spotPrice = r.u64();
-  const maxPackPrice = r.u64();
-  const packMachine = r.fixed(32);
+  const tierCount = r.u8();
+  if (tierCount > MAX_TIERS) throw new RangeError(`${tierCount} tiers; at most ${MAX_TIERS}`);
+  const allTiers = Array.from({ length: MAX_TIERS }, () => ({ machine: r.fixed(32), maxPrice: r.u64() }));
+  const allPacks = r.fixed(MAX_PACKS);
+  if (paidSpots + freeSpots > MAX_PACKS) throw new RangeError(`${paidSpots + freeSpots} spots; at most ${MAX_PACKS}`);
   const opensAt = r.i64();
   const closesAt = r.i64();
   const spotsSold = r.u16();
@@ -117,8 +130,8 @@ export function decodeBreak(data: Uint8Array): BreakAccount {
     paidSpots,
     freeSpots,
     spotPrice,
-    maxPackPrice,
-    packMachine,
+    tiers: allTiers.slice(0, tierCount),
+    packs: Array.from(allPacks.subarray(0, paidSpots + freeSpots)),
     opensAt,
     closesAt,
     spotsSold,

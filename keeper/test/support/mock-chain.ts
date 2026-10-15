@@ -259,18 +259,18 @@ export class MockChain implements ChainClient, WalletReader {
     this.require(!!keeper?.isSigner && keeper.pubkey === this.config.keeper, "Unauthorized");
   }
 
-  // programs/breaks/src/lifecycle.rs (`CreateBreak::handle`) and math.rs (`creation_locks`); the escrow account is not
-  // modelled, but its rent is paid. The keeper pays the rent of the two accounts the instruction makes (the break, 1,073 bytes:
-  // 8,358,960 lamports, and the USDC escrow, 165 bytes: 2,039,280) and the fee, and the system program refuses a payment that
-  // leaves the keeper with less than an empty account needs (890,880). The numbers are written out here and not computed
-  // with the keeper's own helper, so a wrong formula there is not repeated here.
+  // programs/breaks/src/lifecycle.rs (`CreateBreak::handle`), packs.rs (`check_list`) and math.rs (`creation_locks`); the escrow
+  // account is not modelled, but its rent is paid. The keeper pays the rent of the two accounts the instruction makes (the
+  // break, 1,418 bytes: 10,760,160 lamports, and the USDC escrow, 165 bytes: 2,039,280) and the fee, and the system program
+  // refuses a payment that leaves the keeper with less than an empty account needs (890,880). The numbers are written out
+  // here and not computed with the keeper's own helper, so a wrong formula there is not repeated here.
   private createBreak(ix: Instruction, args: Reader) {
     this.requireKeeper(ix, 0);
     const paidSpots = args.u16();
     const freeSpots = args.u16();
     const spotPrice = args.u64();
-    const maxPackPrice = args.u64();
-    const packMachine = args.fixed(32);
+    const tiers = Array.from({ length: args.u32() }, () => ({ machine: args.fixed(32), maxPrice: args.u64() }));
+    const packs = Array.from({ length: args.u32() }, () => args.u8());
     const opensAt = args.i64();
     const closesAt = args.i64();
     const key = (i: number) => (ix.accounts[i] as Instruction["accounts"][number]).pubkey;
@@ -283,20 +283,33 @@ export class MockChain implements ChainClient, WalletReader {
     this.require(key(3) === this.config.usdcMint, "ConstraintAddress");
     this.require(key(6) === t.config && key(7) === t.subsidyVault && key(8) === t.holderVault && key(9) === this.programs.treasury, "ConstraintSeeds");
 
-    const paid = 8_358_960n + 2_039_280n + 5_000n;
+    const paid = 10_760_160n + 2_039_280n + 5_000n;
     const held = this.solBalances.get(this.config.keeper) ?? 0n;
     this.require(held >= paid + 890_880n, "InsufficientFundsForRent");
     this.solBalances.set(this.config.keeper, held - paid);
 
     this.require(!this.config.paused, "Paused");
     this.require(paidSpots >= 1 && paidSpots <= this.config.maxPaidSpots && freeSpots <= this.config.maxFreeSpots, "InvalidSpotCounts");
-    this.require(spotPrice > 0n && maxPackPrice > 0n, "InvalidPrice");
+    this.require(spotPrice > 0n, "InvalidPrice");
+    // packs.rs `check_list`: 1 to 8 tiers with a price, one pack per spot (at most 64), every pack names a tier, every tier is
+    // used, and the prices never go down along the list.
+    this.require(tiers.length >= 1 && tiers.length <= 8, "InvalidPackList");
+    this.require(tiers.every((t) => t.maxPrice > 0n), "InvalidPrice");
+    const spots = paidSpots + freeSpots;
+    this.require(spots > 0 && spots <= 64 && packs.length === spots, "InvalidPackList");
+    this.require(packs.every((t) => t < tiers.length), "InvalidPackList");
+    this.require(tiers.every((_, i) => packs.includes(i)), "InvalidPackList");
+    const priceOf = (pack: number) => (tiers[packs[pack] as number] as { maxPrice: bigint }).maxPrice;
+    this.require(packs.every((_, i) => i === 0 || priceOf(i - 1) <= priceOf(i)), "InvalidPackList");
     const window = closesAt - opensAt;
     this.require(closesAt > this.unixTime && window >= this.config.minWindowSecs && window <= this.config.maxWindowSecs, "InvalidWindow");
-    this.require(spotPrice <= maxPackPrice, "SpotPriceAboveMaxPackPrice");
 
-    const lockSubsidy = BigInt(paidSpots) * (maxPackPrice - spotPrice);
-    const lockHolder = BigInt(freeSpots) * maxPackPrice;
+    // math.rs `creation_locks`: the free spots are worth the average pack, and the spot price may not be above it.
+    const total = packs.reduce((sum, _, i) => sum + priceOf(i), 0n);
+    const average = total / BigInt(spots);
+    this.require(spotPrice <= average, "SpotPriceAboveAveragePack");
+    const lockHolder = BigInt(freeSpots) * average;
+    const lockSubsidy = total - BigInt(paidSpots) * spotPrice - lockHolder;
     // The funding rule (treasury lock_funds): each bucket must have that much unlocked.
     this.require(lockSubsidy <= this.treasury.subsidyVault - this.treasury.config.lockedSubsidy, "InsufficientAvailable");
     this.require(lockHolder <= this.treasury.holderVault - this.treasury.config.lockedHolder, "InsufficientAvailable");
@@ -310,8 +323,8 @@ export class MockChain implements ChainClient, WalletReader {
       paidSpots,
       freeSpots,
       spotPrice,
-      maxPackPrice,
-      packMachine,
+      tiers,
+      packs,
       opensAt,
       closesAt,
       spotsSold: 0,
@@ -371,13 +384,25 @@ export class MockChain implements ChainClient, WalletReader {
     const drawnFree = Math.min(b.freeSpots, b.eligibilityCount);
     const poolSize = b.spotsSold + drawnFree;
     this.require(poolSize > 0, "EmptyPool");
+    // The packs bought are the first `poolSize` of the list, and the buyers must not have paid more than those packs cost on
+    // average (a break nobody paid for has nothing to protect).
+    this.require(poolSize <= b.packs.length, "InvalidPackList");
+    const priceOf = (pack: number) => (b.tiers[b.packs[pack] as number] as { maxPrice: bigint }).maxPrice;
+    const budget = b.packs.slice(0, poolSize).reduce((sum, _, i) => sum + priceOf(i), 0n);
+    const average = budget / BigInt(poolSize);
+    this.require(b.spotsSold === 0 || b.spotPrice <= average, "PacksWorthLessThanSpots");
     b.poolSize = poolSize;
-    b.packBudget = BigInt(poolSize) * b.maxPackPrice;
+    b.packBudget = budget;
     // The pack budget leaves the treasury's locked funds and what was not needed is unlocked. A break that was not
     // created through `create_break` (the test fixtures) holds no locks and leaves the treasury alone.
     if (b.lockedSubsidy > 0n || b.lockedHolder > 0n) {
-      const fromSubsidy = BigInt(b.spotsSold) * (b.maxPackPrice - b.spotPrice);
-      const fromHolder = BigInt(drawnFree) * b.maxPackPrice;
+      let fromHolder = BigInt(drawnFree) * average;
+      let fromSubsidy = budget - BigInt(b.spotsSold) * b.spotPrice - fromHolder;
+      // Rounding dust (the average is rounded down) is covered by the holder lock.
+      if (fromSubsidy > b.lockedSubsidy) {
+        fromHolder += fromSubsidy - b.lockedSubsidy;
+        fromSubsidy = b.lockedSubsidy;
+      }
       this.require(fromSubsidy <= b.lockedSubsidy && fromHolder <= b.lockedHolder, "InsufficientLocked");
       this.treasury.subsidyVault -= fromSubsidy;
       this.treasury.holderVault -= fromHolder;

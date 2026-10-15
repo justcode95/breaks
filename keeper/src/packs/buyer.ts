@@ -18,15 +18,20 @@ import type { Job, JobContext, Logger } from "../job.js";
 import { type PackKey, type PackProvider, PriceAboveCapError, keyString } from "./provider.js";
 import type { PackRow, PackStore } from "./store.js";
 
+/** One pack to buy: the machine and the most it may cost (micro-USDC). */
+export interface PlannedPack {
+  machine: string;
+  maxPrice: bigint;
+}
+
 export interface BreakPlan {
   /** `breaks.id` as text. */
   breakId: string;
   /** Packs to buy: sold paid spots plus drawn free spots (`pool_size` on-chain). */
   poolSize: number;
-  machine: string;
-  /** `max_pack_price` of the break, micro-USDC. */
-  maxPackPrice: bigint;
-  /** What the buyer wallet was funded with: `pool_size × max_pack_price`. */
+  /** The packs to buy, in the break's list order: pack `i` is `packs[i]`. Exactly `poolSize` of them. */
+  packs: PlannedPack[];
+  /** What the buyer wallet was funded with: the prices of the `poolSize` packs added up. */
   packBudget: bigint;
 }
 
@@ -152,9 +157,11 @@ export class PackBuyer {
       return { row: await this.reload(key), progressed: won };
     }
 
+    const pack = plan.packs[key.index];
+    if (!pack) throw new RangeError(`the plan has no pack ${key.index}`);
     let prepared;
     try {
-      prepared = await provider.prepare(key, { machine: plan.machine, maxPrice: plan.maxPackPrice });
+      prepared = await provider.prepare(key, { machine: pack.machine, maxPrice: pack.maxPrice });
     } catch (err) {
       if (err instanceof PriceAboveCapError) {
         log.info("pack not bought: price above the cap", { pack: keyString(key), live: String(err.livePrice) });
@@ -164,8 +171,8 @@ export class PackBuyer {
       throw err;
     }
     // Do not trust the provider with the money: re-check what it built.
-    if (prepared.price <= 0n || prepared.price > plan.maxPackPrice) {
-      throw new Error(`provider built a purchase for ${prepared.price}, outside 1..${plan.maxPackPrice}`);
+    if (prepared.price <= 0n || prepared.price > pack.maxPrice) {
+      throw new Error(`provider built a purchase for ${prepared.price}, outside 1..${pack.maxPrice}`);
     }
     if (!prepared.signature || !prepared.expiry) throw new Error("provider built a purchase without a signature or expiry");
 
@@ -267,10 +274,12 @@ function checkPlan(plan: BreakPlan): void {
   if (!Number.isInteger(plan.poolSize) || plan.poolSize < 0 || plan.poolSize > 0xffff) {
     throw new RangeError(`bad pool size ${plan.poolSize}`);
   }
-  if (plan.maxPackPrice <= 0n) throw new RangeError("max pack price must be positive");
-  if (plan.packBudget !== plan.maxPackPrice * BigInt(plan.poolSize)) {
-    // The program funds exactly pool_size × max_pack_price. Anything else means the plan came from bad data.
-    throw new RangeError(`pack budget ${plan.packBudget} is not pool size × max pack price`);
+  if (plan.packs.length !== plan.poolSize) throw new RangeError(`the plan lists ${plan.packs.length} packs for a pool of ${plan.poolSize}`);
+  if (plan.packs.some((p) => p.maxPrice <= 0n)) throw new RangeError("max pack price must be positive");
+  const total = plan.packs.reduce((sum, p) => sum + p.maxPrice, 0n);
+  if (plan.packBudget !== total) {
+    // The program funds exactly the prices of the first pool_size packs. Anything else means the plan came from bad data.
+    throw new RangeError(`pack budget ${plan.packBudget} is not the sum of the pack prices ${total}`);
   }
 }
 

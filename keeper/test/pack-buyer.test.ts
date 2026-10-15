@@ -19,7 +19,7 @@ import { insertBreak, migratedDb } from "./support/db.js";
 const PRICE = 25_000_000n;
 
 function plan(breakId: string, poolSize = 4, maxPackPrice = PRICE): BreakPlan {
-  return { breakId, poolSize, machine: "pokemon-25", maxPackPrice, packBudget: maxPackPrice * BigInt(poolSize) };
+  return { breakId, poolSize, packs: Array.from({ length: poolSize }, () => ({ machine: "pokemon-25", maxPrice: maxPackPrice })), packBudget: maxPackPrice * BigInt(poolSize) };
 }
 
 function logger() {
@@ -84,6 +84,72 @@ describe("PackBuyer: the normal path", () => {
     await expect(buyer().buyBreak({ ...plan("1"), packBudget: 1n })).rejects.toThrow(RangeError);
     await expect(buyer().buyBreak(plan("1", -1))).rejects.toThrow(RangeError);
     await expect(buyer().buyBreak(plan("1", 70_000))).rejects.toThrow(RangeError);
+    expect(mock.prepareCalls).toBe(0);
+  });
+});
+
+describe("PackBuyer: packs of different prices", () => {
+  const D = 1_000_000n;
+  /** Two $10 packs, a $25 and a $50 one: the cheapest first, like the break's list. */
+  const mixed = (breakId = "1"): BreakPlan => {
+    const packs = [
+      { machine: "cheap", maxPrice: 10n * D },
+      { machine: "cheap", maxPrice: 10n * D },
+      { machine: "mid", maxPrice: 25n * D },
+      { machine: "top", maxPrice: 50n * D },
+    ];
+    return { breakId, poolSize: 4, packs, packBudget: 95n * D };
+  };
+
+  it("buys each pack from its own machine", async () => {
+    const { mock, buyer } = setup({ price: 10n * D });
+    const progress = await buyer().buyBreak(mixed());
+    expect(progress).toMatchObject({ total: 4, pulled: 4, complete: true });
+    expect([0, 1, 2, 3].map((i) => mock.machineFor(key("1", i)))).toEqual(["cheap", "cheap", "mid", "top"]);
+  });
+
+  it("holds a pack back when the live price is above that pack's own cap, and buys the packs it covers", async () => {
+    // $25 is within the caps of the $25 and the $50 pack, and above the caps of the two $10 packs.
+    const { mock, buyer } = setup({ price: 25n * D });
+    const progress = await buyer().buyBreak(mixed());
+    expect(progress).toMatchObject({ pulled: 2, waiting: 2, complete: false });
+    expect(progress.packs[0]?.lastError).toMatch(/above the cap/);
+    expect(progress.packs[1]?.lastError).toMatch(/above the cap/);
+    expect([0, 1, 2, 3].map((i) => mock.machineFor(key("1", i)))).toEqual([undefined, undefined, "mid", "top"]);
+    expect(mock.moneySpent()).toBe(50n * D);
+  });
+
+  it("does not trust a provider that builds a purchase above the cap of its own pack, even if another pack allows it", async () => {
+    const mock = new MockPackProvider(10n * D);
+    const greedy: PackProvider = {
+      findExisting: (k) => mock.findExisting(k),
+      // $11 is fine for the $25 and $50 packs but not for a $10 one.
+      prepare: async (k, o) => ({ ...(await mock.prepare(k, o)), price: 11n * D }),
+      submit: (p) => mock.submit(p),
+      status: (s, e) => mock.status(s, e),
+      reveal: (s) => mock.reveal(s),
+    };
+    const { buyer, store, errors } = setup({ provider: greedy });
+    const progress = await buyer().buyBreak(mixed());
+    // The two $10 packs are refused (nothing saved, nothing sent); the $25 and the $50 pack take a price of $11.
+    expect(progress).toMatchObject({ pulled: 2, waiting: 2 });
+    expect(errors).toHaveLength(2);
+    for (const i of [0, 1]) {
+      expect(await store.attempts(key("1", i))).toEqual([]);
+      expect(mock.machineFor(key("1", i))).toBeUndefined();
+    }
+    for (const i of [2, 3]) expect(await store.attempts(key("1", i))).toHaveLength(1);
+  });
+
+  it("refuses a plan that does not list exactly the pool's packs, or whose budget is not their sum", async () => {
+    const { mock, buyer } = setup();
+    await expect(buyer().buyBreak({ ...mixed(), poolSize: 3 })).rejects.toThrow(/lists 4 packs for a pool of 3/);
+    await expect(buyer().buyBreak({ ...mixed(), packs: mixed().packs.slice(0, 3) })).rejects.toThrow(/lists 3 packs for a pool of 4/);
+    await expect(buyer().buyBreak({ ...mixed(), packBudget: 100n * D })).rejects.toThrow(/not the sum of the pack prices 95000000/);
+    // A budget that is pool size × the highest price (the old rule) is no longer the budget.
+    await expect(buyer().buyBreak({ ...mixed(), packBudget: 200n * D })).rejects.toThrow(RangeError);
+    const free = { ...mixed(), packs: mixed().packs.map((p) => ({ ...p, maxPrice: 0n })), packBudget: 0n };
+    await expect(buyer().buyBreak(free)).rejects.toThrow(/must be positive/);
     expect(mock.prepareCalls).toBe(0);
   });
 });

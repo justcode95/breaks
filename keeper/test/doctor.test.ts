@@ -682,10 +682,10 @@ describe("set up on the chain", () => {
 });
 
 describe("the keeper's wallet", () => {
-  // creating a break: 8,358,960 + 2,039,280 rent, 5,000 fee, 890,880 kept = 11,294,120.
+  // creating a break: 10,760,160 + 2,039,280 rent, 5,000 fee, 890,880 kept = 13,695,320.
   // one whole break with 2 free spots: + 8 more transactions at 5,000, ORAO's fee 300,000 and its request account's rent 6,103,920.
-  const create = 11_294_120n;
-  const cycle = 17_738_040n;
+  const create = 13_695_320n;
+  const cycle = 20_139_240n;
   const holding = async (lamports: bigint, env: Record<string, string> = {}) => {
     const w = await healthyWorld({ env });
     w.node.lamports.set(KEEPER_ADDRESS, lamports);
@@ -695,7 +695,7 @@ describe("the keeper's wallet", () => {
   it("fails below what creating a break needs, to the lamport", async () => {
     const short = await holding(create - 1n);
     expect(short.status).toBe("fail");
-    expect(short.detail).toContain("creating a break needs 0.01129412 SOL");
+    expect(short.detail).toContain("creating a break needs 0.01369532 SOL");
     expect(short.fix).toContain(`solana transfer ${KEEPER_ADDRESS}`);
     expect((await holding(create)).status).toBe("warn");
   });
@@ -707,10 +707,10 @@ describe("the keeper's wallet", () => {
   it("warns below what one break needs all the way through, to the lamport, and is fine at it", async () => {
     const enough = await holding(cycle - 1n);
     expect(enough.status).toBe("warn");
-    expect(enough.detail).toContain("enough to create a break, not to see one through, which needs about 0.01773804 SOL");
+    expect(enough.detail).toContain("enough to create a break, not to see one through, which needs about 0.02013924 SOL");
     const ok = await holding(cycle);
     expect(ok.status).toBe("ok");
-    expect(ok.detail).toContain("seeing one through about 0.01773804 SOL");
+    expect(ok.detail).toContain("seeing one through about 0.02013924 SOL");
   });
 
   it("counts ORAO's fee and a claim for every free spot", async () => {
@@ -1063,15 +1063,15 @@ describe("the rules", () => {
     expect(amount(0n, 6)).toBe("0");
     expect(amount(1n, 6)).toBe("0.000001");
     expect(amount(1_234_567_890_123n, 6)).toBe("1,234,567.890123");
-    expect(amount(11_294_120n, 9)).toBe("0.01129412");
+    expect(amount(13_695_320n, 9)).toBe("0.01369532");
     expect(amount(5n, 0)).toBe("5");
     expect(amount(1_000n, 0)).toBe("1,000");
   });
 
   it("works out what the keeper's wallet needs in SOL, from numbers written out", () => {
-    // 11,294,120 to create a break; with 2 free spots 8 more transactions at 5,000, ORAO's fee, and its request account's rent.
-    expect(keeperSolNeed(2, 300_000n)).toEqual({ create: 11_294_120n, cycle: 17_738_040n });
-    expect(keeperSolNeed(0, 0n)).toEqual({ create: 11_294_120n, cycle: 11_294_120n + 30_000n + 6_103_920n });
+    // 13,695,320 to create a break; with 2 free spots 8 more transactions at 5,000, ORAO's fee, and its request account's rent.
+    expect(keeperSolNeed(2, 300_000n)).toEqual({ create: 13_695_320n, cycle: 20_139_240n });
+    expect(keeperSolNeed(0, 0n)).toEqual({ create: 13_695_320n, cycle: 13_695_320n + 30_000n + 6_103_920n });
     expect(keeperSolNeed(16, 0n).cycle - keeperSolNeed(0, 0n).cycle).toBe(80_000n);
   });
 

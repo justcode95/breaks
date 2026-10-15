@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { breakAddress } from "../../../lib/chain/address";
 import type { Loaded } from "../../../lib/chain/load";
-import { duration, expectedWinners, machineLabel, money, percent, share, spotSlots, stageLabel, steps, tone, utcTime } from "../../../lib/chain/view";
+import { type PackGroup, duration, expectedWinners, machineLabel, money, packGroups, packPriceRange, percent, share, spotSlots, stageLabel, steps, tone, utcTime } from "../../../lib/chain/view";
 import { toHex } from "../../../lib/draw/bytes";
 import { publishedFileUrl, whatIsNeeded } from "../../../lib/published";
 import { SpotSlots } from "../slots";
@@ -25,6 +25,7 @@ export function BreakDetails({ loaded, now, readAt, program, refresh, publishedU
   const poolCommitted = ["PoolCommitted", "RandomnessRequested", "Settled", "Drawn"].includes(b.status);
   const seeded = b.status === "Settled" || b.status === "Drawn";
   const left = b.paidSpots - b.spotsSold;
+  const groups = packGroups(b);
   // The keeper's published files for this break, named by the hashes above; only the ones that exist by now.
   const needed = whatIsNeeded(b);
   const published = publishedUrl
@@ -70,7 +71,7 @@ export function BreakDetails({ loaded, now, readAt, program, refresh, publishedU
         <div className="stat">
           <div className="label">Spot price</div>
           <div className="value">{money(b.spotPrice)}</div>
-          <div className="sub">packs up to {money(b.maxPackPrice)}</div>
+          <div className="sub">{packPriceRange(b)}</div>
         </div>
         <div className="stat">
           <div className="label">{sale.label}</div>
@@ -115,7 +116,24 @@ export function BreakDetails({ loaded, now, readAt, program, refresh, publishedU
           <h2>The break</h2>
           <dl>
             <dt>Packs</dt>
-            <dd>{machineLabel(b.packMachine)}, at most {money(b.maxPackPrice)} each. One pack is bought per spot.</dd>
+            <dd>
+              {groups.length === 1 ? (
+                <>
+                  {machineLabel((groups[0] as PackGroup).machine)}, at most {money((groups[0] as PackGroup).maxPrice)} each. One pack is bought per spot.
+                </>
+              ) : (
+                <>
+                  <ul>
+                    {groups.map((g, i) => (
+                      <li key={i}>
+                        {g.count} × {machineLabel(g.machine)}, at most {money(g.maxPrice)} each
+                      </li>
+                    ))}
+                  </ul>
+                  One pack is bought per spot, the cheapest first: a break that does not fill drops the most expensive packs.
+                </>
+              )}
+            </dd>
             <dt>Window</dt>
             <dd>{utcTime(b.opensAt)} to {utcTime(b.closesAt)}</dd>
             {funded && (

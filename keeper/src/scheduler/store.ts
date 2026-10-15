@@ -1,7 +1,7 @@
 import type { Sql } from "../packs/sql-store.js";
 import { dbStatusOf } from "../pipeline/repo.js";
 import type { BreakAccount } from "../solana/breaks.js";
-import { packMachineLabel } from "./machine.js";
+import { highestPackPrice, packMachinesLabel } from "./machine.js";
 
 /** What the scheduler needs from the database. */
 export interface SchedulerStore {
@@ -22,6 +22,10 @@ export class SqlSchedulerStore implements SchedulerStore {
     return id === null || id === undefined ? undefined : BigInt(id);
   }
 
+  /**
+   * `pack_machine` and `max_pack_price` are a summary of the break's pack list (the machines it buys from and its
+   * highest pack price); the list itself is on chain.
+   */
   async recordBreak(b: BreakAccount, createTx?: string): Promise<void> {
     await this.sql.query(
       `insert into breaks (onchain_id, status, paid_spots, free_spots, spot_price, pack_machine, max_pack_price, opens_at, closes_at, create_tx)
@@ -33,8 +37,8 @@ export class SqlSchedulerStore implements SchedulerStore {
         b.paidSpots,
         b.freeSpots,
         b.spotPrice.toString(),
-        packMachineLabel(b.packMachine),
-        b.maxPackPrice.toString(),
+        packMachinesLabel(b.tiers),
+        highestPackPrice(b.tiers).toString(),
         b.opensAt.toString(),
         b.closesAt.toString(),
         createTx ?? null,

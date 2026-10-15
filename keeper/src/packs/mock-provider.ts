@@ -85,6 +85,11 @@ export class MockPackProvider implements PackProvider {
       .map(([sig]) => sig);
   }
 
+  /** The machine a pack was bought from, if it was bought. */
+  machineFor(key: PackKey): string | undefined {
+    return [...this.landed.values()].find((l) => l.outcome === "confirmed" && keyString(l.key) === keyString(key))?.machine;
+  }
+
   /** Everything spent so far, micro-USDC. */
   moneySpent(): bigint {
     let total = 0n;

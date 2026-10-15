@@ -8,7 +8,7 @@ import { SpotSlots } from "../app/breaks/slots";
 import { type BreakAccount, type BreakStatus, type FreeWinner, decodeBreak } from "../lib/chain/accounts";
 import { breakAddress } from "../lib/chain/address";
 import type { Loaded } from "../lib/chain/load";
-import { MAX_DRAWN_SPOTS, sol, duration, expectedWinners, headline, machineLabel, money, percent, share, spotSlots, steps, tone, utcTime } from "../lib/chain/view";
+import { MAX_DRAWN_SPOTS, sol, duration, expectedWinners, headline, machineLabel, money, packGroups, packPriceRange, percent, share, spotSlots, steps, tone, utcTime } from "../lib/chain/view";
 import { toHex } from "../lib/draw/bytes";
 import { type BreakFields, breakFieldsFromVector, encodeBreak } from "./support/accounts";
 
@@ -22,6 +22,30 @@ const OPENS = 1_800_000_000;
 const CLOSES = 1_800_021_600;
 
 const account = (over: Partial<BreakFields> = {}): BreakAccount => decodeBreak(encodeBreak({ ...SAMPLE, ...over }));
+
+describe("a break's pack list", () => {
+  const D = 1_000_000n;
+  const tier = (machine: number, dollars: bigint) => ({ machine: new Uint8Array(32).fill(machine), maxPrice: dollars * D });
+
+  it("counts the packs that come from each machine, in the order the break lists them", () => {
+    const b = { tiers: [tier(1, 10n), tier(2, 25n), tier(3, 50n)], packs: [0, 0, 0, 0, 1, 1, 2, 2] };
+    expect(packGroups(b).map((g) => [g.maxPrice, g.count])).toEqual([[10n * D, 4], [25n * D, 2], [50n * D, 2]]);
+    expect(packGroups(b)[1]?.machine).toEqual(new Uint8Array(32).fill(2));
+    // The counts add up to the number of spots.
+    expect(packGroups(b).reduce((n, g) => n + g.count, 0)).toBe(b.packs.length);
+  });
+
+  it("names the price of a break with one price, and the range of one with several", () => {
+    expect(packPriceRange({ tiers: [tier(1, 25n)] })).toBe("packs up to $25");
+    expect(packPriceRange({ tiers: [tier(1, 10n), tier(2, 50n)] })).toBe("packs $10 to $50");
+    expect(packPriceRange({ tiers: [tier(1, 10n), tier(2, 25n), tier(3, 50n)] })).toBe("packs $10 to $50");
+    // Two machines at the same price are still one price.
+    expect(packPriceRange({ tiers: [tier(1, 25n), tier(2, 25n)] })).toBe("packs up to $25");
+    // The range is the lowest and the highest, wherever they are in the list.
+    expect(packPriceRange({ tiers: [tier(1, 50n), tier(2, 10n)] })).toBe("packs $10 to $50");
+    expect(packPriceRange({ tiers: [] })).toBe("no packs");
+  });
+});
 
 describe("the figures on a break page", () => {
   it("writes USDC amounts as dollars", () => {
@@ -133,7 +157,7 @@ describe("the spots drawn as coins", () => {
   it("draws nothing when there are too many spots to tell apart", () => {
     expect(spotSlots(account({ paidSpots: MAX_DRAWN_SPOTS - 2, freeSpots: 2, spotsSold: 0, freeWinnerCount: 0, freeWinners: [] }))).toHaveLength(MAX_DRAWN_SPOTS);
     expect(spotSlots(account({ paidSpots: MAX_DRAWN_SPOTS - 1, freeSpots: 2, spotsSold: 0, freeWinnerCount: 0, freeWinners: [] }))).toBeUndefined();
-    expect(renderToStaticMarkup(createElement(SpotSlots, { b: account({ paidSpots: 500, freeSpots: 2, spotsSold: 3, freeWinnerCount: 0, freeWinners: [] }) }))).toBe("");
+    expect(renderToStaticMarkup(createElement(SpotSlots, { b: account({ paidSpots: 62, freeSpots: 2, spotsSold: 3, freeWinnerCount: 0, freeWinners: [] }) }))).toBe("");
   });
 
   it("is a labelled picture with a coin for each spot, ticks for paid spots taken and stars for the free ones", () => {
@@ -236,9 +260,11 @@ describe("the break page", () => {
     expect(t).toContain("Paid spots 8 / 10");
     expect(html).toContain('<div class="bar" role="img" aria-label="8 of 10 paid spots sold"><span style="width:80%"></span></div>');
     expect(t).toContain("Free spots 2 for holders");
-    expect(t).toContain("Spot price $20 packs up to $25");
+    // The sample break lists three machines (5 packs of $10, 4 of $25, 3 of $50), cheapest first.
+    expect(t).toContain("Spot price $20 packs $10 to $50");
     expect(t).toContain("Sale Ended 2027-01-15 14:00 UTC");
-    expect(t).toContain("at most $25 each");
+    expect(t).toContain(`5 × ${"q".repeat(32)}, at most $10 each 4 × ${"r".repeat(32)}, at most $25 each 3 × ${"s".repeat(32)}, at most $50 each`);
+    expect(t).toContain("One pack is bought per spot, the cheapest first: a break that does not fill drops the most expensive packs.");
     expect(t).toContain("2027-01-15 08:00 UTC to 2027-01-15 14:00 UTC");
     for (const hex of [SAMPLE.eligibilityRoot, SAMPLE.poolHash, SAMPLE.seed]) expect(html).toContain(toHex(hex));
     expect(t).toContain("5 · total weight 1200");
@@ -324,7 +350,7 @@ describe("the break page", () => {
     expect(html).toContain("<h2>The spots</h2>");
     expect(html).toContain('aria-label="3 of 10 paid spots taken, 0 of 2 free spots awarded"');
     expect(page({ ...open, status: "Cancelled" })).not.toContain("The spots");
-    expect(page({ ...open, paidSpots: 500 }, CLOSES - 600)).not.toContain("The spots");
+    expect(page({ ...open, paidSpots: 62 }, CLOSES - 600)).not.toContain("The spots");
   });
 
   it("lets the two tables scroll inside labelled, keyboard-reachable boxes, so a phone does not get a wider page", () => {
@@ -387,11 +413,21 @@ describe("the break page", () => {
     expect(at(60)).toContain("1m ago; use Refresh to read it again.");
   });
 
+  it("says it plainly when every pack comes from one machine at one price", () => {
+    const t = text(page({ tiers: [{ machine: new Uint8Array(32).fill(0x77), maxPrice: 25_000_000n }], packs: Array<number>(12).fill(0) }));
+    expect(t).toContain("Spot price $20 packs up to $25");
+    expect(t).toContain(`${"w".repeat(32)}, at most $25 each. One pack is bought per spot.`);
+    expect(t).not.toContain("cheapest first");
+    expect(t).not.toContain("12 ×");
+  });
+
   it("escapes a machine label instead of reading it as markup", () => {
     const label = new Uint8Array(32);
     label.set(new TextEncoder().encode("<b>x</b>&"));
-    const html = page({ packMachine: label });
-    expect(html).toContain("&lt;b&gt;x&lt;/b&gt;&amp;");
-    expect(html).not.toContain("<b>x</b>");
+    for (const tiers of [[{ machine: label, maxPrice: 25_000_000n }], [{ machine: label, maxPrice: 10_000_000n }, ...SAMPLE.tiers.slice(1)]]) {
+      const html = page({ tiers });
+      expect(html).toContain("&lt;b&gt;x&lt;/b&gt;&amp;");
+      expect(html).not.toContain("<b>x</b>");
+    }
   });
 });

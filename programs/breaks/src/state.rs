@@ -49,6 +49,20 @@ pub enum BreakStatus {
 /// Most free spots a break can have (also the capacity of the winner list).
 pub const MAX_FREE_SPOTS: usize = 16;
 
+/// Most packs (so most spots, paid and free together) a break can have.
+pub const MAX_PACKS: usize = 64;
+
+/// Most different pack tiers (a Collector Crypt machine and the most a pack from it may cost) one break can list.
+pub const MAX_TIERS: usize = 8;
+
+/// A Collector Crypt machine / price tier, committed at creation.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default, PartialEq, Eq, Debug, InitSpace)]
+pub struct PackTier {
+    pub machine: [u8; 32],
+    /// The most one pack from this machine may cost (USDC base units). The buyer wallet is funded with exactly this.
+    pub max_price: u64,
+}
+
 /// A recorded free-spot winner: the wallet and the weight range that was drawn.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default, InitSpace)]
 pub struct FreeWinner {
@@ -66,9 +80,13 @@ pub struct Break {
     pub paid_spots: u16,
     pub free_spots: u16,
     pub spot_price: u64,
-    pub max_pack_price: u64,
-    /// Collector Crypt machine / price tier, committed at creation.
-    pub pack_machine: [u8; 32],
+    /// How many of `tiers` are used.
+    pub tier_count: u8,
+    /// The machines the packs of this break come from, committed at creation.
+    pub tiers: [PackTier; MAX_TIERS],
+    /// The tier of each pack, in the order the packs are included: cheapest first, so a break that does not
+    /// fill drops the most expensive packs. Only the first `paid_spots + free_spots` entries are used.
+    pub packs: [u8; MAX_PACKS],
     pub opens_at: i64,
     pub closes_at: i64,
     pub spots_sold: u16,
@@ -81,7 +99,7 @@ pub struct Break {
     pub eligibility_inputs_hash: [u8; 32],
     /// Packs to buy: sold paid spots plus drawn free spots. Set when funded.
     pub pool_size: u16,
-    /// Most the buyer wallet may spend: `pool_size * max_pack_price`. Set when funded.
+    /// Most the buyer wallet may spend: the prices of the first `pool_size` packs added up. Set when funded.
     pub pack_budget: u64,
     pub pool_hash: [u8; 32],
     /// Number of the current randomness request (0 for the first).
@@ -99,6 +117,19 @@ pub struct Break {
 }
 
 impl Break {
+    /// Packs in the full break: one per spot.
+    pub fn pack_count(&self) -> usize {
+        usize::from(self.paid_spots) + usize::from(self.free_spots)
+    }
+
+    /// The most each pack may cost, in the order the packs are included.
+    pub fn pack_prices(&self) -> Vec<u64> {
+        crate::packs::prices(
+            &self.tiers[..usize::from(self.tier_count)],
+            &self.packs[..self.pack_count()],
+        )
+    }
+
     /// Free-spot winners this break will have: the pool minus the paid spots.
     pub fn free_winners_expected(&self) -> u16 {
         self.pool_size - self.spots_sold

@@ -7,6 +7,7 @@ pub mod draw;
 pub mod errors;
 pub mod lifecycle;
 pub mod math;
+pub mod packs;
 pub mod randomness;
 pub mod state;
 pub mod treasury_cpi;

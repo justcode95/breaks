@@ -10,7 +10,7 @@ use anchor_lang::{solana_program::instruction::Instruction, AnchorDeserialize, I
 use breaks::{
     errors::BreaksError,
     randomness::{request_address, request_id as derive_request_id},
-    state::{Break, BreaksConfig},
+    state::{Break, BreaksConfig, PackTier},
     CreateBreakParams,
 };
 use draw_core::Leaf;
@@ -115,16 +115,49 @@ pub fn ix(program_id: Address, accounts: impl ToAccountMetas, data: impl Instruc
     }
 }
 
-/// 10 paid spots at $20 for $25 packs plus 2 free spots, open for 6 hours from `T0`.
+/// A pack tier of machine `machine` whose packs cost at most `dollars`.
+pub fn tier(machine: u8, dollars: u64) -> PackTier {
+    PackTier {
+        machine: [machine; 32],
+        max_price: dollars * USDC,
+    }
+}
+
+/// 10 paid spots at $20 for $25 packs (all from one machine) plus 2 free spots, open for 6 hours from `T0`.
 pub fn params() -> CreateBreakParams {
     CreateBreakParams {
         paid_spots: 10,
         free_spots: 2,
         spot_price: 20 * USDC,
-        max_pack_price: 25 * USDC,
-        pack_machine: [7; 32],
+        tiers: vec![tier(7, 25)],
+        packs: vec![0; 12],
         opens_at: T0,
         closes_at: T0 + 6 * HOUR,
+    }
+}
+
+/// A mixed break: 6 paid spots at $20 and 2 free ones, with packs of $10 (four), $25 (two) and $50 (two), cheapest first.
+/// $190 of packs over 8 spots is $23.75 each on average.
+pub fn mixed() -> CreateBreakParams {
+    CreateBreakParams {
+        paid_spots: 6,
+        free_spots: 2,
+        spot_price: 20 * USDC,
+        tiers: vec![tier(1, 10), tier(2, 25), tier(3, 50)],
+        packs: vec![0, 0, 0, 0, 1, 1, 2, 2],
+        ..params()
+    }
+}
+
+/// The default break with another number of spots, every pack still one tier of `pack_dollars`.
+pub fn uniform(paid_spots: u16, free_spots: u16, spot_dollars: u64, pack_dollars: u64) -> CreateBreakParams {
+    CreateBreakParams {
+        paid_spots,
+        free_spots,
+        spot_price: spot_dollars * USDC,
+        tiers: vec![tier(7, pack_dollars)],
+        packs: vec![0; usize::from(paid_spots) + usize::from(free_spots)],
+        ..params()
     }
 }
 
@@ -685,6 +718,19 @@ impl Env {
 /// A closed break with `sold` spots bought and eligibility committed (`eligible` holders).
 pub fn closed_with(env: &mut Env, sold: u16, eligible: u32) -> (u64, Vec<(Keypair, Address)>) {
     let id = env.create_break();
+    let buyers: Vec<_> = (0..sold).map(|_| env.sell_one(id)).collect();
+    env.after_deadline();
+    let (anyone, _) = env.user(0);
+    env.close(&anyone, id).unwrap();
+    env.commit_eligibility(id, if eligible == 0 { 0 } else { 1_000 }, eligible)
+        .unwrap();
+    (id, buyers)
+}
+
+/// A closed `mixed()` break with `sold` spots bought and eligibility committed (`eligible` holders).
+pub fn mixed_closed(env: &mut Env, sold: u16, eligible: u32) -> (u64, Vec<(Keypair, Address)>) {
+    let id = env.config().next_break_id;
+    env.create_break_with(mixed()).unwrap();
     let buyers: Vec<_> = (0..sold).map(|_| env.sell_one(id)).collect();
     env.after_deadline();
     let (anyone, _) = env.user(0);

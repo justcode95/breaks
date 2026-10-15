@@ -37,6 +37,7 @@ import {
   decodeRequest,
   drawSeed,
   fundPurchases,
+  packCost,
   requestAddress,
   requestId,
   requestRandomness,
@@ -54,8 +55,6 @@ export interface ActiveBreak {
   id: string;
   /** The id used in the program's addresses. */
   onchainId: bigint;
-  /** Collector Crypt machine of the break. */
-  machine: string;
   /** Status as last mirrored in the database. */
   status: string;
 }
@@ -235,6 +234,15 @@ export class BreakPipeline {
 
     const poolSize = b.spotsSold + Math.min(b.freeSpots, b.eligibilityCount);
     if (poolSize === 0) return problem("nothing to fund: no paid spot was sold and nobody is eligible; the admin must cancel this break");
+    // The program does not pay for packs that are worth less than the spots cost on average (math.rs `funding`): the first
+    // `poolSize` packs of the list are the ones bought, so a break that did not fill may have lost its expensive ones.
+    // Only the admin can cancel such a break; the spots are then refunded.
+    const worth = packCost(b, poolSize);
+    if (b.spotsSold > 0 && b.spotPrice * BigInt(poolSize) > worth) {
+      return problem(
+        `the ${poolSize} packs that would be bought cost at most ${worth} in all, less than the ${b.spotsSold} spot(s) paid at ${b.spotPrice} each on average; the program will not fund this break: the admin must cancel it and the spots can be refunded`,
+      );
+    }
 
     // The free-spot winners can only be claimed from the list that was committed, so it must be in hand before money moves.
     const v = await planner.committed(active.id);

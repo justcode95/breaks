@@ -50,6 +50,11 @@ impl Initialize<'_> {
             usize::from(p.max_free_spots) <= crate::state::MAX_FREE_SPOTS,
             BreaksError::InvalidLimits
         );
+        // Every spot has a pack, and a break lists at most `MAX_PACKS` of them.
+        require!(
+            usize::from(p.max_paid_spots) + usize::from(p.max_free_spots) <= crate::state::MAX_PACKS,
+            BreaksError::InvalidLimits
+        );
         require!(p.randomness_timeout_secs > 0, BreaksError::InvalidRandomnessConfig);
 
         let config = &mut self.config;

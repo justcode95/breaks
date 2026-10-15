@@ -13,6 +13,7 @@ import { type Address, addressToBytes, associatedTokenAddress } from "../../src/
 import { addr, BUYER } from "./chain.js";
 import { encodeNetworkState } from "./accounts.js";
 import { MockChain } from "./mock-chain.js";
+import { uniformPacks } from "./packs.js";
 import { MINT, mintAccountData } from "./token-ledger.js";
 
 export const PROGRAMS: Programs = {
@@ -131,8 +132,7 @@ export function world(opts: { paid?: number; free?: number; cardBase?: number; i
     paidSpots: paid,
     freeSpots: free,
     spotPrice: 20_000_000n,
-    maxPackPrice: 25_000_000n,
-    packMachine: new Uint8Array(32).fill(0x77),
+    ...uniformPacks(new Uint8Array(32).fill(0x77), 25_000_000n, paid + free),
     opensAt: 1_800_000_000n,
     closesAt: 1_800_021_600n,
     spotsSold: paid,
@@ -162,7 +162,7 @@ export function world(opts: { paid?: number; free?: number; cardBase?: number; i
 
   chain.tokenAccounts.add(associatedTokenAddress(config.buyer, config.usdcMint));
   const planner = new FakePlanner({ root: tree.root.hash, totalWeight: tree.root.sum, entryCount: leaves.length, inputsHash: new Uint8Array(32).fill(0x22) });
-  const active: ActiveBreak = { id: String(id), onchainId: id, machine: "pokemon-25", status: (opts.status ?? "Funded").toLowerCase() };
+  const active: ActiveBreak = { id: String(id), onchainId: id, status: (opts.status ?? "Funded").toLowerCase() };
   const packs = new MemoryPackStore();
   const transfer = new MockCardTransfer();
   const eligibility = new MemoryEligibility(leaves);
