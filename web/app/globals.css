@@ -1328,3 +1328,27 @@ dd {
   line-height: 1.3;
   padding-block: 0.25rem;
 }
+
+/* the longer "How it works" cards: a title, a few lines and a link, in wider cards than the home page's one-liners */
+.how.long {
+  grid-template-columns: repeat(auto-fit, minmax(min(19rem, 100%), 1fr));
+}
+
+.how.long li {
+  font-weight: 500;
+}
+
+.how.long .title {
+  display: block;
+  margin-bottom: 0.4rem;
+  font-size: 1.15rem;
+  font-weight: 900;
+}
+
+.how.long p {
+  margin: 0.3rem 0 0.7rem;
+}
+
+.how.long a {
+  font-weight: 800;
+}
