@@ -1,8 +1,13 @@
+import { type BreakShape } from "../../lib/chain/reserve";
 import { type BucketView, type Treasury, noController } from "../../lib/chain/treasury";
 import { duration, money, share } from "../../lib/chain/view";
+import { ReserveCard } from "../reserve-card";
 
-/** The treasury as the chain holds it: the buckets, who controls them and the addresses to check. Pure. */
-export function TreasuryDetails({ treasury, program, now, readAt, refresh }: { treasury: Treasury; program: string; now: number; readAt: number; refresh: () => void }) {
+/**
+ * The treasury as the chain holds it: the buckets, who controls them and the addresses to check. With `shape` (what the next break
+ * will be like), the reserve bar is shown first. Pure.
+ */
+export function TreasuryDetails({ treasury, program, now, readAt, refresh, shape }: { treasury: Treasury; program: string; now: number; readAt: number; refresh: () => void; shape?: BreakShape }) {
   const { config: c, subsidy, holder } = treasury;
   const rows: { name: string; pays: string; bps: number; bucket: BucketView }[] = [
     { name: "Subsidy", pays: "tops up the price of a paid spot when a spot costs less than a pack", bps: c.subsidyBps, bucket: subsidy },
@@ -16,6 +21,8 @@ export function TreasuryDetails({ treasury, program, now, readAt, refresh }: { t
 
   return (
     <>
+      {shape && <ReserveCard shape={shape} treasury={treasury} />}
+
       <div className="stats wide">
         <div className="stat">
           <div className="label">Available for new breaks</div>

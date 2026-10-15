@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { MachineArt } from "./icons";
 import { LatestBreak } from "./latest-break";
+import { NextBreak } from "./next-break";
 
 export default function Home() {
   return (
@@ -24,6 +25,7 @@ export default function Home() {
       </section>
 
       <LatestBreak />
+      <NextBreak />
 
       <h2>How it works</h2>
       <ol className="how">
