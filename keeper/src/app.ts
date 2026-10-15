@@ -26,6 +26,7 @@ import { BreakScheduler, schedulerJob } from "./scheduler/scheduler.js";
 import { SqlSchedulerStore } from "./scheduler/store.js";
 import { FeeSweeper, feeSweepJob } from "./sweep/sweeper.js";
 import { SqlSweepStore } from "./sweep/store.js";
+import { RANDOMNESS_REQUEST_ACCOUNT_BYTES, rentExempt } from "./solana/rent.js";
 import type { WalletReader } from "./sweep/wallet.js";
 import { SqlDeliveryStore } from "./delivery/sql-store.js";
 import type { Job, Logger } from "./job.js";
@@ -129,8 +130,8 @@ export async function verifyKeeperIdentity(chain: ChainClient, config: Pick<Conf
   return true;
 }
 
-/** About what the rent of ORAO's request account costs (748 bytes), paid by the keeper on top of ORAO's fee. */
-export const RANDOMNESS_REQUEST_RENT = 6_100_000n;
+/** The rent of ORAO's request account (749 bytes on devnet), paid by the keeper on top of ORAO's fee: about 0.0061 SOL. */
+export const RANDOMNESS_REQUEST_RENT = rentExempt(RANDOMNESS_REQUEST_ACCOUNT_BYTES);
 
 /**
  * Says what ORAO charges and where it goes, from ORAO's network state, and warns if the keeper cannot pay for a request.
@@ -276,6 +277,7 @@ export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]
     store: new SqlSchedulerStore(sql),
     template: config.scheduler.template,
     enabled: config.scheduler.enabled,
+    wallet: wallets,
     now,
   });
   const jobs: Job[] = [indexerJob({ indexer, intervalMs, log }), schedulerJob({ scheduler, intervalMs })];

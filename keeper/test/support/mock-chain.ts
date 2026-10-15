@@ -259,8 +259,11 @@ export class MockChain implements ChainClient, WalletReader {
     this.require(!!keeper?.isSigner && keeper.pubkey === this.config.keeper, "Unauthorized");
   }
 
-  // programs/breaks/src/lifecycle.rs (`CreateBreak::handle`) and math.rs (`creation_locks`); the escrow account and the
-  // rent are not modelled
+  // programs/breaks/src/lifecycle.rs (`CreateBreak::handle`) and math.rs (`creation_locks`); the escrow account is not
+  // modelled, but its rent is paid. The keeper pays the rent of the two accounts the instruction makes (the break, 1,073 bytes:
+  // 8,358,960 lamports, and the USDC escrow, 165 bytes: 2,039,280) and the fee, and the system program refuses a payment that
+  // leaves the keeper with less than an empty account needs (890,880). The numbers are written out here and not computed
+  // with the keeper's own helper, so a wrong formula there is not repeated here.
   private createBreak(ix: Instruction, args: Reader) {
     this.requireKeeper(ix, 0);
     const paidSpots = args.u16();
@@ -279,6 +282,11 @@ export class MockChain implements ChainClient, WalletReader {
     this.require(key(2) === breakAddress(this.programs, id), "ConstraintSeeds");
     this.require(key(3) === this.config.usdcMint, "ConstraintAddress");
     this.require(key(6) === t.config && key(7) === t.subsidyVault && key(8) === t.holderVault && key(9) === this.programs.treasury, "ConstraintSeeds");
+
+    const paid = 8_358_960n + 2_039_280n + 5_000n;
+    const held = this.solBalances.get(this.config.keeper) ?? 0n;
+    this.require(held >= paid + 890_880n, "InsufficientFundsForRent");
+    this.solBalances.set(this.config.keeper, held - paid);
 
     this.require(!this.config.paused, "Paused");
     this.require(paidSpots >= 1 && paidSpots <= this.config.maxPaidSpots && freeSpots <= this.config.maxFreeSpots, "InvalidSpotCounts");

@@ -32,7 +32,7 @@ beforeEach(async () => {
   await db.exec("truncate breaks cascade");
 });
 
-function setup(over: { template?: Partial<BreakTemplate>; enabled?: boolean; retryAfterMs?: number; config?: Partial<MockChain["config"]>; funds?: [bigint, bigint] } = {}) {
+function setup(over: { template?: Partial<BreakTemplate>; enabled?: boolean; retryAfterMs?: number; config?: Partial<MockChain["config"]>; funds?: [bigint, bigint]; sol?: bigint; checkSol?: boolean } = {}) {
   const chain = new MockChain(PROGRAMS, {
     admin: addr(2),
     keeper: KEEPER,
@@ -51,6 +51,8 @@ function setup(over: { template?: Partial<BreakTemplate>; enabled?: boolean; ret
   });
   const clock = { t: T0 };
   chain.unixTime = BigInt(T0);
+  // The keeper pays the rent of the break and its escrow: 5 SOL is plenty unless a test says otherwise.
+  chain.solBalances.set(KEEPER, over.sol ?? 5_000_000_000n);
   const funds = over.funds ?? [NEED, NEED];
   chain.treasury.subsidyVault = funds[0];
   chain.treasury.holderVault = funds[1];
@@ -62,6 +64,7 @@ function setup(over: { template?: Partial<BreakTemplate>; enabled?: boolean; ret
     store,
     template: { ...TEMPLATE, ...over.template },
     enabled: over.enabled ?? true,
+    ...(over.checkSol === false ? {} : { wallet: chain }),
     now: () => new Date(clock.t * 1000),
     ...(over.retryAfterMs !== undefined ? { retryAfterMs: over.retryAfterMs } : {}),
   });
@@ -372,15 +375,79 @@ describe("SqlSchedulerStore", () => {
   });
 });
 
+describe("the keeper's SOL", () => {
+  const COST = 11_294_120n; // rent of the break and its escrow, the fee, and what the wallet keeps: src/solana/rent.ts
+
+  it("holds back a break the keeper cannot pay for and says how much it has and needs, without sending anything", async () => {
+    const s = setup({ sol: 1_000_000n });
+    const r = await s.scheduler.run();
+    expect(r).toEqual({ kind: "funds", have: 1_000_000n, needed: COST, recorded: [] });
+    expect(s.chain.sendCalls).toBe(0);
+    expect(s.chain.breaks.size).toBe(0);
+    expect(await rows()).toEqual([]);
+  });
+
+  it("creates the break once the wallet is topped up, and the rent comes out of it", async () => {
+    const s = setup({ sol: 1_000_000n });
+    expect((await s.scheduler.run()).kind).toBe("funds");
+    s.chain.solBalances.set(KEEPER, COST + 7n);
+    expect((await s.scheduler.run()).kind).toBe("created");
+    // 8,358,960 + 2,039,280 of rent and the 5,000 fee are paid; what is left is what must stay.
+    expect(s.chain.solBalances.get(KEEPER)).toBe(890_887n);
+  });
+
+  it("agrees with the program at the boundary: exactly enough creates, one lamport short waits and would be refused", async () => {
+    const exact = setup({ sol: COST });
+    expect((await exact.scheduler.run()).kind).toBe("created");
+    expect(exact.chain.solBalances.get(KEEPER)).toBe(890_880n);
+
+    const short = setup({ sol: COST - 1n });
+    expect(await short.scheduler.run()).toMatchObject({ kind: "funds", have: COST - 1n, needed: COST });
+    expect(short.chain.sendCalls).toBe(0);
+    // The program model, asked directly, refuses the same break: the check is not more generous than the chain.
+    const refused = await short.createByHand(0n, { packMachine: TEMPLATE.packMachine });
+    expect(refused).toMatchObject({ outcome: "failed", reason: "InsufficientFundsForRent" });
+    expect(short.chain.solBalances.get(KEEPER)).toBe(COST - 1n);
+  });
+
+  it("does not nag while the reserve is short: the reserve is what is waited for first", async () => {
+    const s = setup({ sol: 0n, funds: [NEED, NEED - 1n] });
+    expect((await s.scheduler.run()).kind).toBe("reserve");
+  });
+
+  it("does not matter while a break is selling, when the program is paused or when creation is off", async () => {
+    const selling = setup();
+    expect((await selling.scheduler.run()).kind).toBe("created");
+    selling.chain.solBalances.set(KEEPER, 0n);
+    expect(await selling.scheduler.run()).toMatchObject({ kind: "selling", breakId: 0n });
+
+    expect((await setup({ sol: 0n, config: { paused: true } }).scheduler.run()).kind).toBe("idle");
+    expect((await setup({ sol: 0n, enabled: false }).scheduler.run()).kind).toBe("idle");
+  });
+
+  it("is not checked when the scheduler is not given a way to read the wallet: the program refuses instead", async () => {
+    const s = setup({ sol: 1_000_000n, checkSol: false });
+    expect(await s.scheduler.run()).toMatchObject({ kind: "failed", breakId: 0n, reason: "InsufficientFundsForRent" });
+    expect(s.chain.sendCalls).toBe(1);
+  });
+
+  it("reads the keeper's own wallet", async () => {
+    const s = setup({ sol: COST });
+    s.chain.solBalances.set(addr(77), 0n); // someone else's wallet is no use
+    expect((await s.scheduler.run()).kind).toBe("created");
+  });
+});
+
 describe("schedulerJob", () => {
   function run(reports: (SchedulerReport | Error)[]) {
     const { log, errors, infos } = logger();
     const lines: string[] = [];
     const fake = { run: async () => { const r = reports.shift()!; if (r instanceof Error) throw r; return r; } } as unknown as BreakScheduler;
     const job: Job = schedulerJob({ scheduler: fake, intervalMs: 1000 });
-    const ctx: JobContext = { now: () => new Date(T0 * 1000), log: { info: (m, e) => { infos.push(m); lines.push(`${m} ${JSON.stringify(e ?? {}, (_, v) => (typeof v === "bigint" ? String(v) : v))}`); }, error: (m, e) => { errors.push(m); lines.push(`${m} ${JSON.stringify(e ?? {})}`); } } };
+    const clock = { t: T0 };
+    const ctx: JobContext = { now: () => new Date(clock.t * 1000), log: { info: (m, e) => { infos.push(m); lines.push(`${m} ${JSON.stringify(e ?? {}, (_, v) => (typeof v === "bigint" ? String(v) : v))}`); }, error: (m, e) => { errors.push(m); lines.push(`${m} ${JSON.stringify(e ?? {})}`); } } };
     void log;
-    return { job, ctx, errors, infos, lines };
+    return { job, ctx, errors, infos, lines, clock };
   }
   const reserve = (percent: number): SchedulerReport => ({
     kind: "reserve",
@@ -400,6 +467,36 @@ describe("schedulerJob", () => {
       { kind: "problem", problem: "a", recorded: [] },
       { kind: "problem", problem: "b", recorded: [] },
     ]);
+    for (let i = 0; i < 3; i++) await t.job.run(t.ctx);
+    expect(t.errors).toHaveLength(2);
+  });
+
+  const funds = (have: bigint): SchedulerReport => ({ kind: "funds", have, needed: 11_294_120n, recorded: [] });
+
+  it("says the keeper is short of SOL, with what it has and needs, then stays quiet while nothing changes", async () => {
+    const t = run([funds(1_000n), funds(1_000n), funds(1_000n)]);
+    for (let i = 0; i < 3; i++) await t.job.run(t.ctx);
+    expect(t.errors).toEqual(["the keeper wallet cannot pay for a new break: top it up with SOL"]);
+    expect(t.lines[0]).toBe('the keeper wallet cannot pay for a new break: top it up with SOL {"lamports":"1000","needed":"11294120"}');
+  });
+
+  it("says it again when the balance moves, and once an hour while it stays short", async () => {
+    const t = run([funds(1_000n), funds(2_000n), funds(2_000n), funds(2_000n), funds(2_000n)]);
+    await t.job.run(t.ctx); // first time
+    await t.job.run(t.ctx); // the balance moved
+    expect(t.errors).toHaveLength(2);
+    t.clock.t += 3_599;
+    await t.job.run(t.ctx); // not yet an hour
+    expect(t.errors).toHaveLength(2);
+    t.clock.t += 1;
+    await t.job.run(t.ctx); // an hour since the last time
+    expect(t.errors).toHaveLength(3);
+    await t.job.run(t.ctx); // and the hour starts again
+    expect(t.errors).toHaveLength(3);
+  });
+
+  it("says it afresh when it is short again after having been fine in between", async () => {
+    const t = run([funds(1_000n), { kind: "selling", breakId: 1n, recorded: [] }, funds(1_000n)]);
     for (let i = 0; i < 3; i++) await t.job.run(t.ctx);
     expect(t.errors).toHaveLength(2);
   });
