@@ -1352,3 +1352,24 @@ dd {
 .how.long a {
   font-weight: 800;
 }
+
+/* the reserve bar: the percent big, the striped bar under it, then the two buckets */
+.reserve-percent {
+  margin: 0.2rem 0 0.5rem;
+}
+
+.reserve-percent .amount {
+  margin-right: 0.3rem;
+  color: var(--gold-hi);
+  font-size: 2.3rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.reserve .bar {
+  margin: 0 0 1rem;
+}
+
+.reserve dl {
+  margin: 0.6rem 0;
+}
