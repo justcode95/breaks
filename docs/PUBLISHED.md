@@ -75,7 +75,14 @@ and amounts are whole token base units. A change of owner is two lines, one for 
   accounts, of the balance after each account's last event at or before `t`; an account that has no event before `t` (or
   before the window) is taken to have held `balance after − delta` of its first event until then; the TWAB is the area under
   that balance over the window divided by the window's length, rounded down to a whole base unit. Several events of one token
-  account in one slot have no order of their own: they are put in the order in which each starts where the one before it ended.
+  account in one slot have no order of their own (they share one block time, so no order changes an area, but it decides what
+  the account held before the slot and whether the history adds up): they are put in the first order, trying the published
+  order first at every step, in which each event starts (`balance after − change`) where the one before it ended. The first
+  starts where the account stood before the slot; when nothing is known of the account (these are its first events) it is an
+  event that starts where no other event of the slot ends, or, if they all do, the first in the published order. A slot of
+  more than 24 events on one token account is read in the published order, which then has to chain on its own. A history
+  where an account would have held less than nothing, or where a change does not lead to the next balance (a transaction is
+  missing), is refused, not guessed at.
   A wallet on the list has a weight equal to its TWAB unless the break's rules cap it (a rule that is still being decided);
   the wallets that are not on the list are below the minimum or left out on purpose, and the reasons are not published yet.
 - **Cards.** `sha256("breaks:pool:v1" ‖ mint_0 ‖ mint_1 ‖ …)` over the sorted mints must equal the file's name and the
@@ -83,6 +90,11 @@ and amounts are whole token base units. A change of owner is two lines, one for 
 
 The site's "Verify a draw" page recomputes the draw from these (its own implementation of the tree and the hash, not the
 keeper's).
+
+`docs/twab-vectors.json` is the TWAB made by the keeper's own code from texts in this format: a few dozen cases (every kind of
+refusal, the same-slot rules, and random histories), each the text and the TWAB of every owner or the kind of refusal. The
+keeper's test fails when the file is stale (`UPDATE_TWAB_VECTORS=1 pnpm --filter keeper test` rewrites it), and the
+website's own implementation (`web/lib/twab/`) is tested against it, so the two cannot drift apart.
 
 ## How the website reads them
 
