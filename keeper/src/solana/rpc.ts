@@ -99,16 +99,31 @@ export class RpcClient {
     return this.call<string>("getGenesisHash");
   }
 
+  /** An account, or undefined if it does not exist. `dataSlice` asks the node for only a part of the data (a program's ELF is large). */
   async getAccountInfo(
     address: Address,
-    opts: { commitment: Commitment; minContextSlot?: number },
-  ): Promise<{ data: Uint8Array; owner: Address; slot: number } | undefined> {
-    const result = await this.call<{ context: { slot: number }; value: { data: [string, string]; owner: string } | null }>("getAccountInfo", [
+    opts: { commitment: Commitment; minContextSlot?: number; dataSlice?: { offset: number; length: number } },
+  ): Promise<{ data: Uint8Array; owner: Address; slot: number; lamports: bigint; executable: boolean } | undefined> {
+    const result = await this.call<{
+      context: { slot: number };
+      value: { data: [string, string]; owner: string; lamports: number; executable: boolean } | null;
+    }>("getAccountInfo", [
       address,
-      { encoding: "base64", commitment: opts.commitment, ...(opts.minContextSlot !== undefined ? { minContextSlot: opts.minContextSlot } : {}) },
+      {
+        encoding: "base64",
+        commitment: opts.commitment,
+        ...(opts.minContextSlot !== undefined ? { minContextSlot: opts.minContextSlot } : {}),
+        ...(opts.dataSlice ? { dataSlice: opts.dataSlice } : {}),
+      },
     ]);
     if (!result.value) return undefined;
-    return { data: base64.decode(result.value.data[0]), owner: result.value.owner, slot: result.context.slot };
+    return {
+      data: base64.decode(result.value.data[0]),
+      owner: result.value.owner,
+      slot: result.context.slot,
+      lamports: BigInt(result.value.lamports),
+      executable: result.value.executable,
+    };
   }
 
   /** The lamports an account holds (zero for an account that does not exist). */

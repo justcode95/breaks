@@ -23,6 +23,14 @@ export class FakeNode {
   public lastValidOffset = 150;
   public genesis: string = GENESIS_HASHES.devnet;
   public readonly accounts = new Map<string, Uint8Array>();
+  /** Who owns each account (default: the system program), which are programs, and how many lamports each holds (default 1; `getBalance` answers 0 for an unknown address). */
+  public readonly owners = new Map<string, string>();
+  public readonly executables = new Set<string>();
+  public readonly lamports = new Map<string, bigint>();
+  /** What `getBlockTime` answers: unix seconds, or null when the node has no time for the block. */
+  public blockTime: number | null = null;
+  /** Answers `getBlockTime` by slot instead: a time, null, or "unavailable" (the node has not got that block yet). */
+  public blockTimeAt: ((slot: number) => number | null | "unavailable") | undefined;
   /** Every request, in order. */
   public readonly requests: { method: string; params: unknown[] }[] = [];
   /** Raw transactions the node received. */
@@ -79,8 +87,30 @@ export class FakeNode {
           this.staleReads--;
           return fail(-32016, "Minimum context slot has not been reached");
         }
-        const data = this.readAccount ? await this.readAccount(params[0] as string) : this.accounts.get(params[0] as string);
-        return reply({ context: { slot: this.slot }, value: data ? { data: [base64.encode(data), "base64"], owner: "11111111111111111111111111111111", lamports: 1, executable: false } : null });
+        const address = params[0] as string;
+        const stored = this.readAccount ? await this.readAccount(address) : this.accounts.get(address);
+        const slice = (opts as { dataSlice?: { offset: number; length: number } }).dataSlice;
+        const data = stored && slice ? stored.slice(slice.offset, slice.offset + slice.length) : stored;
+        return reply({
+          context: { slot: this.slot },
+          value: data
+            ? {
+                data: [base64.encode(data), "base64"],
+                owner: this.owners.get(address) ?? "11111111111111111111111111111111",
+                lamports: Number(this.lamports.get(address) ?? 1n),
+                executable: this.executables.has(address),
+              }
+            : null,
+        });
+      }
+      case "getBalance":
+        return reply({ context: { slot: this.slot }, value: Number(this.lamports.get(params[0] as string) ?? 0n) });
+      case "getSlot":
+        return reply(this.slot);
+      case "getBlockTime": {
+        if (!this.blockTimeAt) return reply(this.blockTime);
+        const answer = this.blockTimeAt(params[0] as number);
+        return answer === "unavailable" ? fail(-32004, `Block not available for slot ${String(params[0])}`) : reply(answer);
       }
       case "sendTransaction": {
         const step = this.sendScript.shift() ?? "ok";

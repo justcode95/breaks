@@ -7,7 +7,7 @@
 import { oraoNetworkState } from "../solana/breaks.js";
 import { decodeNetworkState, type OraoNetworkState } from "../solana/orao.js";
 import type { Address } from "../solana/pubkey.js";
-import type { ChainClient } from "./chain.js";
+import type { AccountReader } from "./chain.js";
 
 /** The accounts `request_randomness` passes on to ORAO besides the request and the payer. */
 export interface VrfAccounts {
@@ -31,7 +31,7 @@ export const fixedVrf = (program: Address, accounts: VrfAccounts): VrfSource => 
 /** ORAO's own program, read from its network state account. */
 export class OraoVrf implements VrfSource {
   constructor(
-    private readonly chain: ChainClient,
+    private readonly chain: AccountReader,
     readonly program: Address,
   ) {}
 
