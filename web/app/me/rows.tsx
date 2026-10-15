@@ -1,9 +1,13 @@
 import Link from "next/link";
-import { type Mine, spotState } from "../../lib/chain/mine";
+import { type Mine, type MySpot, spotState } from "../../lib/chain/mine";
 import { money, share, stageLabel, tone } from "../../lib/chain/view";
 
-/** What a wallet has in the breaks: the paid spots it bought and the free spots it won. Pure: the data comes in. */
-export function MySpotsView({ mine, now }: { mine: Mine; now: number }) {
+/**
+ * What a wallet has in the breaks: the paid spots it bought and the free spots it won. Pure: the data comes in and the clicks go
+ * out. With `onRefund`, a spot of a cancelled break that has not been refunded gets a button (disabled while `busy`, since one
+ * refund runs at a time).
+ */
+export function MySpotsView({ mine, now, onRefund, busy = false }: { mine: Mine; now: number; onRefund?: (spot: MySpot) => void; busy?: boolean }) {
   const { spots, freeWins } = mine;
   const breaks = new Set(spots.map((s) => s.breakNumber)).size;
   const refundable = spots.filter((s) => !s.refunded && s.break.status === "Cancelled").length;
@@ -42,6 +46,13 @@ export function MySpotsView({ mine, now }: { mine: Mine; now: number }) {
                       </td>
                       <td>
                         <span className={`badge ${state.tone}`}>{state.label}</span>
+                        {onRefund && !s.refunded && s.break.status === "Cancelled" && (
+                          <div>
+                            <button type="button" className="secondary" disabled={busy} onClick={() => onRefund(s)} aria-label={`Refund spot #${s.index + 1} of break #${s.breakNumber}`}>
+                              Refund {money(s.paid)}
+                            </button>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );
@@ -51,7 +62,7 @@ export function MySpotsView({ mine, now }: { mine: Mine; now: number }) {
           </div>
           {refundable > 0 && (
             <p className="hint">
-              A cancelled break's spots are paid back to the wallet that bought them. Anyone can send the refund; this site cannot send it yet.
+              A cancelled break's spots are paid back to the wallet that bought them. Anyone can send the refund.{onRefund ? " Use the button to send yours." : " This site cannot send it yet."}
             </p>
           )}
           {mine.truncated && <p className="hint">Only the newest spots are shown.</p>}
