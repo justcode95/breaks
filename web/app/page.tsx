@@ -32,6 +32,9 @@ export default function Home() {
         <li>Players buy paid spots in USDC; holders get free spots drawn by verifiable randomness.</li>
         <li>At the deadline, packs are bought and the pulled cards are randomly assigned to the spots.</li>
       </ol>
+      <p>
+        <Link href="/how-it-works">Read the longer version</Link>, including what you can check yourself and what you still have to trust.
+      </p>
 
       <div className="callout">
         <p>
