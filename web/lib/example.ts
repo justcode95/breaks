@@ -50,6 +50,7 @@ export function exampleInput(): VerifyInput {
     seed: toHex(hashv(utf8("example seed"))),
     holders: `# wallet weight, one per line\n${holders}`,
     inputs: exampleInputs(),
+    record: "",
     freeSpots: "2",
     paidOwners: Array.from({ length: 3 }, (_, i) => name("buyer", i)).join("\n"),
     cards: Array.from({ length: 5 }, (_, i) => name("card", i)).join("\n"),
@@ -57,4 +58,4 @@ export function exampleInput(): VerifyInput {
   };
 }
 
-export const emptyInput = (): VerifyInput => ({ seed: "", holders: "", inputs: "", freeSpots: "2", paidOwners: "", cards: "", expected: noExpected });
+export const emptyInput = (): VerifyInput => ({ seed: "", holders: "", inputs: "", record: "", freeSpots: "2", paidOwners: "", cards: "", expected: noExpected });

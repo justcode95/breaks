@@ -204,7 +204,7 @@ describe("the weights section", () => {
     expect(out).toContain("10 balance events read; the average is taken over the window from 1800000000 to 1800043200 (Unix seconds) and rounded down to a whole base unit.");
     // Nothing is shown for weights that are as they should be.
     expect(out).not.toContain("Weights that are not their wallet");
-    expect(out).toContain("1 wallet has an average balance above zero but is not on the list: below the minimum, or left out on purpose. The reasons are not published yet.");
+    expect(out).toContain("1 wallet has an average balance above zero but is not on the list: below the minimum, or left out on purpose. The record of why each wallet is in or out says which; it was not given.");
     expect(out).toContain(EXCHANGE);
     expect(out).toContain("Not on the list, biggest average balance first");
   });

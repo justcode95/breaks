@@ -25,8 +25,9 @@ const file = (folder: string) => {
 const ELIGIBILITY = file("eligibility");
 const POOL = file("pool");
 const INPUTS = file("inputs");
-// Why each wallet is in or out (the website does not read this file yet; the tests use it to name the wallets that are out).
+// Why each wallet is in or out: every wallet's average balance, weight and reason, with the rules.
 const RECORD = file("records");
+const REC = "the record of why each wallet is in or out (to check the reasons)";
 const ROOT = ELIGIBILITY.name.replace(".json", "");
 const INPUTS_HASH = INPUTS.name.replace(".txt", "");
 const POOL_HASH = POOL.name.replace(".json", "");
@@ -47,7 +48,8 @@ function host(files: Record<string, string | Response | (() => never)> = {}) {
   }) as unknown as typeof fetch;
   return { fetchFn, asked };
 }
-const served = (over: Record<string, string> = {}) => host({ [`eligibility/${ROOT}.json`]: ELIGIBILITY.text, [`inputs/${INPUTS_HASH}.txt`]: INPUTS.text, [`pool/${POOL_HASH}.json`]: POOL.text, ...over });
+const served = (over: Record<string, string> = {}) =>
+  host({ [`eligibility/${ROOT}.json`]: ELIGIBILITY.text, [`inputs/${INPUTS_HASH}.txt`]: INPUTS.text, [`records/${INPUTS_HASH}.json`]: RECORD.text, [`pool/${POOL_HASH}.json`]: POOL.text, ...over });
 
 const expectedList = { root: ROOT, totalWeight: 130n, entryCount: 6 };
 const ok = <T>(r: Fetched<T>): T => {
@@ -302,15 +304,16 @@ const NO_LIST = { eligibilityRoot: new Uint8Array(32), eligibilityCount: 0, elig
 
 describe("what a break needs, and loading it", () => {
   it("needs the list once one is committed and the cards once the seed is final", () => {
-    expect(whatIsNeeded(account())).toEqual({ list: true, inputs: true, cards: true });
-    expect(whatIsNeeded(account({ status: "Settled" }))).toEqual({ list: true, inputs: true, cards: true });
+    expect(whatIsNeeded(account())).toEqual({ list: true, inputs: true, record: true, cards: true });
+    expect(whatIsNeeded(account({ status: "Settled" }))).toEqual({ list: true, inputs: true, record: true, cards: true });
     // Before the seed there is nothing to check the cards against, and before a list there is nothing to read.
-    expect(whatIsNeeded(account({ status: "PoolCommitted" }))).toEqual({ list: true, inputs: true, cards: false });
-    expect(whatIsNeeded(account({ status: "Open", ...NO_LIST }))).toEqual({ list: false, inputs: false, cards: false });
-    expect(whatIsNeeded(account({ eligibilityCount: 0, eligibilityRoot: new Uint8Array(32), eligibilityTotalWeight: 0n }))).toEqual({ list: false, inputs: true, cards: true });
-    expect(whatIsNeeded(account({ poolHash: new Uint8Array(32) }))).toEqual({ list: true, inputs: true, cards: false });
-    // The balance events are committed with the list and are needed whenever their hash is there, also for an empty list.
-    expect(whatIsNeeded(account({ eligibilityInputsHash: new Uint8Array(32) })).inputs).toBe(false);
+    expect(whatIsNeeded(account({ status: "PoolCommitted" }))).toEqual({ list: true, inputs: true, record: true, cards: false });
+    expect(whatIsNeeded(account({ status: "Open", ...NO_LIST }))).toEqual({ list: false, inputs: false, record: false, cards: false });
+    expect(whatIsNeeded(account({ eligibilityCount: 0, eligibilityRoot: new Uint8Array(32), eligibilityTotalWeight: 0n }))).toEqual({ list: false, inputs: true, record: true, cards: true });
+    expect(whatIsNeeded(account({ poolHash: new Uint8Array(32) }))).toEqual({ list: true, inputs: true, record: true, cards: false });
+    // The balance events and the record are committed with the list (the record is published under the same inputs hash) and
+    // are needed whenever that hash is there, also for an empty list.
+    expect(whatIsNeeded(account({ eligibilityInputsHash: new Uint8Array(32) }))).toMatchObject({ inputs: false, record: false });
     // The keeper publishes nothing for an empty list, so nothing is read for one, whatever the root says.
     expect(whatIsNeeded(account({ eligibilityCount: 0 })).list).toBe(false);
   });
@@ -319,11 +322,13 @@ describe("what a break needs, and loading it", () => {
     const r = await loadPublishedLists({ baseUrl: BASE, fetch: served().fetchFn, break: account() });
     expect(r.holders?.split("\n")).toHaveLength(6);
     expect(r.inputs).toBe(INPUTS.text);
+    expect(r.record).toBe(RECORD.text);
     expect(r.cards?.split("\n")).toHaveLength(5);
     expect(r.stillToPaste).toEqual([]);
     expect(r.notes).toEqual([
       "The eligibility list was read from files.example: 6 wallets, and it hashes to the root committed on chain.",
       "The balance events were read from files.example: 12 events, and they hash to the inputs hash committed on chain.",
+      "The record of why each wallet is in or out was read from files.example: 9 wallets, and it states the commitments on chain (the chain commits no hash of the record itself, so every wallet in it is checked below).",
       "The cards were read from files.example: 5 cards, and they hash to the pool hash committed on chain.",
     ]);
   });
@@ -337,8 +342,8 @@ describe("what a break needs, and loading it", () => {
     const mid = await loadPublishedLists({ baseUrl: BASE, fetch: committed.fetchFn, break: account({ status: "PoolCommitted" }) });
     expect(mid.holders).toBeDefined();
     expect(mid.cards).toBeUndefined();
-    // The balance events are asked for as soon as a list is committed (their hash is committed with it).
-    expect(committed.asked.map((a) => a.url)).toEqual([`${BASE}/eligibility/${ROOT}.json`, `${BASE}/inputs/${INPUTS_HASH}.txt`]);
+    // The balance events and the record are asked for as soon as a list is committed (their hash is committed with it).
+    expect(committed.asked.map((a) => a.url)).toEqual([`${BASE}/eligibility/${ROOT}.json`, `${BASE}/inputs/${INPUTS_HASH}.txt`, `${BASE}/records/${INPUTS_HASH}.json`]);
   });
 
   it("says what is missing, and that it has to be pasted", async () => {
@@ -346,10 +351,12 @@ describe("what a break needs, and loading it", () => {
     expect(r.holders).toBeUndefined();
     expect(r.inputs).toBeUndefined();
     expect(r.cards).toBeUndefined();
-    expect(r.stillToPaste).toEqual(["the eligibility list", "the balance events (to check the weights)", "the cards"]);
+    expect(r.record).toBeUndefined();
+    expect(r.stillToPaste).toEqual(["the eligibility list", "the balance events (to check the weights)", REC, "the cards"]);
     expect(r.notes).toEqual([
       "The eligibility list is not published at files.example (there is no file for this break's commitment), so paste it.",
       "The balance events are not published at files.example (there is no file for this break's commitment), so paste them.",
+      "The record of why each wallet is in or out is not published at files.example (there is no file for this break's commitment), so paste it.",
       "The cards are not published at files.example (there is no file for this break's commitment), so paste them.",
     ]);
   });
@@ -358,8 +365,9 @@ describe("what a break needs, and loading it", () => {
     const down = await loadPublishedLists({ baseUrl: BASE, fetch: (async () => { throw new Error("offline"); }) as unknown as typeof fetch, break: account() });
     expect(down.notes[0]).toBe("The eligibility list could not be read from files.example (could not reach the host: offline), so paste it.");
     expect(down.notes[1]).toBe("The balance events could not be read from files.example (could not reach the host: offline), so paste them.");
-    expect(down.notes[2]).toBe("The cards could not be read from files.example (could not reach the host: offline), so paste them.");
-    expect(down.stillToPaste).toEqual(["the eligibility list", "the balance events (to check the weights)", "the cards"]);
+    expect(down.notes[2]).toBe("The record of why each wallet is in or out could not be read from files.example (could not reach the host: offline), so paste it.");
+    expect(down.notes[3]).toBe("The cards could not be read from files.example (could not reach the host: offline), so paste them.");
+    expect(down.stillToPaste).toEqual(["the eligibility list", "the balance events (to check the weights)", REC, "the cards"]);
     const wrong = await loadPublishedLists({ baseUrl: BASE, fetch: served({ [`eligibility/${ROOT}.json`]: withBody(ELIGIBILITY.text, (d) => { d.entries[0].weight = "11"; }) }).fetchFn, break: account() });
     expect(wrong.holders).toBeUndefined();
     expect(wrong.cards).toBeDefined();
@@ -376,15 +384,15 @@ describe("what a break needs, and loading it", () => {
   it("whatever goes wrong while reading, even outside the request itself, is a note and not a failure to load the break", async () => {
     const broken = (async () => ({ ok: true, status: 200, get headers(): never { throw new Error("boom"); }, text: async () => "" })) as unknown as typeof fetch;
     const r = await loadPublishedLists({ baseUrl: BASE, fetch: broken, break: account() });
-    expect(r.stillToPaste).toEqual(["the eligibility list", "the balance events (to check the weights)", "the cards"]);
-    expect(r.notes).toHaveLength(3);
+    expect(r.stillToPaste).toEqual(["the eligibility list", "the balance events (to check the weights)", REC, "the cards"]);
+    expect(r.notes).toHaveLength(4);
     expect(r.notes[0]).toMatch(/boom/);
   });
 
   it("tells the person what to paste when the site has nowhere to read from", async () => {
     const none = host();
     const r = await loadPublishedLists({ break: account(), fetch: none.fetchFn });
-    expect(r).toEqual({ notes: [], stillToPaste: ["the eligibility list", "the balance events (to check the weights)", "the cards"] });
+    expect(r).toEqual({ notes: [], stillToPaste: ["the eligibility list", "the balance events (to check the weights)", REC, "the cards"] });
     expect(none.asked).toEqual([]);
     expect((await loadPublishedLists({ break: account({ status: "Open", ...NO_LIST }) })).stillToPaste).toEqual([]);
   });
@@ -393,6 +401,7 @@ describe("what a break needs, and loading it", () => {
     expect(publishedFileUrl(BASE, "eligibility", ROOT)).toBe(`${BASE}/eligibility/${ROOT}.json`);
     expect(publishedFileUrl(BASE, "pool", POOL_HASH)).toBe(`${BASE}/pool/${POOL_HASH}.json`);
     expect(publishedFileUrl(BASE, "inputs", INPUTS_HASH)).toBe(`${BASE}/inputs/${INPUTS_HASH}.txt`);
+    expect(publishedFileUrl(BASE, "records", INPUTS_HASH)).toBe(`${BASE}/records/${INPUTS_HASH}.json`);
     expect(publishedFileUrl(BASE, "inputs", "../../x")).toBeUndefined();
     expect(publishedFileUrl(BASE, "pool", "../../x")).toBeUndefined();
     expect(publishedFileUrl(BASE, "pool", ROOT.toUpperCase())).toBeUndefined();
@@ -406,6 +415,7 @@ describe("the verifier with the published lists", () => {
     const result = verifyDraw({
       seed: toHex(new Uint8Array(32).fill(9)),
       holders: r.holders as string,
+      record: "",
       inputs: "",
       freeSpots: "2",
       paidOwners: wallets.slice(0, 3).join("\n"),
@@ -431,6 +441,7 @@ describe("the verifier with the published lists", () => {
     const result = verifyDraw({
       seed: toHex(new Uint8Array(32).fill(9)),
       holders: r.holders as string,
+      record: "",
       inputs: r.inputs as string,
       freeSpots: "2",
       paidOwners: wallets.slice(0, 3).join("\n"),
@@ -485,7 +496,7 @@ describe("the form after a break is loaded", () => {
   it("puts the published text in, and remembers where it came from", () => {
     const r = applyLoad({ ...typed, inputs: "typed events" }, NOT_PUBLISHED, loaded, { holders: "list", inputs: "events", cards: "pool" });
     expect(r.input).toMatchObject({ seed: "s", freeSpots: "2", holders: "list", inputs: "events", cards: "pool" });
-    expect(r.provenance).toEqual({ holders: true, inputs: true, cards: true });
+    expect(r.provenance).toEqual({ holders: true, inputs: true, record: false, cards: true });
   });
 
   it("keeps what the person pasted when nothing was published", () => {
@@ -497,15 +508,15 @@ describe("the form after a break is loaded", () => {
 
   it("clears published text that belongs to the break loaded before, so it is not taken for the new one's", () => {
     const earlier = { ...emptyInput(), holders: "list of break 1", inputs: "events of break 1", cards: "pool of break 1" };
-    const r = applyLoad(earlier, { holders: true, inputs: true, cards: true }, loaded, { holders: undefined, inputs: undefined, cards: undefined });
+    const r = applyLoad(earlier, { holders: true, inputs: true, record: false, cards: true }, loaded, { holders: undefined, inputs: undefined, cards: undefined });
     expect(r.input).toMatchObject({ holders: "", inputs: "", cards: "" });
     expect(r.provenance).toEqual(NOT_PUBLISHED);
     // Each field on its own.
-    const half = applyLoad(earlier, { holders: true, inputs: false, cards: false }, loaded, { holders: undefined, cards: undefined });
+    const half = applyLoad(earlier, { holders: true, inputs: false, record: false, cards: false }, loaded, { holders: undefined, cards: undefined });
     expect(half.input).toMatchObject({ holders: "", inputs: "events of break 1", cards: "pool of break 1" });
-    const events = applyLoad(earlier, { holders: false, inputs: true, cards: false }, loaded, { holders: undefined, cards: undefined });
+    const events = applyLoad(earlier, { holders: false, inputs: true, record: false, cards: false }, loaded, { holders: undefined, cards: undefined });
     expect(events.input).toMatchObject({ holders: "list of break 1", inputs: "", cards: "pool of break 1" });
-    expect(applyLoad(earlier, { holders: true, inputs: true, cards: true }, loaded, { holders: "new list", inputs: "new events", cards: undefined }).input).toMatchObject({ holders: "new list", inputs: "new events", cards: "" });
+    expect(applyLoad(earlier, { holders: true, inputs: true, record: false, cards: true }, loaded, { holders: "new list", inputs: "new events", cards: undefined }).input).toMatchObject({ holders: "new list", inputs: "new events", cards: "" });
   });
 
   it("brings in what the chain gave, and keeps the other fields", () => {
@@ -525,11 +536,13 @@ describe("the links on a break's page", () => {
     const html = page(BASE);
     expect(html).toContain(`<a href="${BASE}/eligibility/${ROOT}.json">Eligible wallets</a>`);
     expect(html).toContain(`<a href="${BASE}/inputs/${INPUTS_HASH}.txt">Balance events</a>`);
+    expect(html).toContain(`<a href="${BASE}/records/${INPUTS_HASH}.json">Why each wallet is in or out</a>`);
     expect(html).toContain(`<a href="${BASE}/pool/${POOL_HASH}.json">Cards</a>`);
     expect(html).toContain("check it against that hash rather than trusting where it is hosted");
     // In the order the draw uses them.
     expect(html.indexOf("Eligible wallets</a>")).toBeLessThan(html.indexOf("Balance events</a>"));
-    expect(html.indexOf("Balance events</a>")).toBeLessThan(html.indexOf("Cards</a>"));
+    expect(html.indexOf("Balance events</a>")).toBeLessThan(html.indexOf("Why each wallet is in or out</a>"));
+    expect(html.indexOf("Why each wallet is in or out</a>")).toBeLessThan(html.indexOf("Cards</a>"));
   });
 
   it("links no list for a break whose list is empty, only its balance events and cards", () => {
@@ -541,6 +554,9 @@ describe("the links on a break's page", () => {
     expect(nothing).not.toContain("Published lists");
     const onlyEvents = page(BASE, account({ status: "EligibilityCommitted", ...NO_LIST, eligibilityInputsHash: fromHex(INPUTS_HASH), seed: new Uint8Array(32), freeWinnerCount: 0, freeWinners: [] }));
     expect(onlyEvents).toContain(`${BASE}/inputs/${INPUTS_HASH}.txt`);
+    // The record goes with the balance events: it is published under the same hash, also for an empty list.
+    expect(onlyEvents).toContain(`${BASE}/records/${INPUTS_HASH}.json`);
+    expect(nothing).not.toContain("/records/");
     expect(onlyEvents).not.toContain("/eligibility/");
     expect(onlyEvents).not.toContain("/pool/");
   });

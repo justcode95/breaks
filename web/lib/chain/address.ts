@@ -26,7 +26,7 @@ export function isAddress(text: string): boolean {
 }
 
 /** True for ordinary keys, false for program-derived addresses (which no private key controls). */
-function isOnCurve(bytes: Uint8Array): boolean {
+export function isOnCurve(bytes: Uint8Array): boolean {
   try {
     ed25519.Point.fromBytes(bytes);
     return true;
