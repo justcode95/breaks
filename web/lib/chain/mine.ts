@@ -4,7 +4,7 @@
 
 import { type BreakAccount, SPOT_ACCOUNT_BYTES, SPOT_OWNER_OFFSET, decodeBreak, decodeSpot } from "./accounts";
 import { type Address, breakAddress, spotAddress } from "./address";
-import { loadBreakList } from "./list";
+import { type BreakRow, loadBreakList } from "./list";
 import { LoadError } from "./load";
 import { RpcFailure, getAccounts, getProgramAccounts } from "./rpc";
 import { stageLabel, type Tone, tone } from "./view";
@@ -42,6 +42,8 @@ export interface Mine {
   /** How many of the breaks were searched for free-spot wins, out of `totalBreaks`. */
   searched: number;
   totalBreaks: number;
+  /** The breaks that were searched, newest first (where the wallet stands on their lists is read from these). */
+  recent: BreakRow[];
 }
 
 export interface MineOptions {
@@ -113,6 +115,7 @@ export async function loadMine(opts: MineOptions): Promise<Mine> {
       freeWins,
       searched: list.rows.length,
       totalBreaks: list.total,
+      recent: list.rows,
     };
   } catch (err) {
     if (err instanceof LoadError) throw err;

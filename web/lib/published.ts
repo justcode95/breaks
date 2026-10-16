@@ -11,7 +11,7 @@ import { U64_MAX, toHex } from "./draw/bytes";
 import { poolHash } from "./draw/pool";
 import { DrawError, type Leaf, treeRoot } from "./draw/tree";
 import { inputsHash } from "./twab/inputs";
-import { parseRecord } from "./twab/record";
+import { type EligibilityRecord, parseRecord } from "./twab/record";
 
 /** The most a list may be: a list of tens of thousands of wallets is a few megabytes. */
 export const MAX_BYTES = 25_000_000;
@@ -206,7 +206,7 @@ export interface RecordExpected {
  * chain holds. The chain commits no hash of the record itself, so this is all that can be checked about the file; the verify
  * page then checks every wallet in it against the rules, the balance events and the list.
  */
-export async function fetchRecord(opts: Options & { expected: RecordExpected }): Promise<Fetched<{ text: string; wallets: number }>> {
+export async function fetchRecord(opts: Options & { expected: RecordExpected }): Promise<Fetched<{ text: string; wallets: number; record: EligibilityRecord }>> {
   const { expected } = opts;
   const got = await fetchFile(opts, "records", expected.inputsHash);
   if (!got.ok) return got;
@@ -218,7 +218,7 @@ export async function fetchRecord(opts: Options & { expected: RecordExpected }):
     return invalid(`it states root ${r.root} with ${r.entryCount} wallets and total ${r.totalWeight}, not what was committed on chain`);
   }
   if (BigInt(r.window.start) !== expected.window.start || BigInt(r.window.end) !== expected.window.end) return invalid("it was measured over another window than the break's");
-  return { ok: true, value: { text: got.value, wallets: r.wallets.length } };
+  return { ok: true, value: { text: got.value, wallets: r.wallets.length, record: r } };
 }
 
 export interface PublishedLists {
@@ -331,7 +331,7 @@ export async function loadPublishedLists(opts: { baseUrl?: string; fetch?: typeo
 }
 
 /** Whatever goes wrong while reading a published file is a note for the person, never a failure to load the break. */
-async function safely<T>(read: () => Promise<Fetched<T>>): Promise<Fetched<T>> {
+export async function safely<T>(read: () => Promise<Fetched<T>>): Promise<Fetched<T>> {
   try {
     return await read();
   } catch (err) {

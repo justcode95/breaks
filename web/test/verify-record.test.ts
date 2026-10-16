@@ -279,7 +279,7 @@ describe("reading the record from the published files", () => {
   const get = (body: string | undefined, over: Partial<typeof expected> = {}) => fetchRecord({ baseUrl: BASE, fetch: serve(body), expected: { ...expected, ...over } });
 
   it("reads the keeper's record under the committed inputs hash", async () => {
-    expect(await get(RECORD.text)).toEqual({ ok: true, value: { text: RECORD.text, wallets: 9 } });
+    expect(await get(RECORD.text)).toEqual({ ok: true, value: { text: RECORD.text, wallets: 9, record: record() } });
   });
 
   it("does not use a record that is missing, unreadable, or does not state the chain's commitments", async () => {

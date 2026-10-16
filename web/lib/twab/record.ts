@@ -155,43 +155,39 @@ export interface RecordContext {
   chain?: { inputsHash?: string; root?: string; totalWeight?: bigint; entryCount?: number; window?: { start: bigint; end: bigint } };
 }
 
-/** Checks a record against its own rules, the commitments, the balance events and the list. */
-export function checkRecord(record: EligibilityRecord, ctx: RecordContext = {}): RecordCheck {
+const COUNT = { listed: "listed", "below-min": "belowMin", "off-curve": "offCurve", excluded: "excluded" } as const;
+
+/**
+ * What is wrong with one wallet's line, against the rules the record states, in the keeper's order: an exclusion first, then a
+ * program's account, then the minimum. Empty when the line follows from the rules.
+ */
+export function rowProblems(r: RecordRow, policy: EligibilityRecord["policy"]): string[] {
   const problems: string[] = [];
-  const { policy } = record;
-  const counts = { listed: 0, belowMin: 0, offCurve: 0, excluded: 0 };
-
-  // Each wallet's reason against the rules the record states, in the keeper's order: an exclusion first, then a program's
-  // account, then the minimum.
-  for (const r of record.wallets) {
-    const onCurve = isOnCurve(addressToBytes(r.wallet));
-    switch (r.reason.kind) {
-      case "listed": {
-        counts.listed++;
-        if (!onCurve) problems.push(`${r.wallet} is on the list, but it is a program's account (off the curve), which can never be a holder`);
-        if (r.twab === 0n || r.twab < policy.minTwab) problems.push(`${r.wallet} is on the list with an average balance of ${r.twab}, below the minimum of ${policy.minTwab}`);
-        else if (r.weight !== ruleWeight(r.twab, policy)) problems.push(`${r.wallet} is on the list with weight ${r.weight}, but the rules give ${ruleWeight(r.twab, policy)} for an average balance of ${r.twab}`);
-        break;
-      }
-      case "below-min": {
-        counts.belowMin++;
-        if (r.twab !== 0n && r.twab >= policy.minTwab) problems.push(`${r.wallet} is said to be below the minimum of ${policy.minTwab}, but its average balance is ${r.twab}`);
-        if (!onCurve) problems.push(`${r.wallet} is said to be below the minimum, but it is a program's account (off the curve), which the rules leave out first`);
-        break;
-      }
-      case "off-curve": {
-        counts.offCurve++;
-        if (onCurve) problems.push(`${r.wallet} is said to be a program's account, but it is an ordinary key (on the curve)`);
-        break;
-      }
-      case "excluded":
-        counts.excluded++;
-        break;
+  switch (r.reason.kind) {
+    case "listed": {
+      if (!isOnCurve(addressToBytes(r.wallet))) problems.push(`${r.wallet} is on the list, but it is a program's account (off the curve), which can never be a holder`);
+      if (r.twab === 0n || r.twab < policy.minTwab) problems.push(`${r.wallet} is on the list with an average balance of ${r.twab}, below the minimum of ${policy.minTwab}`);
+      else if (r.weight !== ruleWeight(r.twab, policy)) problems.push(`${r.wallet} is on the list with weight ${r.weight}, but the rules give ${ruleWeight(r.twab, policy)} for an average balance of ${r.twab}`);
+      break;
     }
-    if (r.reason.kind !== "listed" && r.weight !== 0n) problems.push(`${r.wallet} is not on the list but has weight ${r.weight}`);
+    case "below-min": {
+      if (r.twab !== 0n && r.twab >= policy.minTwab) problems.push(`${r.wallet} is said to be below the minimum of ${policy.minTwab}, but its average balance is ${r.twab}`);
+      if (!isOnCurve(addressToBytes(r.wallet))) problems.push(`${r.wallet} is said to be below the minimum, but it is a program's account (off the curve), which the rules leave out first`);
+      break;
+    }
+    case "off-curve": {
+      if (isOnCurve(addressToBytes(r.wallet))) problems.push(`${r.wallet} is said to be a program's account, but it is an ordinary key (on the curve)`);
+      break;
+    }
+    case "excluded":
+      break;
   }
+  if (r.reason.kind !== "listed" && r.weight !== 0n) problems.push(`${r.wallet} is not on the list but has weight ${r.weight}`);
+  return problems;
+}
 
-  // The wallets it calls eligible must build the root, total and count it states.
+/** Why the wallets the record calls eligible do not build the root, total and count it states, or nothing when they do. */
+export function listProblem(record: EligibilityRecord): string | undefined {
   const listedRows = record.wallets.filter((r) => r.reason.kind === "listed" && r.weight > 0n);
   let built = { root: ZERO_ROOT, total: 0n };
   if (listedRows.length > 0) {
@@ -199,12 +195,31 @@ export function checkRecord(record: EligibilityRecord, ctx: RecordContext = {}):
       const node = treeRoot(listedRows.map((r): Leaf => ({ wallet: addressToBytes(r.wallet), weight: r.weight })));
       built = { root: toHex(node.hash), total: node.sum };
     } catch {
-      problems.push("the wallets it calls eligible cannot be built into a tree (their weights add up to more than a 64-bit number)");
+      return "the wallets it calls eligible cannot be built into a tree (their weights add up to more than a 64-bit number)";
     }
   }
   if (built.root !== record.root || built.total !== record.totalWeight || listedRows.length !== record.entryCount) {
-    problems.push(`the wallets it calls eligible build root ${built.root} with ${listedRows.length} wallets and total ${built.total}, not the root ${record.root} with ${record.entryCount} wallets and total ${record.totalWeight} it states`);
+    return `the wallets it calls eligible build root ${built.root} with ${listedRows.length} wallets and total ${built.total}, not the root ${record.root} with ${record.entryCount} wallets and total ${record.totalWeight} it states`;
   }
+  return undefined;
+}
+
+/** Checks a record against its own rules, the commitments, the balance events and the list. */
+export function checkRecord(record: EligibilityRecord, ctx: RecordContext = {}): RecordCheck {
+  const problems: string[] = [];
+  const { policy } = record;
+  const counts = { listed: 0, belowMin: 0, offCurve: 0, excluded: 0 };
+
+  // Each wallet's reason against the rules the record states.
+  for (const r of record.wallets) {
+    counts[COUNT[r.reason.kind]]++;
+    problems.push(...rowProblems(r, policy));
+  }
+
+  // The wallets it calls eligible must build the root, total and count it states.
+  const listedRows = record.wallets.filter((r) => r.reason.kind === "listed" && r.weight > 0n);
+  const built = listProblem(record);
+  if (built) problems.push(built);
 
   // Its commitments against the break's account.
   const c = ctx.chain;

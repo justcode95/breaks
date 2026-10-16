@@ -150,7 +150,7 @@ describe("running one refund", () => {
 
 describe("following a refund until the chain shows it", () => {
   const spot = (breakNumber: number, index: number, refundedFlag: boolean): MySpot => ({ breakNumber, index, paid: 1n, refunded: refundedFlag, break: {} as MySpot["break"] });
-  const mine = (spots: MySpot[]): Mine => ({ spots, truncated: false, freeWins: [], searched: 1, totalBreaks: 1 });
+  const mine = (spots: MySpot[]): Mine => ({ spots, truncated: false, freeWins: [], searched: 1, totalBreaks: 1, recent: [] });
   const sleeps: number[] = [];
   const sleep = async (ms: number) => void sleeps.push(ms);
 

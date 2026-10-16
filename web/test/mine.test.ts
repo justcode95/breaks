@@ -150,6 +150,8 @@ describe("the free spots of a wallet", () => {
     ]);
     expect(mine.searched).toBe(6);
     expect(mine.totalBreaks).toBe(6);
+    // The breaks searched are handed on, newest first, for where the wallet stands on their lists.
+    expect(mine.recent.map((r) => [r.number, r.break.id])).toEqual([6, 5, 4, 3, 2, 1].map((n) => [n, BigInt(n - 1)]));
   });
 
   it("look only at the newest 50 breaks, and say how many were looked at", async () => {
@@ -168,6 +170,7 @@ describe("the free spots of a wallet", () => {
     expect(mine.freeWins.map((w) => w.breakNumber)).toEqual([3]);
     expect(mine.searched).toBe(FREE_WIN_BREAKS);
     expect(mine.totalBreaks).toBe(total);
+    expect(mine.recent.map((r) => r.number)).toEqual(Array.from({ length: FREE_WIN_BREAKS }, (_, i) => total - i));
   });
 });
 
