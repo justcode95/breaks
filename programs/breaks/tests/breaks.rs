@@ -918,6 +918,185 @@ fn cancelling_is_admin_only_and_works_in_every_status_before_funding() {
     assert_eq!(env.locked(), (0, 0));
 }
 
+// ---------------------------------------------------------------- cancel_unfundable: anyone, for a break nobody can fund
+
+#[test]
+fn anyone_can_cancel_a_break_whose_packs_are_worth_less_than_its_spots() {
+    let mut env = Env::ready();
+    // 4 spots sold at $20 and 2 free spots: the 6 cheapest packs cost $90 in all, $15 each.
+    let (id, buyers) = mixed_closed(&mut env, 4, 5);
+    assert_fails_with(env.fund(id), code(BreaksError::PacksWorthLessThanSpots));
+    assert_eq!(env.locked(), (22_500_000, 47_500_000));
+
+    // A stranger, who is neither the admin nor the keeper, sends it.
+    let (stranger, _) = env.user(0);
+    let meta = env.cancel_unfundable_as(&stranger, id).unwrap();
+    assert_eq!(env.brk(id).status, BreakStatus::Cancelled);
+    assert_eq!((env.brk(id).locked_subsidy, env.brk(id).locked_holder), (0, 0));
+    assert_eq!(env.locked(), (0, 0));
+    let event: BreakCancelled = find_event(&meta.logs).expect("BreakCancelled event");
+    assert_eq!((event.id, event.spots_sold), (id, 4));
+    // The treasury got back what it had reserved and paid nothing out.
+    assert_eq!(
+        (env.balance(&subsidy_vault()), env.balance(&holder_vault())),
+        (700 * USDC, 300 * USDC)
+    );
+    assert_eq!(env.balance(&env.buyer_usdc), 0);
+
+    // Funding is no longer possible, and every buyer takes the whole $20 back.
+    assert_fails_with(env.fund(id), code(BreaksError::WrongStatus));
+    for (index, (_, usdc)) in buyers.iter().enumerate() {
+        env.refund(&stranger, id, index as u16, *usdc).unwrap();
+        assert_eq!(env.balance(usdc), 20 * USDC);
+    }
+    assert_eq!(env.balance(&escrow_pda(&break_pda(id))), 0);
+}
+
+#[test]
+fn anyone_can_cancel_a_break_nobody_joined() {
+    let mut env = Env::ready();
+    let (id, _) = closed_with(&mut env, 0, 0);
+    assert_fails_with(env.fund(id), code(BreaksError::EmptyPool));
+    let (stranger, _) = env.user(0);
+    env.cancel_unfundable_as(&stranger, id).unwrap();
+    assert_eq!(env.brk(id).status, BreakStatus::Cancelled);
+    assert_eq!(env.locked(), (0, 0));
+    assert_fails_with(env.cancel_unfundable_as(&stranger, id), code(BreaksError::WrongStatus));
+    // not twice
+}
+
+#[test]
+fn a_break_that_can_be_funded_is_not_anyones_to_cancel() {
+    let mut env = Env::ready();
+    let (stranger, _) = env.user(0);
+    let keeper = env.keeper.insecure_clone();
+
+    // Full: every pack is bought.
+    let (full, _) = mixed_closed(&mut env, 6, 5);
+    assert_fails_with(
+        env.cancel_unfundable_as(&stranger, full),
+        code(BreaksError::BreakIsFundable),
+    );
+    assert_fails_with(
+        env.cancel_unfundable_as(&keeper, full),
+        code(BreaksError::BreakIsFundable),
+    );
+    assert_eq!(env.brk(full).status, BreakStatus::EligibilityCommitted);
+    assert_eq!(env.locked(), (22_500_000, 47_500_000));
+
+    // The edge: 6 sold and 1 holder, 7 packs of $140 in all, exactly $20 each, the spot price. Fundable, so not cancellable.
+    set_unix_time(&mut env.svm, T0); // the next break's window starts again at T0
+    let (edge, _) = mixed_closed(&mut env, 6, 1);
+    assert_fails_with(
+        env.cancel_unfundable_as(&stranger, edge),
+        code(BreaksError::BreakIsFundable),
+    );
+    env.fund(edge).unwrap();
+    // Both can be funded, which is the point.
+    env.fund(full).unwrap();
+}
+
+#[test]
+fn the_admin_can_still_cancel_a_break_that_could_be_funded() {
+    let mut env = Env::ready();
+    let (id, _) = mixed_closed(&mut env, 6, 5);
+    assert_fails_with(
+        env.cancel_unfundable_as(&env.keeper.insecure_clone(), id),
+        code(BreaksError::BreakIsFundable),
+    );
+    env.cancel(id).unwrap();
+    assert_eq!(env.brk(id).status, BreakStatus::Cancelled);
+}
+
+#[test]
+fn cancel_unfundable_only_works_once_the_eligibility_list_is_committed() {
+    let mut env = Env::ready();
+    let (stranger, _) = env.user(0);
+
+    // Open: the sale is still running.
+    let open = env.create_break();
+    assert_fails_with(
+        env.cancel_unfundable_as(&stranger, open),
+        code(BreaksError::WrongStatus),
+    );
+
+    // Closed, the eligibility list not committed yet: nobody knows how many holders there are.
+    env.sell_one(open);
+    env.after_deadline();
+    env.close(&stranger, open).unwrap();
+    assert_fails_with(
+        env.cancel_unfundable_as(&stranger, open),
+        code(BreaksError::WrongStatus),
+    );
+    env.cancel(open).unwrap();
+
+    // Funded: the packs are paid for.
+    set_unix_time(&mut env.svm, T0); // the next break's window starts again at T0
+    let (funded, _) = closed_with(&mut env, 2, 3);
+    env.fund(funded).unwrap();
+    assert_fails_with(
+        env.cancel_unfundable_as(&stranger, funded),
+        code(BreaksError::WrongStatus),
+    );
+    // Pool committed too.
+    let keeper = env.keeper.insecure_clone();
+    env.commit_pool_as(&keeper, funded, 4).unwrap();
+    assert_fails_with(
+        env.cancel_unfundable_as(&stranger, funded),
+        code(BreaksError::WrongStatus),
+    );
+}
+
+#[test]
+fn cancel_unfundable_works_while_the_program_is_paused() {
+    let mut env = Env::ready();
+    let (id, _) = mixed_closed(&mut env, 4, 5);
+    env.set_paused(true);
+    // Funding is stopped by the pause, and so would a refusal be, but cancelling and refunding always work.
+    let (stranger, _) = env.user(0);
+    env.cancel_unfundable_as(&stranger, id).unwrap();
+    assert_eq!(env.brk(id).status, BreakStatus::Cancelled);
+    assert_eq!(env.locked(), (0, 0));
+}
+
+#[test]
+fn cancel_unfundable_agrees_with_fund_purchases_for_every_closed_shape() {
+    // The mixed break: 6 paid spots at $20, 2 free spots, packs of $10 x 4, $25 x 2 and $50 x 2. For every number of spots sold and
+    // holders eligible, the cancel anyone may send works exactly when funding would refuse, and a break it refuses is funded.
+    let prices = [10u64, 10, 10, 10, 25, 25, 50, 50];
+    let by_the_book = |sold: u64, eligible: u64| {
+        let pool = sold + 2u64.min(eligible);
+        pool == 0 || (sold > 0 && 20 > prices[..pool as usize].iter().sum::<u64>() / pool)
+    };
+    let mut env = Env::ready();
+    let (stranger, _) = env.user(0);
+    let (mut cancelled, mut funded) = (0, 0);
+    for sold in 0..=6u16 {
+        for eligible in 0..=3u32 {
+            set_unix_time(&mut env.svm, T0); // every break's window starts at T0
+            let (id, _) = mixed_closed(&mut env, sold, eligible);
+            let result = env.cancel_unfundable_as(&stranger, id);
+            if by_the_book(u64::from(sold), u64::from(eligible)) {
+                result.unwrap_or_else(|e| panic!("{sold} sold, {eligible} eligible: should be cancellable, got {e:?}"));
+                assert_eq!(
+                    env.brk(id).status,
+                    BreakStatus::Cancelled,
+                    "{sold} sold, {eligible} eligible"
+                );
+                cancelled += 1;
+            } else {
+                assert_fails_with(result, code(BreaksError::BreakIsFundable));
+                env.fund(id)
+                    .unwrap_or_else(|e| panic!("{sold} sold, {eligible} eligible: should be fundable, got {e:?}"));
+                funded += 1;
+            }
+            assert_eq!(env.locked(), (0, 0), "{sold} sold, {eligible} eligible");
+        }
+    }
+    // Both kinds happened, so neither branch went untested.
+    assert!(cancelled > 10 && funded >= 4, "{cancelled} cancelled, {funded} funded");
+}
+
 #[test]
 fn a_funded_break_can_no_longer_be_cancelled() {
     let mut env = Env::ready();

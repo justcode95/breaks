@@ -201,6 +201,19 @@
       ]
     },
     {
+      "name": "breaks.cancel_unfundable",
+      "inputs": { "breakId": "7" },
+      "data": "d0a13f4235a11852",
+      "accounts": [
+        { "pubkey": "Dza9nEpeiLgNKBf19xMxr4rjH4RNFRrFvZj6BBFz4BZ7", "signer": false, "writable": true },
+        { "pubkey": "AYqRiKdbi3pxetaw4dcN45ELog9xQv5G2uDCho9NYyiL", "signer": false, "writable": false },
+        { "pubkey": "HFqEtztrDn86NRFDEeLxta9Mqc7bRL9CzFUbm4MPwJge", "signer": false, "writable": true },
+        { "pubkey": "BRAaBwpXL6wDrYqP4fmTNT5WbmBT3XEwaafsci8qykr1", "signer": false, "writable": false },
+        { "pubkey": "HSe7GeW72YTNXX43kjnQ6fxLAujbTUBhwT5pYxQT9yrm", "signer": false, "writable": false },
+        { "pubkey": "Bvq3U9fz2MiHkLH8u4zyt6T1bimxnaEuHkZhezNDT5R9", "signer": false, "writable": false }
+      ]
+    },
+    {
       "name": "breaks.refund_spot",
       "inputs": { "breakId": "7", "index": 3, "ownerUsdc": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf" },
       "data": "f7548a7ae593f82f",

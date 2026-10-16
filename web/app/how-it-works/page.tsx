@@ -60,8 +60,8 @@ export default function HowItWorksPage() {
           <p>
             When the sale ends, the list of eligible wallets is fixed on chain as a fingerprint. One pack is bought and pulled for every spot that was filled (a paid
             spot nobody bought is simply not bought). A break lists its packs from the cheapest to the most expensive and the first ones are the ones bought, so a
-            break that does not fill loses its most expensive packs. If the packs that would be bought are worth less than the spots cost on average, the break is
-            cancelled before anything is bought and the spots are refunded. The list of pulled cards is fixed on chain the same way as the list of wallets. Only then is
+            break that does not fill loses its most expensive packs. If nobody joined, or the packs that would be bought are worth less than the spots cost on average, the break is
+            cancelled before anything is bought and the spots are refunded. Anyone can send that cancellation, so such a break never waits for an admin. The list of pulled cards is fixed on chain the same way as the list of wallets. Only then is
             randomness requested, so nobody can know the answer before the lists are fixed. It picks the free-spot winners and shuffles the cards across all the spots.
           </p>
           <Link href="/verify">Check a draw</Link>

@@ -62,6 +62,8 @@ pub enum BreaksError {
     InvalidPackList,
     #[msg("The packs that can be bought are worth less than the spots cost: cancel the break")]
     PacksWorthLessThanSpots,
+    #[msg("This break can be funded: only the admin can cancel it")]
+    BreakIsFundable,
 }
 
 /// Unit-test helper: the result failed with exactly this program error.

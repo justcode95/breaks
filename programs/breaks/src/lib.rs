@@ -147,6 +147,11 @@ pub mod breaks {
         ctx.accounts.handle(&ctx.bumps)
     }
 
+    /// Anyone, once the eligibility list is committed, and only for a break that `fund_purchases` can never pay for.
+    pub fn cancel_unfundable(ctx: Context<CancelUnfundable>) -> Result<()> {
+        ctx.accounts.handle(&ctx.bumps)
+    }
+
     /// Anyone; the money goes to the spot's owner.
     pub fn refund_spot(ctx: Context<RefundSpot>) -> Result<()> {
         ctx.accounts.handle()

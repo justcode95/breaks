@@ -172,6 +172,7 @@ const breaksBuilders: Record<string, Builder> = {
       })),
     }),
   "breaks.cancel_break": (i) => breaks.cancelBreak(programs, { admin: i.admin, breakId: big(i.breakId) }),
+  "breaks.cancel_unfundable": (i) => breaks.cancelUnfundable(programs, { breakId: big(i.breakId) }),
   "breaks.refund_spot": (i) =>
     breaks.refundSpot(programs, { breakId: big(i.breakId), index: i.index, ownerUsdc: i.ownerUsdc }),
 };

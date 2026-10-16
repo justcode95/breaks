@@ -221,7 +221,7 @@ export class MockChain implements ChainClient, WalletReader {
     this.require(ix.programId === this.programs.breaks, `the model only knows the breaks and treasury programs, not ${ix.programId}`);
     const disc = hex(ix.data.subarray(0, 8));
     const args = new Reader(ix.data.subarray(8));
-    const name = ["create_break", "close_break", "commit_eligibility", "fund_purchases", "commit_pool", "request_randomness", "settle_randomness", "claim_free_spot"].find(
+    const name = ["create_break", "close_break", "commit_eligibility", "fund_purchases", "cancel_unfundable", "commit_pool", "request_randomness", "settle_randomness", "claim_free_spot"].find(
       (n) => hex(instructionDiscriminator(n)) === disc,
     );
     if (!name) throw new Error(`the mock chain does not model instruction ${disc}`);
@@ -237,6 +237,9 @@ export class MockChain implements ChainClient, WalletReader {
         break;
       case "fund_purchases":
         this.fundPurchases(ix);
+        break;
+      case "cancel_unfundable":
+        this.cancelUnfundable(ix);
         break;
       case "commit_pool":
         this.commitPool(ix, args);
@@ -373,6 +376,37 @@ export class MockChain implements ChainClient, WalletReader {
     b.status = "EligibilityCommitted";
   }
 
+  // programs/breaks/src/math.rs (`plan_pool`): the packs a closed break buys, or why it cannot buy any. The packs bought are the
+  // first `poolSize` of the list, and the buyers must not have paid more than those packs cost on average (a break nobody paid for
+  // has nothing to protect). `fund_purchases` and `cancel_unfundable` both ask it, as in the program.
+  private planPool(b: BreakAccount) {
+    const drawnFree = Math.min(b.freeSpots, b.eligibilityCount);
+    const poolSize = b.spotsSold + drawnFree;
+    if (poolSize === 0) return { drawnFree, poolSize, budget: 0n, average: 0n, unfundable: "EmptyPool" as const };
+    this.require(poolSize <= b.packs.length, "InvalidPackList");
+    const priceOf = (pack: number) => (b.tiers[b.packs[pack] as number] as { maxPrice: bigint }).maxPrice;
+    const budget = b.packs.slice(0, poolSize).reduce((sum, _, i) => sum + priceOf(i), 0n);
+    const average = budget / BigInt(poolSize);
+    const unfundable = b.spotsSold > 0 && b.spotPrice > average ? ("PacksWorthLessThanSpots" as const) : undefined;
+    return { drawnFree, poolSize, budget, average, unfundable };
+  }
+
+  // programs/breaks/src/cancel.rs (`CancelUnfundable`): anyone (no account signs), only once the eligibility list is committed, only
+  // while `fund_purchases` would refuse for good, and also while the program is paused. Releases what the break locked.
+  private cancelUnfundable(ix: Instruction) {
+    this.require(!ix.accounts.some((a) => a.isSigner), "no account of cancel_unfundable signs");
+    const b = this.breakAt((ix.accounts[0] as Instruction["accounts"][number]).pubkey);
+    this.require(b.status === "EligibilityCommitted", "WrongStatus");
+    this.require(this.planPool(b).unfundable !== undefined, "BreakIsFundable");
+    if (b.lockedSubsidy > 0n || b.lockedHolder > 0n) {
+      this.treasury.config.lockedSubsidy -= b.lockedSubsidy;
+      this.treasury.config.lockedHolder -= b.lockedHolder;
+    }
+    b.lockedSubsidy = 0n;
+    b.lockedHolder = 0n;
+    b.status = "Cancelled";
+  }
+
   // programs/breaks/src/lifecycle.rs and math.rs (`funding`); the USDC itself is not modelled
   private fundPurchases(ix: Instruction) {
     this.requireKeeper(ix, 0);
@@ -381,16 +415,9 @@ export class MockChain implements ChainClient, WalletReader {
     this.require(b.status === "EligibilityCommitted", "WrongStatus");
     const buyerUsdc = (ix.accounts[4] as Instruction["accounts"][number]).pubkey;
     this.require(buyerUsdc === associatedTokenAddress(this.config.buyer, this.config.usdcMint) && this.tokenAccounts.has(buyerUsdc), "ConstraintTokenOwner");
-    const drawnFree = Math.min(b.freeSpots, b.eligibilityCount);
-    const poolSize = b.spotsSold + drawnFree;
-    this.require(poolSize > 0, "EmptyPool");
-    // The packs bought are the first `poolSize` of the list, and the buyers must not have paid more than those packs cost on
-    // average (a break nobody paid for has nothing to protect).
-    this.require(poolSize <= b.packs.length, "InvalidPackList");
-    const priceOf = (pack: number) => (b.tiers[b.packs[pack] as number] as { maxPrice: bigint }).maxPrice;
-    const budget = b.packs.slice(0, poolSize).reduce((sum, _, i) => sum + priceOf(i), 0n);
-    const average = budget / BigInt(poolSize);
-    this.require(b.spotsSold === 0 || b.spotPrice <= average, "PacksWorthLessThanSpots");
+    const { drawnFree, poolSize, budget, average, unfundable } = this.planPool(b);
+    this.require(unfundable !== "EmptyPool", "EmptyPool");
+    this.require(unfundable !== "PacksWorthLessThanSpots", "PacksWorthLessThanSpots");
     b.poolSize = poolSize;
     b.packBudget = budget;
     // The pack budget leaves the treasury's locked funds and what was not needed is unlocked. A break that was not

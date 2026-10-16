@@ -512,6 +512,61 @@ describe("the jobs, with a pack list of several machines", () => {
   });
 });
 
+describe("the jobs, with a break nobody joins", () => {
+  const D = 1_000_000n;
+
+  it("cancel it once its list is committed, since anyone may and nothing else can be done with it, and the reserve it held lets the scheduler make the next break", async () => {
+    const db = shared;
+    const w = world({ status: "Open", id: 8n });
+    const { log, errors } = logger();
+    w.chain.breaks.clear();
+    w.chain.spots.clear();
+    w.chain.config.nextBreakId = 0n;
+    // Exactly enough for one break of the default template (3 paid at $20 and 2 free, $25 packs): $15 and $50.
+    w.chain.treasury.subsidyVault = 15n * D;
+    w.chain.treasury.holderVault = 50n * D;
+
+    let clock = Number(w.chain.unixTime) * 1000;
+    const startSecs = clock / 1000;
+    await db.exec("truncate breaks, indexed_accounts, balance_events, indexer_state cascade");
+    await db.query("delete from exclusions");
+    // A holder exists, but holds far less than the minimum, so the list that is committed is empty.
+    const ledger = new TokenLedger(startSecs - 5000);
+    ledger.at(startSecs - 4000);
+    ledger.mintTo(ledger.holder("small"), 5n);
+
+    const cfg = { ...config, eligibility: { minTwab: 1_000_000n, settleSecs: 120 } };
+    const jobs = await buildJobs(cfg, { sql: db, chain: w.chain, reader: ledger, wallets: w.chain, keeper: KEEPER, log, now: () => new Date(clock) });
+    const runner = createRunner(jobs, { now: () => new Date(clock), log });
+    const tick = async () => {
+      w.chain.unixTime = BigInt(Math.floor(clock / 1000));
+      await runner.tick();
+      clock += 1000;
+    };
+
+    await tick();
+    await tick();
+    const first = w.chain.breaks.get(0n)!;
+    expect(first.status).toBe("Open");
+    expect(w.chain.treasury.config).toMatchObject({ lockedSubsidy: 15n * D, lockedHolder: 50n * D });
+
+    // Nobody buys. The sale ends, the keeper closes the break and commits the empty list, and then cancels it.
+    clock = (Number(first.closesAt) + 120 + 120 + 10) * 1000;
+    for (let i = 0; i < 40 && w.chain.breaks.get(0n)!.status !== "Cancelled"; i++) await tick();
+    expect(w.chain.breaks.get(0n)).toMatchObject({ status: "Cancelled", spotsSold: 0, lockedSubsidy: 0n, lockedHolder: 0n });
+    expect(w.chain.applied.filter((n) => n !== "create_break")).toEqual(expect.arrayContaining(["close_break", "commit_eligibility", "cancel_unfundable"]));
+    expect(w.chain.applied).not.toContain("fund_purchases");
+    expect((await db.query<{ status: string }>("select status from breaks where onchain_id = 0")).rows[0]?.status).toBe("cancelled");
+
+    // The money it reserved is free again, so the scheduler creates the next break.
+    for (let i = 0; i < 10 && !w.chain.breaks.get(1n); i++) await tick();
+    expect(w.chain.breaks.get(1n)).toMatchObject({ status: "Open" });
+    expect(w.chain.treasury.config).toMatchObject({ lockedSubsidy: 15n * D, lockedHolder: 50n * D });
+    expect(w.chain.treasury).toMatchObject({ subsidyVault: 15n * D, holderVault: 50n * D });
+    expect(errors).toEqual([]);
+  });
+});
+
 describe("the jobs, with the fee sweep", () => {
   it("deposit the USDC in the keeper's wallet into the treasury, and then the scheduler can create the break", async () => {
     const db = shared;

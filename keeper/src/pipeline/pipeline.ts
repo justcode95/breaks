@@ -28,6 +28,7 @@ import {
   type Programs,
   breakAddress,
   claimFreeSpot,
+  cancelUnfundable,
   closeBreak,
   commitEligibility,
   commitPool,
@@ -230,19 +231,26 @@ export class BreakPipeline {
   /** `fund_purchases` sends the pack budget to the buyer wallet, so everything it depends on is checked first. */
   private async fund(active: ActiveBreak, b: BreakAccount, config: BreaksConfigAccount, report: PipelineReport): Promise<Step> {
     const { chain, planner, keeper, programs } = this.deps;
-    if (config.paused) return wait("the program is paused: fund_purchases is stopped");
 
+    // A break the program can never fund is cancelled, by anyone: there is no other way out for it, and its buyers' money would
+    // sit in escrow. That is the case when nobody joined, or when the packs that would be bought (the first `poolSize` of the
+    // list, so a break that did not fill may have lost its expensive ones) are worth less on average than the spots cost
+    // (math.rs `unfundable`, the rule `fund_purchases` itself uses). This comes before the pause, since cancelling works while
+    // paused. The spots are then refunded (`refund_spot`, by their owners or anyone).
     const poolSize = b.spotsSold + Math.min(b.freeSpots, b.eligibilityCount);
-    if (poolSize === 0) return problem("nothing to fund: no paid spot was sold and nobody is eligible; the admin must cancel this break");
-    // The program does not pay for packs that are worth less than the spots cost on average (math.rs `funding`): the first
-    // `poolSize` packs of the list are the ones bought, so a break that did not fill may have lost its expensive ones.
-    // Only the admin can cancel such a break; the spots are then refunded.
     const worth = packCost(b, poolSize);
-    if (b.spotsSold > 0 && b.spotPrice * BigInt(poolSize) > worth) {
-      return problem(
-        `the ${poolSize} packs that would be bought cost at most ${worth} in all, less than the ${b.spotsSold} spot(s) paid at ${b.spotPrice} each on average; the program will not fund this break: the admin must cancel it and the spots can be refunded`,
-      );
+    const reason =
+      poolSize === 0
+        ? "no paid spot was sold and nobody is eligible: there is no pack to buy"
+        : b.spotsSold > 0 && b.spotPrice * BigInt(poolSize) > worth
+          ? `the ${poolSize} packs that would be bought cost at most ${worth} in all, less than the ${b.spotsSold} spot(s) paid at ${b.spotPrice} each on average`
+          : undefined;
+    if (reason !== undefined) {
+      this.deps.log.info("cancelling a break that cannot be funded", { break: active.id, reason });
+      return this.send(active, b, "cancel_unfundable", cancelUnfundable(programs, { breakId: active.onchainId }), report);
     }
+
+    if (config.paused) return wait("the program is paused: fund_purchases is stopped");
 
     // The free-spot winners can only be claimed from the list that was committed, so it must be in hand before money moves.
     const v = await planner.committed(active.id);
