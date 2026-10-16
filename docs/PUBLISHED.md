@@ -161,6 +161,23 @@ draw itself from being checked.
 The only thing a request contains is the file's name (a hash from the chain): no cookies, no `Referer`, no credentials.
 The break's page links the same files.
 
+The "My spots" page reads the records too, to show the connected wallet where it stands. It looks at the newest ten breaks
+that are not cancelled. Each break whose list is committed has its `<folder>/records/<inputs hash>.json` fetched, and the
+record is used only if:
+
+- it states the break account's commitments and window, as above;
+- the wallets it puts on the list, hashed with the page's own tree, build the committed root, total weight and count.
+
+The page then shows the wallet's own line:
+
+- on the list, with its average balance and weight;
+- out, with its reason;
+- not in the record at all, which means it held none of the token before the sale ended.
+
+That line must follow from the record's rules and agree with the free-spot winners the chain recorded. Only this one
+wallet's line is checked against the rules there; the verify page checks every wallet of one break. A record that passed is
+kept for the visit, so it is not fetched again; one that was missing or wrong is fetched again on the next read.
+
 `docs/published-example/` holds a small list, its balance events, its record and a pool, made by the keeper's own code. The
 record has one wallet for each reason a wallet is out (an exchange that is excluded, a wallet below the minimum and a pool's
 vault off the curve). The keeper's tests pin them, and the

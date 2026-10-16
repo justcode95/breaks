@@ -31,7 +31,7 @@ const win = (breakNumber: number, position: number, weight = 250n): MyFreeWin =>
   weight,
   break: brk(breakNumber - 1, { freeSpots: 3, eligibilityTotalWeight: 1000n }),
 });
-const mine = (over: Partial<Mine> = {}): Mine => ({ spots: [], truncated: false, freeWins: [], searched: 5, totalBreaks: 5, ...over });
+const mine = (over: Partial<Mine> = {}): Mine => ({ spots: [], truncated: false, freeWins: [], searched: 5, totalBreaks: 5, recent: [], ...over });
 const render = (m: Mine) => renderToStaticMarkup(createElement(MySpotsView, { mine: m, now: NOW }));
 const text = (html: string) => html.replace(/<[^>]*>/g, " ").replace(/&amp;/g, "&").replace(/&#x27;/g, "'").replace(/\s+/g, " ").trim();
 

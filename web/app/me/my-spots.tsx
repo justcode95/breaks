@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { waitForRefund } from "../../lib/chain/follow";
+import type { BreakRow } from "../../lib/chain/list";
 import { type Mine, type MySpot, loadMine } from "../../lib/chain/mine";
 import { refundSpot } from "../../lib/chain/refund";
 import { idleRefund, refundReducer } from "../../lib/chain/refund-state";
@@ -9,6 +10,7 @@ import { runRefund } from "../../lib/chain/run-refund";
 import { SETUP } from "../../lib/site";
 import { useWallet } from "../../lib/wallet/provider";
 import { shortAddress } from "../../lib/wallet/wallets";
+import { MyStanding } from "./my-standing";
 import { RefundStatusView } from "./refund-status";
 import { MySpotsView } from "./rows";
 
@@ -23,6 +25,9 @@ export function MySpots() {
   const address = connected?.account.address;
   const [view, setView] = useState<State>({ state: "loading" });
   const [refund, dispatch] = useReducer(refundReducer, idleRefund);
+  // The newest breaks, from the last read that worked. They are the same for every wallet, so the free-spot lists stay on the
+  // page (and are not read again) while the spots are read again or another wallet's are read.
+  const [breaks, setBreaks] = useState<BreakRow[] | undefined>(undefined);
 
   // The page can go away in the middle of a refund (the visitor leaves): nothing should go on polling for it then.
   const alive = useRef(true);
@@ -40,7 +45,10 @@ export function MySpots() {
     if (!address || SETUP.kind !== "on") throw new Error("There is no wallet or chain to read.");
     const mine = ++newest.current;
     const m = await loadMine({ ...SETUP.config, owner: address });
-    if (mine === newest.current) setView({ state: "loaded", mine: m, readAt: nowSecs() });
+    if (mine === newest.current) {
+      setView({ state: "loaded", mine: m, readAt: nowSecs() });
+      setBreaks(m.recent);
+    }
     return m;
   }, [address]);
 
@@ -98,9 +106,10 @@ export function MySpots() {
           <div className="actions">
             <button type="button" className="secondary" onClick={load}>Refresh</button>
           </div>
-          <p className="hint">Read from the chain (finalized). Nothing here comes from a server of ours.</p>
+          <p className="hint">The spots are read from the chain (finalized). Nothing in them comes from a server of ours.</p>
         </>
       )}
+      {breaks && view.state !== "error" && <MyStanding owner={address} rows={breaks} />}
     </div>
   );
 }
