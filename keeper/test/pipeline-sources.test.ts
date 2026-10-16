@@ -315,6 +315,27 @@ describe("against the real schema", () => {
     expect((await repo.activeBreaks()).find((b) => b.id === id)).toBeUndefined();
   });
 
+  it("the repo lists cancelled breaks for the refund job until they are marked refunded, and a refunded break is no longer active", async () => {
+    const repo = new SqlBreakRepo(db);
+    const id = await insertBreak(db);
+    const noChainId = await insertBreak(db);
+    await db.query("update breaks set onchain_id = $2 where id = $1::bigint", [id, 2002]);
+    await repo.setStatus(noChainId, "cancelled");
+    // Not cancelled yet: not for the refund job.
+    expect((await repo.cancelledBreaks()).find((b) => b.id === id)).toBeUndefined();
+
+    await repo.setStatus(id, "cancelled");
+    expect((await repo.cancelledBreaks()).find((b) => b.id === id)).toEqual({ id, onchainId: 2002n, status: "cancelled" });
+    // A cancelled break is not one the pipeline advances, and one with no on-chain id is not one the refund job can read.
+    expect((await repo.activeBreaks()).find((b) => b.id === id)).toBeUndefined();
+    expect((await repo.cancelledBreaks()).find((b) => b.id === noChainId)).toBeUndefined();
+
+    await repo.setStatus(id, "refunded");
+    expect((await repo.cancelledBreaks()).find((b) => b.id === id)).toBeUndefined();
+    expect((await repo.activeBreaks()).find((b) => b.id === id)).toBeUndefined();
+    expect((await db.query<{ status: string }>("select status from breaks where id = $1::bigint", [id])).rows[0]?.status).toBe("refunded");
+  });
+
   it("the repo copies spots from the chain, keeps what is there, and refuses a different wallet", async () => {
     const repo = new SqlBreakRepo(db);
     const id = await insertBreak(db);

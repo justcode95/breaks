@@ -18,6 +18,7 @@ import {
   breakAddress,
   configAddress,
   drawSeed,
+  escrowAddress,
   oraoNetworkState,
   requestAddress,
   requestId,
@@ -66,6 +67,8 @@ export class MockChain implements ChainClient, WalletReader {
   public readonly solBalances = new Map<Address, bigint>();
   /** USDC token accounts by address: who owns them and what they hold. */
   public readonly usdc = new Map<Address, { owner: Address; amount: bigint }>();
+  /** What each break's escrow holds, micro-USDC: `addSpot` puts a spot's price in, `refund_spot` takes it out. `buy_spot` is not modelled. */
+  public readonly escrow = new Map<bigint, bigint>();
   /** Any other account the test wants the chain to have (a token mint, say). */
   public readonly accounts = new Map<Address, Uint8Array>();
   /**
@@ -167,6 +170,8 @@ export class MockChain implements ChainClient, WalletReader {
       requests: new Map([...this.requests].map(([k, v]) => [k, structuredClone(v)] as const)),
       config: { ...this.config },
       usdc: new Map([...this.usdc].map(([k, v]) => [k, { ...v }] as const)),
+      spots: new Map([...this.spots].map(([k, v]) => [k, { ...v }] as const)),
+      escrow: new Map(this.escrow),
       treasury: { config: { ...this.treasury.config }, subsidyVault: this.treasury.subsidyVault, holderVault: this.treasury.holderVault },
     };
   }
@@ -179,6 +184,10 @@ export class MockChain implements ChainClient, WalletReader {
     this.config = s.config;
     this.usdc.clear();
     for (const [k, v] of s.usdc) this.usdc.set(k, v);
+    this.spots.clear();
+    for (const [k, v] of s.spots) this.spots.set(k, v);
+    this.escrow.clear();
+    for (const [k, v] of s.escrow) this.escrow.set(k, v);
     this.treasury.config = s.treasury.config;
     this.treasury.subsidyVault = s.treasury.subsidyVault;
     this.treasury.holderVault = s.treasury.holderVault;
@@ -221,7 +230,7 @@ export class MockChain implements ChainClient, WalletReader {
     this.require(ix.programId === this.programs.breaks, `the model only knows the breaks and treasury programs, not ${ix.programId}`);
     const disc = hex(ix.data.subarray(0, 8));
     const args = new Reader(ix.data.subarray(8));
-    const name = ["create_break", "close_break", "commit_eligibility", "fund_purchases", "cancel_unfundable", "commit_pool", "request_randomness", "settle_randomness", "claim_free_spot"].find(
+    const name = ["create_break", "close_break", "commit_eligibility", "fund_purchases", "cancel_unfundable", "refund_spot", "commit_pool", "request_randomness", "settle_randomness", "claim_free_spot"].find(
       (n) => hex(instructionDiscriminator(n)) === disc,
     );
     if (!name) throw new Error(`the mock chain does not model instruction ${disc}`);
@@ -240,6 +249,9 @@ export class MockChain implements ChainClient, WalletReader {
         break;
       case "cancel_unfundable":
         this.cancelUnfundable(ix);
+        break;
+      case "refund_spot":
+        this.refundSpot(ix);
         break;
       case "commit_pool":
         this.commitPool(ix, args);
@@ -407,6 +419,26 @@ export class MockChain implements ChainClient, WalletReader {
     b.status = "Cancelled";
   }
 
+  // programs/breaks/src/cancel.rs (`RefundSpot`): anyone (no account signs), only on a cancelled break, once per spot, and the money
+  // goes to a token account that belongs to the spot's owner. Accounts: break, escrow, spot, the owner's USDC account, token program.
+  private refundSpot(ix: Instruction) {
+    this.require(!ix.accounts.some((a) => a.isSigner), "no account of refund_spot signs");
+    const key = (i: number) => (ix.accounts[i] as Instruction["accounts"][number]).pubkey;
+    const b = this.breakAt(key(0));
+    this.require(key(1) === escrowAddress(this.programs, key(0)), "ConstraintSeeds");
+    const spot = this.spots.get(key(2));
+    this.require(spot !== undefined && spot.breakId === b.id && key(2) === spotAddress(this.programs, key(0), spot.index), "ConstraintSeeds");
+    const dest = this.usdc.get(key(3));
+    this.require(dest !== undefined && dest.owner === spot.owner, "ConstraintTokenOwner");
+    this.require(b.status === "Cancelled", "WrongStatus");
+    this.require(!spot.refunded, "AlreadyRefunded");
+    const held = this.escrow.get(b.id) ?? 0n;
+    this.require(held >= spot.paid, "InsufficientFunds");
+    spot.refunded = true;
+    this.escrow.set(b.id, held - spot.paid);
+    dest.amount += spot.paid;
+  }
+
   // programs/breaks/src/lifecycle.rs and math.rs (`funding`); the USDC itself is not modelled
   private fundPurchases(ix: Instruction) {
     this.requireKeeper(ix, 0);
@@ -548,6 +580,7 @@ export class MockChain implements ChainClient, WalletReader {
     const b = this.breaks.get(s.breakId);
     if (!b) throw new Error("no such break");
     this.spots.set(spotAddress(this.programs, breakAddress(this.programs, s.breakId), s.index), s);
+    this.escrow.set(s.breakId, (this.escrow.get(s.breakId) ?? 0n) + s.paid);
   }
 }
 
