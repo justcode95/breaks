@@ -9,12 +9,15 @@ import { buildEligibility, serializeInputs } from "../src/eligibility/eligibilit
 import { type BalanceEvent, twabByOwner } from "../src/eligibility/twab.js";
 import { DbPublisher, SqlEligibilityPlanner, listDocument } from "../src/eligibility/planner.js";
 import { compareBytes, hashv, toHex, utf8 } from "../src/draw/bytes.js";
-import { poolHash } from "../src/draw/pool.js";
+import { drawFreeWinners } from "../src/draw/draw.js";
+import { assignCards, poolHash } from "../src/draw/pool.js";
 import { type Leaf, Tree } from "../src/draw/tree.js";
 import type { JobContext } from "../src/job.js";
 import type { AccountReader } from "../src/pipeline/chain.js";
 import { PublishExporter, publishJob } from "../src/publish/exporter.js";
-import { eligibilityFile, inputsFile, poolFile, recordFile } from "../src/publish/files.js";
+import { buildDeliveryPlan } from "../src/delivery/plan.js";
+import { eligibilityFile, inputsFile, ledgerFile, poolFile, recordFile } from "../src/publish/files.js";
+import { buildLedger } from "../src/publish/ledger.js";
 import { checkRecord, parseStoredRecord } from "../src/publish/record.js";
 import { parseInputsText } from "../src/eligibility/inputs-text.js";
 import { DirSink, PublishedMismatch } from "../src/publish/sink.js";
@@ -238,7 +241,66 @@ describe("the published example the website reads", () => {
   const eligibility = buildEligibility({ events, window: WINDOW, policy: POLICY, exclusions: EXCLUDED });
   const values = { root: tree.root.hash, totalWeight: tree.root.sum, entryCount: leaves.length, inputsHash: hashv(utf8(inputsText)) };
   const record = parseStoredRecord(listDocument("example", WINDOW, POLICY, values, eligibility));
-  const made = [eligibilityFile(tree.root.hash, tree.root.sum, leaves), poolFile(poolHash(cards), cards), inputsFile(inputsText), recordFile(record)];
+  // The break these lists belong to, drawn and delivered: three paid spots and the two free winners the draw really gives for
+  // this seed and list, so the ledger can be checked against a draw that happened (the website's tests rebuild it from these
+  // values: break id 7, seed 0x5a × 32, the paid spots bought by holders 11, 12 and 13, two free spots). One pack's price is not
+  // known (its purchase was found in the wallet's history), one pack has no proof reference and one card was found at its
+  // wallet without a transfer on record, so every null the format allows is in it.
+  const SEED = new Uint8Array(32).fill(0x5a);
+  const BUYERS = [11, 12, 13].map(holder);
+  const winners = drawFreeWinners(SEED, leaves, 2).map((w) => ({ wallet: toBase58((leaves[w.leafIndex] as Leaf).wallet), start: w.start, weight: w.weight }));
+  const drawnBreak = brk({
+    id: 7n,
+    status: "Drawn",
+    spotsSold: 3,
+    freeSpots: 2,
+    poolSize: 5,
+    seed: SEED,
+    poolHash: poolHash(cards),
+    eligibilityRoot: tree.root.hash,
+    eligibilityTotalWeight: tree.root.sum,
+    eligibilityCount: leaves.length,
+    eligibilityInputsHash: hashv(utf8(inputsText)),
+    opensAt: BigInt(WINDOW.start),
+    closesAt: BigInt(WINDOW.end),
+    freeWinnerCount: 2,
+    freeWinners: [...winners, ...Array.from({ length: 14 }, () => ({ wallet: addr(0), start: 0n, weight: 0n }))],
+  });
+  const paidSpots = BUYERS.map((owner, index) => ({ breakId: 7n, index, owner, paid: 20_000_000n, refunded: false, bump: 255 }));
+  const cardMints = cards.map(toBase58);
+  const plan = buildDeliveryPlan({ breakId: "example", buyer: holder(90), chain: drawnBreak, paidSpots, cards: cardMints });
+  const ledger = buildLedger({
+    chain: drawnBreak,
+    buyer: holder(90),
+    paidSpots,
+    packs: cardMints.map((card, i) => ({
+      index: i,
+      status: "pulled",
+      purchaseSig: `example-buy-${i + 1}`,
+      ...(i === 2 ? {} : { price: 20_000_000n + BigInt(i) * 1_000_000n }),
+      cardMint: card,
+      ...(i === 4 ? {} : { proofRef: `example-proof-${i + 1}` }),
+    })),
+    deliveries: plan.deliveries.map((d, i) => ({
+      kind: d.spot.kind,
+      idx: d.spot.idx,
+      recipient: d.recipient,
+      cardMint: d.cardMint,
+      status: "confirmed",
+      ...(i === 1 ? {} : { txSig: `example-send-${d.spot.kind}-${d.spot.idx + 1}` }),
+      adopted: i === 1,
+    })),
+  });
+  const made = [eligibilityFile(tree.root.hash, tree.root.sum, leaves), poolFile(poolHash(cards), cards), inputsFile(inputsText), recordFile(record), ledgerFile(ledger)];
+
+  it("has a ledger of a draw that really happened: the free winners are drawn from the list, every card goes where the draw says", () => {
+    expect(winners.map((w) => w.wallet).every((w) => leaves.some((l) => toBase58(l.wallet) === w))).toBe(true);
+    expect(new Set(winners.map((w) => w.wallet)).size).toBe(2);
+    expect(ledger.spots.map((x) => x.wallet)).toEqual([...BUYERS, ...winners.map((w) => w.wallet)]);
+    expect(ledger.spots.map((x) => x.card)).toEqual(assignCards(SEED, cards, BUYERS, winners.map((w) => w.wallet)).map((a) => toBase58(a.card)));
+    expect(ledger.packs.map((p) => p.card)).toEqual(cardMints);
+    expect([ledger.packs[2]?.price, ledger.packs[4]?.proof, ledger.spots[1]?.deliveryTx]).toEqual([undefined, undefined, undefined]);
+  });
 
   it("has balance events whose time-weighted average balances are the weights on the list, and one wallet that is not on it", () => {
     const twab = twabByOwner(events, WINDOW);
@@ -270,6 +332,7 @@ describe("the published example the website reads", () => {
       ...(await readdir(join(EXAMPLE, "inputs"))).map((n) => `inputs/${n}`),
       ...(await readdir(join(EXAMPLE, "pool"))).map((n) => `pool/${n}`),
       ...(await readdir(join(EXAMPLE, "records"))).map((n) => `records/${n}`),
+      ...(await readdir(join(EXAMPLE, "ledger"))).map((n) => `ledger/${n}`),
     ].sort();
     expect(found).toEqual(made.map((f) => f.path).sort());
   });
@@ -315,12 +378,12 @@ describe("publishing a committed eligibility list", () => {
   });
 
   it("publishes every committed break, newest first, and also a later one on a later run", async () => {
-    const first = await makeBreak(0n, "delivered", { weights: [[1, 5n], [2, 5n]] });
+    const first = await makeBreak(0n, "drawn", { weights: [[1, 5n], [2, 5n]] });
     const second = await makeBreak(1n, "eligibility_committed", { weights: [[3, 9n]] });
     const chain = chainOf(first, second);
     const report = await exporter(chain.reader).run();
     expect(report.problems).toEqual([]);
-    // Newest first (the first break is delivered, so its cards are published too).
+    // Newest first (the first break is drawn, so its cards are published too).
     expect(report.written.filter((p) => p.startsWith("eligibility/"))).toEqual([`eligibility/${toHex(second.chain.eligibilityRoot)}.json`, `eligibility/${toHex(first.chain.eligibilityRoot)}.json`]);
     expect(report.written).toHaveLength(7);
     expect((await files("eligibility")).length).toBe(2);
@@ -522,8 +585,8 @@ describe("publishing the balance events behind the weights", () => {
   });
 
   it("keeps the record of one break apart from another's, since the window and so the text differ", async () => {
-    const first = await makeBreak(0n, "delivered");
-    const second = await makeBreak(1n, "delivered");
+    const first = await makeBreak(0n, "drawn");
+    const second = await makeBreak(1n, "drawn");
     expect(inputsPath(first)).not.toBe(inputsPath(second));
     const report = await exporter(chainOf(first, second).reader).run();
     expect(report.problems).toEqual([]);
@@ -608,7 +671,9 @@ describe("publishing the cards", () => {
     const drawn = await makeBreak(1n, "drawn", { chainStatus: "Drawn", cards: [addr(41), addr(42)] });
     const delivered = await makeBreak(2n, "delivered", { chainStatus: "Drawn", cards: [addr(43), addr(44)] });
     const report = await exporter(chainOf(drawn, delivered).reader).run();
-    expect(report.problems).toEqual([]);
+    // The delivered break's ledger cannot be made here (this chain has no config account and the break no deliveries on
+    // record): that is reported, and its cards still go out.
+    expect(report.problems).toEqual([{ breakId: delivered.breakId, message: "the breaks program has no config account on chain" }]);
     expect((await files("pool")).length).toBe(2);
   });
 

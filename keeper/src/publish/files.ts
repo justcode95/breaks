@@ -7,6 +7,8 @@
 //   pool/<pool hash>.json        pool hash = what `commit_pool` committed (64 hex digits)
 //   records/<inputs hash>.json   every wallet's average balance, weight and reason, under the same inputs hash as the text it
 //                                was computed from (the hash is a pointer here, not this file's own hash: see record.ts)
+//   ledger/<pool hash>.json      every pack's price, purchase and card, and every spot's wallet, card and delivery, once all
+//                                the cards are delivered (a pointer too: see ledger.ts)
 //
 // The bytes of a file are fixed by the data alone (compact JSON, a newline at the end, entries in the order the tree
 // sorts them), so publishing the same list twice writes the same file. docs/PUBLISHED.md describes the formats.
@@ -15,6 +17,7 @@ import { hashv, toHex, utf8 } from "../draw/bytes.js";
 import { sortedPool } from "../draw/pool.js";
 import type { Leaf } from "../draw/tree.js";
 import { addressFromBytes } from "../solana/pubkey.js";
+import type { Ledger } from "./ledger.js";
 import type { EligibilityRecord } from "./record.js";
 
 export const FORMAT_VERSION = 1;
@@ -79,6 +82,28 @@ export function recordFile(r: EligibilityRecord): PublishedFile {
         window: { start: r.window.start, end: r.window.end },
         policy: { minTwab: r.policy.minTwab.toString(), ...(r.policy.capPerWallet !== undefined ? { capPerWallet: r.policy.capPerWallet.toString() } : {}) },
         wallets: r.wallets.map((w) => ({ wallet: w.wallet, twab: w.twab.toString(), weight: w.weight.toString(), reason: w.reason })),
+      }) + "\n",
+  };
+}
+
+/**
+ * The per-spot ledger of a delivered break: the buyer wallet (which paid for the packs, held the cards and sent them), each pack's price (null when the purchase was found in the wallet's history and
+ * its price is not known), purchase transaction, card and proof reference (null when there is none), in the order of the
+ * break's pack list; and each spot's wallet, card and delivery transaction (null when the card was found at the wallet without
+ * a transfer of ours on record), paid spots in purchase order and then free spots in draw order. Named by the pool hash the
+ * chain committed, the one thing a reader has that points to it.
+ */
+export function ledgerFile(l: Ledger): PublishedFile {
+  return {
+    path: `ledger/${l.poolHash}.json`,
+    body:
+      JSON.stringify({
+        version: FORMAT_VERSION,
+        kind: "ledger",
+        poolHash: l.poolHash,
+        buyer: l.buyer,
+        packs: l.packs.map((p) => ({ index: p.index, price: p.price?.toString() ?? null, purchaseTx: p.purchaseTx, card: p.card, proof: p.proof ?? null })),
+        spots: l.spots.map((s) => ({ kind: s.kind, index: s.index, wallet: s.wallet, card: s.card, deliveryTx: s.deliveryTx ?? null })),
       }) + "\n",
   };
 }

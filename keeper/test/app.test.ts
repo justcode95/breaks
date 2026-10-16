@@ -736,7 +736,7 @@ describe("the jobs, with the lists published as files", () => {
     const jobs = await buildJobs(on({ intervalSecs: 45 }), { sql: shared, chain: w.chain, finalized: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log });
     expect(jobs.map((j) => j.name)).toEqual(["indexer", "scheduler", "publish", "pipeline", "pack-buyer", "delivery", "refunds"]);
     expect(jobs.find((j) => j.name === "publish")?.intervalMs).toBe(45_000);
-    expect(infos).toContain("publishing eligibility lists, the balance events behind them and card pools as files");
+    expect(infos).toContain("publishing eligibility lists, the balance events and records behind them, card pools and the ledgers of delivered breaks as files");
   });
 
   it("needs a chain reader at the finalized commitment: nothing is published against a commitment that could roll back", async () => {
@@ -786,6 +786,66 @@ describe("the jobs, with the lists published as files", () => {
       // And the record of why the holder is on the list, under the same inputs hash.
       expect(await readdir(join(dir, "records"))).toEqual([`${inputsHash}.json`]);
       expect(JSON.parse(await readFile(join(dir, "records", `${inputsHash}.json`), "utf8")).wallets).toEqual([{ wallet: holder, twab: "7", weight: "7", reason: null }]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes a delivered break's ledger, from the finalized view, and it is what the tables and the draw say", async () => {
+    await shared.exec("truncate packs, twab_snapshots, eligibility_lists, breaks cascade");
+    const w = world();
+    const id = await insertBreak(shared);
+    await shared.query("update breaks set onchain_id = 7, status = 'funded' where id = $1::bigint", [id]);
+    for (const leaf of w.leaves) {
+      await shared.query("insert into twab_snapshots (break_id, wallet, twab, weight, eligible) values ($1, $2, $3, $3, true)", [id, addressOf(leaf.wallet), leaf.weight]);
+    }
+    const dir = await mkdtemp(join(tmpdir(), "app-ledger-"));
+    try {
+      const { log, errors } = logger();
+      const jobs = await buildJobs(on({ dir }), { sql: shared, chain: w.chain, finalized: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log, now: w.clock.now });
+      const run = (name: string) => jobs.find((j) => j.name === name)!.run({ now: w.clock.now, log });
+      const status = async () => (await shared.query<{ status: string }>("select status from breaks where id = $1::bigint", [id])).rows[0]?.status;
+
+      // Buy and pull the packs, commit the pool, ask for randomness, settle and draw, then deliver every card.
+      await run("pack-buyer");
+      await run("pipeline");
+      w.chain.fulfill(requestAddress(ORAO_PROGRAM, w.chain.breaks.get(7n)!.randomnessRequestId), ANSWER);
+      await run("pipeline");
+      await run("delivery");
+      await run("delivery");
+      expect(await status()).toBe("delivered");
+
+      await run("publish");
+      expect(errors).toEqual([]);
+      const b = w.chain.breaks.get(7n)!;
+      const name = `${toHex(b.poolHash)}.json`;
+      expect(await readdir(join(dir, "ledger"))).toEqual([name]);
+      const ledger = JSON.parse(await readFile(join(dir, "ledger", name), "utf8"));
+      expect(ledger).toMatchObject({ version: 1, kind: "ledger", poolHash: toHex(b.poolHash) });
+
+      // Every pack as the buyer stored it, in the order of the pack list.
+      const packs = await shared.query<{ pack_index: number; price: string; purchase_sig: string; card_mint: string; proof_ref: string }>(
+        "select pack_index, price::text as price, purchase_sig, card_mint, proof_ref from packs where break_id = $1::bigint order by pack_index",
+        [id],
+      );
+      expect(ledger.packs).toEqual(packs.rows.map((r) => ({ index: r.pack_index, price: r.price, purchaseTx: r.purchase_sig, card: r.card_mint, proof: r.proof_ref })));
+      // Every spot: the wallet and the card the draw gives it, and the transaction that sent the card.
+      const owners = [10, 11, 12].map((n) => addr(n));
+      const winners = b.freeWinners.slice(0, 2).map((x) => x.wallet);
+      const assigned = assignCards(b.seed, packs.rows.map((r) => addressToBytes(r.card_mint)), owners, winners);
+      const sent = await shared.query<{ card_mint: string; tx_sig: string }>("select card_mint, tx_sig from deliveries where break_id = $1::bigint", [id]);
+      const txOf = new Map(sent.rows.map((r) => [r.card_mint, r.tx_sig]));
+      expect(ledger.spots).toEqual(
+        assigned.map((a, i) => {
+          const card = addressFromBytes(a.card);
+          return { kind: a.kind, index: a.kind === "paid" ? i : i - 3, wallet: a.owner, card, deliveryTx: txOf.get(card) };
+        }),
+      );
+      expect(ledger.spots.map((x: { wallet: string }) => x.wallet)).toEqual([...owners, ...winners]);
+
+      // Nothing more on the next run: the file is there.
+      await run("publish");
+      expect(await readdir(join(dir, "ledger"))).toEqual([name]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
