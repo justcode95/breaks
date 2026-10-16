@@ -7,6 +7,7 @@ import { type Loaded, LoadError, inputFromBreak, loadBreak } from "../lib/chain/
 import { getAccounts } from "../lib/chain/rpc";
 import { fromHex, toHex } from "../lib/draw/bytes";
 import { exampleInput } from "../lib/example";
+import { inputsHash } from "../lib/twab/inputs";
 import { type Verified, type VerifyResult, verifyDraw } from "../lib/verify";
 import { type BreakFields, type Served, breakFieldsFromVector, configFieldsFromVector, encodeBreak, encodeConfig, encodeSpot, fakeNode } from "./support/accounts";
 
@@ -53,14 +54,14 @@ function consistentBreak(over: Partial<BreakFields> = {}) {
     tiers: [{ machine: new Uint8Array(32).fill(0x77), maxPrice: 25_000_000n }],
     packs: Array<number>(12).fill(0),
     opensAt: 1_800_000_000n,
-    closesAt: 1_800_021_600n,
+    closesAt: 1_800_043_200n,
     spotsSold: paidOwners.length,
     lockedSubsidy: 0n,
     lockedHolder: 0n,
     eligibilityRoot: fromHex(r.eligibility.root),
     eligibilityTotalWeight: r.eligibility.totalWeight,
     eligibilityCount: r.eligibility.entries,
-    eligibilityInputsHash: new Uint8Array(32).fill(2),
+    eligibilityInputsHash: fromHex(inputsHash(input.inputs)),
     poolSize: 5,
     packBudget: 125_000_000n,
     poolHash: fromHex(r.poolHash as string),
@@ -100,8 +101,11 @@ describe("loading a break and checking it against what the chain recorded", () =
     expect(patch.seed).toBe(b.input.seed);
     expect(patch.freeSpots).toBe("2");
     expect(patch.paidOwners).toBe(b.paidOwners.join("\n"));
-    expect(patch.expected).toEqual({ root: toHex(b.fields.eligibilityRoot), totalWeight: String(b.r.eligibility.totalWeight), entryCount: "6", poolHash: toHex(b.fields.poolHash) });
+    expect(patch.expected).toEqual({ root: toHex(b.fields.eligibilityRoot), totalWeight: String(b.r.eligibility.totalWeight), entryCount: "6", inputsHash: toHex(b.fields.eligibilityInputsHash), poolHash: toHex(b.fields.poolHash) });
     expect(onChain.complete).toBe(true);
+    // The window the weights were measured over is the break's own, and the hash is the one the chain committed.
+    expect(onChain.window).toEqual({ start: 1_800_000_000n, end: 1_800_043_200n });
+    expect(patch.expected.inputsHash).toBe(inputsHash(b.input.inputs));
 
     // What is not on chain is pasted: the eligibility list and the cards.
     const result = ok(verifyDraw({ ...b.input, ...patch, onChain }));
@@ -109,6 +113,8 @@ describe("loading a break and checking it against what the chain recorded", () =
       ["Eligibility root", true],
       ["Total weight", true],
       ["Eligible wallets", true],
+      ["Balance-event hash", true],
+      ["Window of the balance events", true],
       ["Pool hash", true],
       ["Winner 1 recorded on chain", true],
       ["Winner 2 recorded on chain", true],
@@ -180,7 +186,7 @@ describe("a break that is not that far along", () => {
     for (const s of ["Open", "Closed"] as const) {
       const r = status(s);
       expect(r.patch.seed).toBe("");
-      expect(r.patch.expected).toEqual({ root: "", totalWeight: "", entryCount: "", poolHash: "" });
+      expect(r.patch.expected).toEqual({ root: "", totalWeight: "", entryCount: "", inputsHash: "", poolHash: "" });
       expect(r.notes).toEqual(["The eligibility list has not been committed yet, so there is nothing to compare it with.", "The randomness has not been settled yet, so there is no seed: the draw has not happened."]);
     }
     const committed = status("EligibilityCommitted");
@@ -196,7 +202,7 @@ describe("a break that is not that far along", () => {
   it("does not compare a cancelled break with anything", async () => {
     const b = consistentBreak({ status: "Cancelled" });
     const r = inputFromBreak(await load(b.accounts).promise);
-    expect(r.patch.expected).toEqual({ root: "", totalWeight: "", entryCount: "", poolHash: "" });
+    expect(r.patch.expected).toEqual({ root: "", totalWeight: "", entryCount: "", inputsHash: "", poolHash: "" });
     expect(r.patch.seed).toBe("");
     expect(r.notes).toEqual(["This break was cancelled: nothing was drawn."]);
   });

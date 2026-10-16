@@ -58,6 +58,9 @@ describe("the accounts, as the Rust program writes them", () => {
     expect([toHex(b.eligibilityRoot), toHex(b.poolHash), toHex(b.seed)]).toEqual([o.eligibilityRoot, o.poolHash, o.seed]);
     expect(b.tiers.map((t) => ({ machine: toHex(t.machine), maxPrice: t.maxPrice.toString() }))).toEqual(o.tiers);
     expect(b.packs).toEqual(o.packs);
+    // The hash of the published balance events: not the root, the pool hash or the seed, which are the fields around it.
+    expect(toHex(b.eligibilityInputsHash)).toBe(o.eligibilityInputsHash);
+    expect(toHex(b.eligibilityInputsHash)).not.toBe(toHex(b.eligibilityRoot));
     // Only the recorded winners are kept, not the empty slots.
     const winners = (o.freeWinners as { wallet: string; start: string; weight: string }[]).slice(0, o.freeWinnerCount as number);
     expect(b.freeWinners.map((w) => ({ wallet: w.wallet, start: w.start.toString(), weight: w.weight.toString() }))).toEqual(winners);
