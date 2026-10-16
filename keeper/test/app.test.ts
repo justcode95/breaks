@@ -98,8 +98,20 @@ describe("checkSchema", () => {
       "fee_swaps.signature is missing (migration 0007)",
       "bot_posts.valid_until is missing (migration 0008)",
       "breaks.status does not accept 'drawn' (migration 0004)",
+      "breaks.status does not accept 'refunded' (migration 0009)",
       "balance_events is not unique per owner (migration 0006)",
     ]);
+  });
+});
+
+describe("checkSchema, the refunded status", () => {
+  it("names a database that has every migration but 0009, since the refund job could not finish a break there", async () => {
+    const dir = join(import.meta.dirname, "..", "..", "db", "migrations");
+    const files = readdirSync(dir).sort();
+    expect(files.at(-1)).toMatch(/^0009_/);
+    const db = new PGlite();
+    for (const f of files.slice(0, -1)) await db.exec(readFileSync(join(dir, f), "utf8"));
+    expect(await checkSchema(db)).toEqual(["breaks.status does not accept 'refunded' (migration 0009)"]);
   });
 });
 
@@ -200,7 +212,7 @@ describe("buildJobs", () => {
     const w = world();
     const { log, errors } = logger();
     const jobs = await buildJobs({ ...config, programs: { breaks: addr(1), treasury: addr(2) } }, { sql: shared, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log });
-    expect(jobs.map((j) => j.name)).toEqual(["indexer", "scheduler", "pipeline", "pack-buyer", "delivery"]);
+    expect(jobs.map((j) => j.name)).toEqual(["indexer", "scheduler", "pipeline", "pack-buyer", "delivery", "refunds"]);
     expect(errors).toEqual(["the breaks program is not initialized on this cluster; breaks will be reported as problems until it is"]);
   });
 
@@ -567,6 +579,74 @@ describe("the jobs, with a break nobody joins", () => {
   });
 });
 
+describe("the jobs, with a break that is cancelled after someone bought a spot", () => {
+  const D = 1_000_000n;
+  const group = (machine: string, dollars: bigint, count: number) => ({ machine: packMachineBytes(machine), maxPrice: dollars * D, count });
+  // 3 paid spots at $20 and 2 free, with two $10 packs first: one early buyer and nobody eligible leaves a pool of one $10 pack,
+  // worth less than the $20 the buyer paid, so the break can never be funded.
+  const template = { paidSpots: 3, freeSpots: 2, spotPrice: 20_000_000n, packs: [group("cheap", 10n, 2), group("mid", 25n, 2), group("top", 50n, 1)], windowSecs: 21_600n };
+
+  it("cancels it, gives the buyer the USDC back from the escrow, and then stops looking at the break", async () => {
+    const db = shared;
+    const w = world({ status: "Open", id: 8n });
+    const { log, errors } = logger();
+    w.chain.breaks.clear();
+    w.chain.spots.clear();
+    w.chain.config.nextBreakId = 0n;
+    w.chain.treasury.subsidyVault = 12_000_000n;
+    w.chain.treasury.holderVault = 48_000_000n;
+
+    let clock = Number(w.chain.unixTime) * 1000;
+    const startSecs = clock / 1000;
+    await db.exec("truncate breaks, indexed_accounts, balance_events, indexer_state cascade");
+    await db.query("delete from exclusions");
+    const ledger = new TokenLedger(startSecs - 5000);
+    ledger.at(startSecs - 4000);
+    ledger.mintTo(ledger.holder("small"), 5n);
+
+    const cfg = { ...config, eligibility: { minTwab: 1_000_000n, settleSecs: 120 }, scheduler: { enabled: true, template } };
+    const jobs = await buildJobs(cfg, { sql: db, chain: w.chain, reader: ledger, wallets: w.chain, keeper: KEEPER, log, now: () => new Date(clock) });
+    expect(jobs.map((j) => j.name).at(-1)).toBe("refunds");
+    const runner = createRunner(jobs, { now: () => new Date(clock), log });
+    const status = async () => (await db.query<{ status: string }>("select status from breaks where onchain_id = 0")).rows[0]?.status;
+    const tick = async () => {
+      w.chain.unixTime = BigInt(Math.floor(clock / 1000));
+      await runner.tick();
+      clock += 1000;
+    };
+
+    await tick();
+    await tick();
+    const created = w.chain.breaks.get(0n)!;
+    expect(created.status).toBe("Open");
+
+    // One person buys a spot (the model has no buy_spot) and has a USDC account, as every buyer does.
+    const buyer = addr(10);
+    const buyerUsdc = w.chain.giveUsdc(buyer, 0n);
+    w.chain.addSpot({ breakId: 0n, index: 0, owner: buyer, paid: 20_000_000n, refunded: false, bump: 255 });
+    created.spotsSold = 1;
+
+    clock = (Number(created.closesAt) + 120 + 120 + 10) * 1000;
+    for (let i = 0; i < 40 && (await status()) !== "refunded"; i++) await tick();
+
+    expect(await status()).toBe("refunded");
+    expect(w.chain.breaks.get(0n)).toMatchObject({ status: "Cancelled", spotsSold: 1, lockedSubsidy: 0n, lockedHolder: 0n });
+    expect(w.chain.applied).toContain("cancel_unfundable");
+    expect(w.chain.applied).not.toContain("fund_purchases");
+    // The buyer has the $20 back, the escrow is empty, and the keeper refunded exactly once.
+    expect(w.chain.usdc.get(buyerUsdc)?.amount).toBe(20n * D);
+    expect(w.chain.escrow.get(0n)).toBe(0n);
+    expect(w.chain.applied.filter((n) => n === "refund_spot")).toHaveLength(1);
+    expect(errors).toEqual([]);
+
+    // Finished: more ticks refund nothing again (the scheduler may start the next break from the reserve that was released).
+    for (let i = 0; i < 5; i++) await tick();
+    expect(w.chain.applied.filter((n) => n === "refund_spot")).toHaveLength(1);
+    expect(await status()).toBe("refunded");
+    expect(w.chain.usdc.get(buyerUsdc)?.amount).toBe(20n * D);
+  });
+});
+
 describe("the jobs, with the fee sweep", () => {
   it("deposit the USDC in the keeper's wallet into the treasury, and then the scheduler can create the break", async () => {
     const db = shared;
@@ -583,7 +663,7 @@ describe("the jobs, with the fee sweep", () => {
 
     const on = { ...config, sweep: { ...config.sweep, enabled: true } };
     const jobs = await buildJobs(on, { sql: db, chain: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log, now: w.clock.now });
-    expect(jobs.map((j) => j.name)).toEqual(["indexer", "scheduler", "fee-sweep", "pipeline", "pack-buyer", "delivery"]);
+    expect(jobs.map((j) => j.name)).toEqual(["indexer", "scheduler", "fee-sweep", "pipeline", "pack-buyer", "delivery", "refunds"]);
     expect(infos).toContain("fee sweep on, without a swap provider: USDC in the keeper's wallet is deposited into the treasury");
 
     let clock = Number(w.chain.unixTime) * 1000;
@@ -653,7 +733,7 @@ describe("the jobs, with the lists published as files", () => {
     expect(without.map((j) => j.name)).not.toContain("publish");
     const { log, infos } = logger();
     const jobs = await buildJobs(on({ intervalSecs: 45 }), { sql: shared, chain: w.chain, finalized: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log });
-    expect(jobs.map((j) => j.name)).toEqual(["indexer", "scheduler", "publish", "pipeline", "pack-buyer", "delivery"]);
+    expect(jobs.map((j) => j.name)).toEqual(["indexer", "scheduler", "publish", "pipeline", "pack-buyer", "delivery", "refunds"]);
     expect(jobs.find((j) => j.name === "publish")?.intervalMs).toBe(45_000);
     expect(infos).toContain("publishing eligibility lists, the balance events behind them and card pools as files");
   });
@@ -720,7 +800,7 @@ describe("the jobs, with the X bot", () => {
     const poster = new ScriptedPoster();
     const { log, errors } = logger();
     const jobs = await buildJobs(on(), { sql: shared, chain: w.chain, finalized: w.chain, poster, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log, now: w.clock.now });
-    expect(jobs.map((j) => j.name)).toEqual(["indexer", "scheduler", "x-bot", "pipeline", "pack-buyer", "delivery"]);
+    expect(jobs.map((j) => j.name)).toEqual(["indexer", "scheduler", "x-bot", "pipeline", "pack-buyer", "delivery", "refunds"]);
 
     // Only the bot is run here: the other jobs have their own tests and need a database that matches this chain.
     await jobs.find((j) => j.name === "x-bot")!.run({ now: w.clock.now, log });

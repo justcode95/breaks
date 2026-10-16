@@ -14,7 +14,8 @@ export type DbBreakStatus =
   | "settled"
   | "drawn"
   | "delivered"
-  | "cancelled";
+  | "cancelled"
+  | "refunded";
 
 const FROM_CHAIN: Record<BreakAccount["status"], DbBreakStatus> = {
   Open: "open",
@@ -56,7 +57,15 @@ export class SqlBreakRepo implements BreakRepo {
   async activeBreaks(): Promise<ActiveBreak[]> {
     const { rows } = await this.sql.query<{ id: string; onchain_id: string; status: string }>(
       `select id::text as id, onchain_id::text as onchain_id, status from breaks
-        where onchain_id is not null and status not in ('delivered', 'cancelled') order by id`,
+        where onchain_id is not null and status not in ('delivered', 'cancelled', 'refunded') order by id`,
+    );
+    return rows.map((r) => ({ id: r.id, onchainId: BigInt(r.onchain_id), status: r.status }));
+  }
+
+  /** Breaks the chain cancelled whose spots the refund job has not yet seen all refunded (`refunded` ends it). */
+  async cancelledBreaks(): Promise<ActiveBreak[]> {
+    const { rows } = await this.sql.query<{ id: string; onchain_id: string; status: string }>(
+      "select id::text as id, onchain_id::text as onchain_id, status from breaks where onchain_id is not null and status = 'cancelled' order by id",
     );
     return rows.map((r) => ({ id: r.id, onchainId: BigInt(r.onchain_id), status: r.status }));
   }

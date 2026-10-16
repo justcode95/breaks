@@ -23,6 +23,16 @@ export function decodeTokenAccount(data: Uint8Array): TokenAccount {
   };
 }
 
+/** The token program's account state byte (offset 108): 0 not initialized, 1 initialized, 2 frozen. A frozen account cannot send or receive. */
+export function tokenAccountState(data: Uint8Array): "uninitialized" | "initialized" | "frozen" {
+  if (data.length < ACCOUNT_LEN) throw new RangeError(`a token account is at least ${ACCOUNT_LEN} bytes, got ${data.length}`);
+  const state = data[108];
+  if (state === 0) return "uninitialized";
+  if (state === 1) return "initialized";
+  if (state === 2) return "frozen";
+  throw new RangeError(`unknown token account state ${state}`);
+}
+
 export interface Mint {
   /** Total supply in base units. */
   supply: bigint;

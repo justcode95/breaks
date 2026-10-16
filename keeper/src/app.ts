@@ -1,6 +1,6 @@
 // Wires the jobs together: which stores, which providers, which chain. `index.ts` only starts it.
 //
-// Up to eight jobs, each idempotent and each starting from what it reads, never from a shared in-memory state:
+// Up to nine jobs, each idempotent and each starting from what it reads, never from a shared in-memory state:
 //   pipeline   - the on-chain steps (commit_pool, randomness, free-spot claims) and the status mirror
 //   pack-buyer - buys the packs of funded breaks
 //   delivery   - sends the cards of drawn breaks
@@ -9,6 +9,7 @@
 //   fee-sweep  - (only when SWEEP_ENABLED) deposits the USDC in the keeper's wallet into the treasury, and swaps fee SOL to USDC when a swapper exists
 //   publish    - (only when PUBLISH_DIR is set) writes each break's eligible wallets and cards as files named by the hashes the chain committed
 //   x-bot      - (only when BOT_ENABLED) announces the reserve, the sale, the free-spot winners and the results on X, from finalized chain data
+//   refunds    - sends `refund_spot` for every spot of a cancelled break, so buyers get their USDC back without coming to the website
 
 import { XBot, botJob } from "./bot/bot.js";
 import { LogPoster, type Poster } from "./bot/poster.js";
@@ -31,6 +32,7 @@ import type { WalletReader } from "./sweep/wallet.js";
 import { SqlDeliveryStore } from "./delivery/sql-store.js";
 import type { Job, Logger } from "./job.js";
 import { PackBuyer, packBuyerJob } from "./packs/buyer.js";
+import { BreakRefunder, refundJob } from "./refund/refunder.js";
 import { PublishExporter, publishJob } from "./publish/exporter.js";
 import { DirSink } from "./publish/sink.js";
 import { SqlPublishStore } from "./publish/store.js";
@@ -91,6 +93,12 @@ export async function checkSchema(sql: Sql): Promise<string[]> {
         where conrelid = 'breaks'::regclass and contype = 'c' and pg_get_constraintdef(oid) like '%drawn%'`,
     );
     if (!ok) problems.push("breaks.status does not accept 'drawn' (migration 0004)");
+    // 0009: a cancelled break whose spots are all refunded ends as `refunded`.
+    const refunded = await have(
+      `select count(*)::text as n from pg_constraint
+        where conrelid = 'breaks'::regclass and contype = 'c' and pg_get_constraintdef(oid) like '%refunded%'`,
+    );
+    if (!refunded) problems.push("breaks.status does not accept 'refunded' (migration 0009)");
   }
   // 0006: a token account that changes owner has two rows for one transaction, so the owner is part of the key.
   if (await have("select count(*)::text as n from information_schema.tables where table_schema = 'public' and table_name = 'balance_events'")) {
@@ -311,5 +319,6 @@ export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]
       source: new DrawnBreaks(sourceDeps),
       intervalMs,
     }),
+    refundJob({ refunder: new BreakRefunder({ chain, programs: config.programs, repo, log }), intervalMs }),
   ];
 }
