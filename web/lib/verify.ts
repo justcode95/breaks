@@ -14,6 +14,7 @@ import { DrawError, type Leaf, treeRoot } from "./draw/tree";
 import { inputsHash, parseInputs } from "./twab/inputs";
 import { TwabError, twabByOwner } from "./twab/twab";
 import { type ListedWallet, type WeightCheck, checkWeights } from "./twab/weights";
+import { type EligibilityRecord, type RecordCheck, type RecordContext, checkRecord, parseRecord } from "./twab/record";
 
 /** The most free spots a break can have (the winner list is stored in the break account). */
 export const MAX_FREE_SPOTS = 16;
@@ -26,6 +27,8 @@ export interface VerifyInput {
   holders: string;
   /** The published balance events the weights were computed from (`breaks:inputs:v1,...`), as they are published. Optional. */
   inputs: string;
+  /** The keeper's record of why each wallet is in or out (`records/<inputs hash>.json`), as it is published. Optional. */
+  record: string;
   /** The break's number of free spots. */
   freeSpots: string;
   /** Wallets of the paid spots, one per line, in purchase order. */
@@ -78,6 +81,9 @@ export type WeightsReport =
   | { ok: true; window: { start: number; end: number }; events: number; check: WeightCheck }
   | { ok: false; errors: string[] };
 
+/** What the record of why each wallet is in or out says, and what does not add up in it; or why it could not be read. */
+export type RecordReport = { ok: true; record: EligibilityRecord; check: RecordCheck } | { ok: false; errors: string[] };
+
 export interface Verified {
   ok: true;
   seed: { hex: string; derived: boolean };
@@ -89,6 +95,8 @@ export interface Verified {
   assignment?: SpotCard[];
   /** Present when the balance events were given: each weight on the list against the wallet's time-weighted average balance. */
   weights?: WeightsReport;
+  /** Present when the record was given: every wallet's reason against the rules, the commitments, the balance events and the list. */
+  record?: RecordReport;
   checks: Check[];
   /** Things worth saying that are not a match or a difference. */
   notes: string[];
@@ -266,15 +274,39 @@ export function verifyDraw(input: VerifyInput): VerifyResult {
   // weights section and never stops the draw from being checked.
   const notes: string[] = [];
   let weights: WeightsReport | undefined;
+  let twabs: Map<string, bigint> | undefined;
   if (input.inputs.trim() !== "") {
     if (want.inputs) same("Balance-event hash", toHex(want.inputs), inputsHash(input.inputs));
-    weights = weighsUp(input.inputs, listed);
+    ({ report: weights, twabs } = weighsUp(input.inputs, listed));
     if (weights.ok && input.onChain?.window) {
       const w = input.onChain.window;
       same("Window of the balance events", `${w.start} to ${w.end}`, `${weights.window.start} to ${weights.window.end}`);
     }
   } else if (want.inputs) {
     notes.push(`The balance events were not given, so the weights were not checked against them (the chain commits to them with the inputs hash ${toHex(want.inputs)}).`);
+  }
+
+  // The record of why each wallet is in or out, against everything it can be checked with. Like the weights, it never stops
+  // the draw from being checked.
+  let record: RecordReport | undefined;
+  if (input.record.trim() !== "") {
+    const parsed = parseRecord(input.record);
+    if (!parsed.ok) record = { ok: false, errors: parsed.errors.map((m) => `Record: ${m}`) };
+    else {
+      const chain: NonNullable<RecordContext["chain"]> = {
+        ...(want.inputs ? { inputsHash: toHex(want.inputs) } : {}),
+        ...(want.root ? { root: toHex(want.root) } : {}),
+        ...(e.totalWeight.trim() !== "" ? { totalWeight: BigInt(e.totalWeight.trim()) } : {}),
+        ...(e.entryCount.trim() !== "" ? { entryCount: Number(e.entryCount.trim()) } : {}),
+        ...(input.onChain?.window ? { window: input.onChain.window } : {}),
+      };
+      const ctx: RecordContext = {
+        ...(twabs ? { twabs } : {}),
+        ...(input.holders.trim() !== "" ? { listed } : {}),
+        ...(Object.keys(chain).length > 0 ? { chain } : {}),
+      };
+      record = { ok: true, record: parsed.record, check: checkRecord(parsed.record, ctx) };
+    }
   }
 
   if (want.pool) {
@@ -306,6 +338,7 @@ export function verifyDraw(input: VerifyInput): VerifyResult {
     ...(pool ? { poolHash: pool } : {}),
     ...(assigned ? { assignment: assigned } : {}),
     ...(weights ? { weights } : {}),
+    ...(record ? { record } : {}),
     checks: wanted,
     notes,
   };
@@ -317,14 +350,15 @@ function refuse(errors: string[]): VerifyResult {
   return { ok: false, errors: shown };
 }
 
-/** Each weight on the list against the wallet's time-weighted average balance in the balance events. */
-function weighsUp(text: string, listed: readonly ListedWallet[]): WeightsReport {
+/** Each weight on the list against the wallet's time-weighted average balance in the balance events, and those balances. */
+function weighsUp(text: string, listed: readonly ListedWallet[]): { report: WeightsReport; twabs?: Map<string, bigint> } {
   const parsed = parseInputs(text);
-  if (!parsed.ok) return { ok: false, errors: parsed.errors.map((m) => `Balance events: ${m}`) };
+  if (!parsed.ok) return { report: { ok: false, errors: parsed.errors.map((m) => `Balance events: ${m}`) } };
   try {
-    return { ok: true, window: parsed.window, events: parsed.events.length, check: checkWeights(listed, twabByOwner(parsed.events, parsed.window)) };
+    const twabs = twabByOwner(parsed.events, parsed.window);
+    return { report: { ok: true, window: parsed.window, events: parsed.events.length, check: checkWeights(listed, twabs) }, twabs };
   } catch (err) {
-    if (err instanceof TwabError) return { ok: false, errors: [`Balance events: ${err.message}`] };
+    if (err instanceof TwabError) return { report: { ok: false, errors: [`Balance events: ${err.message}`] } };
     throw err;
   }
 }

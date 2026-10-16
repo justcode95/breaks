@@ -10,7 +10,8 @@ export const MOST_OFF_LIST = 10;
 
 const STATUS_TEXT = { equal: "✓ equal", below: "below the average balance", above: "✗ above the average balance", "no-history": "✗ no balance events" } as const;
 
-export function WeightsSection({ weights }: { weights: WeightsReport }) {
+/** `reasons`: the record of why each wallet is in or out was given and read, so the reasons are in its own section. */
+export function WeightsSection({ weights, reasons = false }: { weights: WeightsReport; reasons?: boolean }) {
   if (!weights.ok) {
     return (
       <>
@@ -85,7 +86,8 @@ export function WeightsSection({ weights }: { weights: WeightsReport }) {
       {check.offList.length > 0 && (
         <>
           <p>
-            {check.offList.length} {check.offList.length === 1 ? "wallet has" : "wallets have"} an average balance above zero but {check.offList.length === 1 ? "is" : "are"} not on the list: below the minimum, or left out on purpose. The reasons are not published yet.
+            {check.offList.length} {check.offList.length === 1 ? "wallet has" : "wallets have"} an average balance above zero but {check.offList.length === 1 ? "is" : "are"} not on the list: below the minimum, or left out on purpose.{" "}
+            {reasons ? "Why each one is out is checked in the record below." : "The record of why each wallet is in or out says which; it was not given."}
           </p>
           <div className="scroll" role="region" aria-label="Wallets with an average balance that are not on the list" tabIndex={0}>
             <table>

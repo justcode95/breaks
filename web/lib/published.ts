@@ -11,6 +11,7 @@ import { U64_MAX, toHex } from "./draw/bytes";
 import { poolHash } from "./draw/pool";
 import { DrawError, type Leaf, treeRoot } from "./draw/tree";
 import { inputsHash } from "./twab/inputs";
+import { parseRecord } from "./twab/record";
 
 /** The most a list may be: a list of tens of thousands of wallets is a few megabytes. */
 export const MAX_BYTES = 25_000_000;
@@ -26,10 +27,10 @@ interface Options {
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
-type Folder = "eligibility" | "pool" | "inputs";
+type Folder = "eligibility" | "pool" | "inputs" | "records";
 
-/** The balance events are text, the two lists JSON. */
-const EXTENSION: Record<Folder, string> = { eligibility: "json", pool: "json", inputs: "txt" };
+/** The balance events are text, the lists and the record JSON. */
+const EXTENSION: Record<Folder, string> = { eligibility: "json", pool: "json", inputs: "txt", records: "json" };
 
 /** The text of `<base>/<folder>/<hash>.<json or txt>`, or why there is none. Only the hash is in the request. */
 async function fetchFile(opts: Options, folder: Folder, hash: string): Promise<Fetched<string>> {
@@ -189,6 +190,37 @@ export async function fetchInputs(opts: Options & { expected: InputsExpected }):
   return { ok: true, value: { text: got.value } };
 }
 
+export interface RecordExpected {
+  /** The inputs hash committed on chain: the record is published under it (64 lowercase hex digits). */
+  inputsHash: string;
+  /** What the break's account commits for the list, which the record must state too. */
+  root: string;
+  totalWeight: bigint;
+  entryCount: number;
+  /** The break's sale window, the window the record must have measured over. */
+  window: { start: bigint; end: bigint };
+}
+
+/**
+ * The record of why each wallet is in or out, if the file under the committed inputs hash exists and states the commitments the
+ * chain holds. The chain commits no hash of the record itself, so this is all that can be checked about the file; the verify
+ * page then checks every wallet in it against the rules, the balance events and the list.
+ */
+export async function fetchRecord(opts: Options & { expected: RecordExpected }): Promise<Fetched<{ text: string; wallets: number }>> {
+  const { expected } = opts;
+  const got = await fetchFile(opts, "records", expected.inputsHash);
+  if (!got.ok) return got;
+  const parsed = parseRecord(got.value);
+  if (!parsed.ok) return invalid(parsed.errors[0] as string);
+  const r = parsed.record;
+  if (r.inputsHash !== expected.inputsHash) return invalid("the inputs hash inside the file is not the one it is named after");
+  if (r.root !== expected.root || r.totalWeight !== expected.totalWeight || r.entryCount !== expected.entryCount) {
+    return invalid(`it states root ${r.root} with ${r.entryCount} wallets and total ${r.totalWeight}, not what was committed on chain`);
+  }
+  if (BigInt(r.window.start) !== expected.window.start || BigInt(r.window.end) !== expected.window.end) return invalid("it was measured over another window than the break's");
+  return { ok: true, value: { text: got.value, wallets: r.wallets.length } };
+}
+
 export interface PublishedLists {
   /** Set when the eligibility list was read and checked. */
   holders?: string;
@@ -196,6 +228,8 @@ export interface PublishedLists {
   cards?: string;
   /** Set when the balance events were read and they hash to the inputs hash on chain. */
   inputs?: string;
+  /** Set when the record of why each wallet is in or out was read and states the chain's commitments. */
+  record?: string;
   /** What happened, in words, for the person to read. */
   notes: string[];
   /** What the person still has to paste, because it was needed and could not be read. */
@@ -205,13 +239,16 @@ export interface PublishedLists {
 const isZero = (bytes: Uint8Array) => bytes.every((b) => b === 0);
 
 /**
- * What the verify page needs that is not on chain: the list once one is committed, the balance events its weights come from
- * (committed with it, also when the list is empty), the cards once the seed is final.
+ * What the verify page needs that is not on chain: the list once one is committed, the balance events its weights come from and
+ * the record of why each wallet is in or out (both committed with it, also when the list is empty), the cards once the seed is
+ * final.
  */
-export function whatIsNeeded(b: BreakAccount): { list: boolean; inputs: boolean; cards: boolean } {
+export function whatIsNeeded(b: BreakAccount): { list: boolean; inputs: boolean; record: boolean; cards: boolean } {
+  const committed = !isZero(b.eligibilityInputsHash);
   return {
     list: b.eligibilityCount > 0 && !isZero(b.eligibilityRoot),
-    inputs: !isZero(b.eligibilityInputsHash),
+    inputs: committed,
+    record: committed,
     cards: (b.status === "Settled" || b.status === "Drawn") && !isZero(b.poolHash),
   };
 }
@@ -230,6 +267,7 @@ export async function loadPublishedLists(opts: { baseUrl?: string; fetch?: typeo
   if (opts.baseUrl === undefined) {
     if (needed.list) out.stillToPaste.push("the eligibility list");
     if (needed.inputs) out.stillToPaste.push(INPUTS_TO_PASTE);
+    if (needed.record) out.stillToPaste.push(RECORD_TO_PASTE);
     if (needed.cards) out.stillToPaste.push("the cards");
     return out;
   }
@@ -259,6 +297,26 @@ export async function loadPublishedLists(opts: { baseUrl?: string; fetch?: typeo
     }
   }
 
+  if (needed.record) {
+    const expected = {
+      inputsHash: toHex(b.eligibilityInputsHash),
+      root: toHex(b.eligibilityRoot),
+      totalWeight: b.eligibilityTotalWeight,
+      entryCount: b.eligibilityCount,
+      window: { start: b.opensAt, end: b.closesAt },
+    };
+    const r = await safely(() => fetchRecord({ ...options, expected }));
+    if (r.ok) {
+      out.record = r.value.text;
+      out.notes.push(
+        `The record of why each wallet is in or out was read from ${host}: ${r.value.wallets} ${r.value.wallets === 1 ? "wallet" : "wallets"}, and it states the commitments on chain (the chain commits no hash of the record itself, so every wallet in it is checked below).`,
+      );
+    } else {
+      out.stillToPaste.push(RECORD_TO_PASTE);
+      out.notes.push(failure("record of why each wallet is in or out", host, r));
+    }
+  }
+
   if (needed.cards) {
     const r = await safely(() => fetchPool({ ...options, expected: { poolHash: toHex(b.poolHash), poolSize: b.poolSize } }));
     if (r.ok) {
@@ -283,6 +341,8 @@ async function safely<T>(read: () => Promise<Fetched<T>>): Promise<Fetched<T>> {
 
 /** The balance events are optional for the draw itself: they only let the weights be checked. */
 const INPUTS_TO_PASTE = "the balance events (to check the weights)";
+/** So is the record: it lets the reasons be checked. */
+const RECORD_TO_PASTE = "the record of why each wallet is in or out (to check the reasons)";
 
 function failure(what: string, host: string, r: Extract<Fetched<unknown>, { ok: false }>): string {
   const plural = what === "cards" || what === "balance events";
@@ -292,7 +352,7 @@ function failure(what: string, host: string, r: Extract<Fetched<unknown>, { ok: 
     case "unreachable":
       return `The ${what} could not be read from ${host} (${r.message}), so paste ${plural ? "them" : "it"}.`;
     case "invalid":
-      return `The file for the ${what} at ${host} is not what the chain committed to (${r.message}), so it was not used. Paste the ${what} instead.`;
+      return `The file for the ${what} at ${host} is not what the chain committed to (${r.message}), so it was not used. Paste the ${what.replace(/ of why each wallet is in or out$/, "")} instead.`;
   }
 }
 
@@ -305,10 +365,11 @@ export function publishedFileUrl(baseUrl: string, folder: Folder, hash: string):
 export interface Provenance {
   holders: boolean;
   inputs: boolean;
+  record: boolean;
   cards: boolean;
 }
 
-export const NOT_PUBLISHED: Provenance = { holders: false, inputs: false, cards: false };
+export const NOT_PUBLISHED: Provenance = { holders: false, inputs: false, record: false, cards: false };
 
 /**
  * The form after a break was loaded. What the chain gave replaces the chain-backed fields. The list and the cards
@@ -319,14 +380,19 @@ export function applyLoad(
   prev: VerifyInput,
   provenance: Provenance,
   loaded: { patch: Partial<VerifyInput>; onChain: NonNullable<VerifyInput["onChain"]> },
-  published: Pick<PublishedLists, "holders" | "inputs" | "cards"> | undefined,
+  published: Pick<PublishedLists, "holders" | "inputs" | "record" | "cards"> | undefined,
 ): { input: VerifyInput; provenance: Provenance } {
   const input: VerifyInput = { ...prev, ...loaded.patch, onChain: loaded.onChain };
   if (published?.holders !== undefined) input.holders = published.holders;
   else if (provenance.holders) input.holders = "";
   if (published?.inputs !== undefined) input.inputs = published.inputs;
   else if (provenance.inputs) input.inputs = "";
+  if (published?.record !== undefined) input.record = published.record;
+  else if (provenance.record) input.record = "";
   if (published?.cards !== undefined) input.cards = published.cards;
   else if (provenance.cards) input.cards = "";
-  return { input, provenance: { holders: published?.holders !== undefined, inputs: published?.inputs !== undefined, cards: published?.cards !== undefined } };
+  return {
+    input,
+    provenance: { holders: published?.holders !== undefined, inputs: published?.inputs !== undefined, record: published?.record !== undefined, cards: published?.cards !== undefined },
+  };
 }

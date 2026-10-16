@@ -125,8 +125,8 @@ website's own implementation (`web/lib/twab/`) is tested against it, so the two 
 Set `NEXT_PUBLIC_PUBLISHED_URL` when the site is built to the folder the files are served from (https, or http on this
 machine only; no login, query or fragment in it). When a person loads a break on the "Verify a draw" page, the page
 fetches `<folder>/eligibility/<root>.json` once a list is committed, `<folder>/inputs/<inputs hash>.txt` as soon as the
-inputs hash is committed (with the list), and `<folder>/pool/<pool hash>.json` once the seed is final (it does not read the
-record yet), **using the root, the
+inputs hash is committed (with the list), `<folder>/records/<inputs hash>.json` at the same time, and
+`<folder>/pool/<pool hash>.json` once the seed is final, **using the root, the
 inputs hash and the pool hash it just read from the break's account**. It then checks each file before using it:
 
 - the file is the kind and version it expects, and the root or pool hash inside is the one it is named after;
@@ -134,6 +134,8 @@ inputs hash and the pool hash it just read from the break's account**. It then c
 - the wallets and weights, hashed with the page's own tree, give the committed root; their sum is the committed total
   weight and their number the committed count (for the cards: the committed pool hash and the committed number of cards);
 - the balance events: the SHA-256 of the text is the break account's `eligibilityInputsHash`;
+- the record: it is the format above, it names the inputs hash it is filed under, and it states the root, total weight,
+  number of wallets and window that are on the break's account;
 - the file is not larger than 25 MB.
 
 A file that fails any of these is not used: the page says why, in words, and leaves the list or the cards to be pasted. A
@@ -144,8 +146,16 @@ With the balance events the page also **checks the weights**: it reads the text 
 definition above (its own implementation, not the keeper's), and compares each weight on the list with the wallet's TWAB. A
 weight that is equal is as it should be; one that is below the TWAB can only be explained by a cap on a wallet's weight (a rule
 that is still being decided); one that is above it, or for a wallet with no balance events at all, cannot be explained. The
-wallets that have a TWAB above zero and are not on the list are shown too (below the minimum, or left out on purpose; the
-record says which, but the page does not read it yet). The text's window is compared with the break's `opens_at` to `closes_at`. None of this stops the
+wallets that have a TWAB above zero and are not on the list are shown too.
+
+With the record the page also **checks every reason**, with its own code: a wallet on the list is on the curve, has an average
+balance of at least the minimum, and the weight `min(TWAB, cap)`; a wallet below the minimum is below it (or at zero) and on
+the curve; a program's account is really off the curve; a wallet that is out has weight 0; the wallets on the list build the
+root, total and count the record states; and, when they are given, the record states the break account's commitments and
+window, every average balance in it is the one the page works out from the balance events (and it has exactly their
+wallets), and its wallets on the list are the eligibility list with the same weights. The page shows the rules (the minimum,
+the cap or none), how many wallets are out for each reason, every wallet that is out with its reason, biggest first, and
+anything that does not add up. It says plainly that the rules and why a wallet is left out on purpose are the keeper's word. The text's window is compared with the break's `opens_at` to `closes_at`. None of this stops the
 draw itself from being checked.
 
 The only thing a request contains is the file's name (a hash from the chain): no cookies, no `Referer`, no credentials.
