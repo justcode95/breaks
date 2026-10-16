@@ -3,10 +3,26 @@ use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 
 use crate::{
     errors::BreaksError,
+    math,
     state::{Break, BreakStatus, BreaksConfig, Spot},
     treasury_cpi::TreasuryCtx,
     BREAK_SEED, CONFIG_SEED, ESCROW_SEED, SPOT_SEED, TREASURY_AUTHORITY_SEED,
 };
+
+/// What cancelling does, whoever asks for it: the break's reservation goes back to the treasury and the break is closed for
+/// good. Buyers then take their money back with `refund_spot`. The caller has checked who may cancel and when.
+fn cancel(b: &mut Break, treasury: &TreasuryCtx<'_, '_>) -> Result<()> {
+    let (locked_subsidy, locked_holder) = (b.locked_subsidy, b.locked_holder);
+    b.locked_subsidy = 0;
+    b.locked_holder = 0;
+    b.status = BreakStatus::Cancelled;
+    treasury.unlock(locked_subsidy, locked_holder)?;
+    emit!(BreakCancelled {
+        id: b.id,
+        spots_sold: b.spots_sold
+    });
+    Ok(())
+}
 
 #[derive(Accounts)]
 pub struct CancelBreak<'info> {
@@ -39,26 +55,66 @@ impl CancelBreak<'_> {
             ),
             BreaksError::WrongStatus
         );
-        let (locked_subsidy, locked_holder) = (b.locked_subsidy, b.locked_holder);
-        b.locked_subsidy = 0;
-        b.locked_holder = 0;
-        b.status = BreakStatus::Cancelled;
+        cancel(
+            b,
+            &TreasuryCtx {
+                program: &self.treasury_program,
+                authority: &self.treasury_authority,
+                authority_bump: bumps.treasury_authority,
+                config: &self.treasury_config,
+                subsidy_vault: &self.subsidy_vault,
+                holder_vault: &self.holder_vault,
+            },
+        )
+    }
+}
 
-        TreasuryCtx {
-            program: &self.treasury_program,
-            authority: &self.treasury_authority,
-            authority_bump: bumps.treasury_authority,
-            config: &self.treasury_config,
-            subsidy_vault: &self.subsidy_vault,
-            holder_vault: &self.holder_vault,
-        }
-        .unlock(locked_subsidy, locked_holder)?;
+/// Cancels a break that `fund_purchases` can never pay for. No account signs it: anyone can send it (the sender only pays the
+/// network fee), because there is nothing to decide. Either nobody joined, or the packs that would be bought are worth less on
+/// average than a buyer paid for a spot, and neither can change once the eligibility list is committed.
+#[derive(Accounts)]
+pub struct CancelUnfundable<'info> {
+    #[account(mut, seeds = [BREAK_SEED, &break_.id.to_le_bytes()], bump = break_.bump)]
+    pub break_: Box<Account<'info, Break>>,
+    /// CHECK: PDA of this program; it is the treasury's controller and only ever signs CPIs.
+    #[account(seeds = [TREASURY_AUTHORITY_SEED], bump)]
+    pub treasury_authority: UncheckedAccount<'info>,
+    #[account(mut, seeds = [treasury::CONFIG_SEED], bump = treasury_config.bump, seeds::program = treasury::ID)]
+    pub treasury_config: Account<'info, treasury::state::Config>,
+    #[account(seeds = [treasury::SUBSIDY_VAULT_SEED], bump, seeds::program = treasury::ID)]
+    pub subsidy_vault: Account<'info, TokenAccount>,
+    #[account(seeds = [treasury::HOLDER_VAULT_SEED], bump, seeds::program = treasury::ID)]
+    pub holder_vault: Account<'info, TokenAccount>,
+    pub treasury_program: Program<'info, treasury::program::Treasury>,
+}
 
-        emit!(BreakCancelled {
-            id: b.id,
-            spots_sold: b.spots_sold
-        });
-        Ok(())
+impl CancelUnfundable<'_> {
+    /// Only once the eligibility list is committed, which is the point where `fund_purchases` is the next step and the pool is
+    /// known, and only while `fund_purchases` would refuse for good (`math::unfundable`, the rule `fund_purchases` itself uses).
+    /// Works while the program is paused: cancelling and refunding always work. Everything else, a break that can be funded
+    /// included, stays the admin's call (`cancel_break`).
+    pub fn handle(&mut self, bumps: &CancelUnfundableBumps) -> Result<()> {
+        let b = &mut self.break_;
+        b.require_status(BreakStatus::EligibilityCommitted)?;
+        let reason = math::unfundable(
+            b.spots_sold,
+            b.free_spots,
+            b.eligibility_count,
+            b.spot_price,
+            &b.pack_prices(),
+        )?;
+        require!(reason.is_some(), BreaksError::BreakIsFundable);
+        cancel(
+            b,
+            &TreasuryCtx {
+                program: &self.treasury_program,
+                authority: &self.treasury_authority,
+                authority_bump: bumps.treasury_authority,
+                config: &self.treasury_config,
+                subsidy_vault: &self.subsidy_vault,
+                holder_vault: &self.holder_vault,
+            },
+        )
     }
 }
 

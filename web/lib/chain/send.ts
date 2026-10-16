@@ -43,6 +43,7 @@ export const BREAKS_ERRORS = [
   "WinnerAlreadyDrawn",
   "InvalidPackList",
   "PacksWorthLessThanSpots",
+  "BreakIsFundable",
 ] as const;
 
 type ErrorName = (typeof BREAKS_ERRORS)[number];

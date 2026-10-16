@@ -356,6 +356,23 @@ export function cancelBreak(programs: Programs, p: { admin: Address; breakId: bi
   ]);
 }
 
+/**
+ * Anyone can call this, and no account signs it: the sender only pays the fee. It works only once the eligibility list is committed
+ * and only for a break that `fund_purchases` can never pay for (nobody joined, or the packs that would be bought are worth less on
+ * average than the spots cost); the program refuses with `BreakIsFundable` otherwise. Releases the locked treasury funds.
+ */
+export function cancelUnfundable(programs: Programs, p: { breakId: bigint }): Instruction {
+  const t = treasuryCpiAccounts(programs);
+  return build(programs.breaks, "cancel_unfundable", null, [
+    writable(breakAddress(programs, p.breakId)),
+    readonly(t.authority),
+    writable(t.config),
+    readonly(t.subsidyVault),
+    readonly(t.holderVault),
+    readonly(programs.treasury),
+  ]);
+}
+
 /** Anyone can call this on a cancelled break; the money goes to the spot's owner, `ownerUsdc`. */
 export function refundSpot(
   programs: Programs,

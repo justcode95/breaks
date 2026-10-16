@@ -509,6 +509,23 @@ impl Env {
         self.cancel_as(&admin, id)
     }
 
+    /// Anyone can send this: `who` only pays the fee, no account of the instruction signs.
+    pub fn cancel_unfundable_as(&mut self, who: &Keypair, id: u64) -> Sent {
+        let i = ix(
+            breaks::ID,
+            breaks::accounts::CancelUnfundable {
+                break_: break_pda(id),
+                treasury_authority: treasury_authority(),
+                treasury_config: treasury_config(),
+                subsidy_vault: subsidy_vault(),
+                holder_vault: holder_vault(),
+                treasury_program: treasury::ID,
+            },
+            breaks::instruction::CancelUnfundable {},
+        );
+        send(&mut self.svm, who, &[], &[i])
+    }
+
     pub fn refund(&mut self, payer: &Keypair, id: u64, index: u16, to: Address) -> Sent {
         let break_ = break_pda(id);
         let i = ix(

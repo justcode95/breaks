@@ -68,6 +68,76 @@ pub struct Funding {
     pub unlock_holder: u64,
 }
 
+/// Why a closed break cannot be paid for. Both are final: the number of sold spots and the eligibility list no longer change, so
+/// neither can stop being true. Anyone may cancel such a break (`cancel_unfundable`); nobody can fund it.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Unfundable {
+    /// No paid spot was sold and nobody is eligible: no pack to buy.
+    EmptyPool,
+    /// The packs that would be bought cost less, on average, than a buyer paid for a spot.
+    PacksWorthLessThanSpots,
+}
+
+impl From<Unfundable> for BreaksError {
+    fn from(reason: Unfundable) -> Self {
+        match reason {
+            Unfundable::EmptyPool => BreaksError::EmptyPool,
+            Unfundable::PacksWorthLessThanSpots => BreaksError::PacksWorthLessThanSpots,
+        }
+    }
+}
+
+/// The packs a break buys, or why it cannot buy any: the first half of `funding`, shared with `unfundable` so the cancel that
+/// anyone may send and the payment the keeper sends can never disagree about whether a break can be funded.
+struct Pool {
+    drawn_free: u16,
+    pool_size: u16,
+    pack_budget: u64,
+    average: u64,
+}
+
+fn plan_pool(
+    spots_sold: u16,
+    free_spots: u16,
+    eligible_count: u32,
+    spot_price: u64,
+    prices: &[u64],
+) -> Result<std::result::Result<Pool, Unfundable>> {
+    // Fewer eligible holders than free spots: the extra spots are not drawn and not bought.
+    let drawn_free = u32::from(free_spots).min(eligible_count) as u16;
+    let pool_size = spots_sold.checked_add(drawn_free).ok_or(BreaksError::MathOverflow)?;
+    if pool_size == 0 {
+        return Ok(Err(Unfundable::EmptyPool));
+    }
+    require!(usize::from(pool_size) <= prices.len(), BreaksError::InvalidPackList);
+
+    let pack_budget = cost_of_first(prices, usize::from(pool_size))?;
+    let average = pack_budget / u64::from(pool_size);
+    // Buyers must not have paid more than the packs they get cost on average. With nobody having paid, there is nothing to protect.
+    if spots_sold != 0 && spot_price > average {
+        return Ok(Err(Unfundable::PacksWorthLessThanSpots));
+    }
+    Ok(Ok(Pool {
+        drawn_free,
+        pool_size,
+        pack_budget,
+        average,
+    }))
+}
+
+/// Whether `fund_purchases` has to refuse this break for good, and why. `Ok(None)` means it can be funded. Only the two reasons
+/// of `Unfundable` count: anything else that could go wrong (an overflow, a list shorter than the pool) is an error, not a
+/// reason to cancel.
+pub fn unfundable(
+    spots_sold: u16,
+    free_spots: u16,
+    eligible_count: u32,
+    spot_price: u64,
+    prices: &[u64],
+) -> Result<Option<Unfundable>> {
+    Ok(plan_pool(spots_sold, free_spots, eligible_count, spot_price, prices)?.err())
+}
+
 pub fn funding(
     spots_sold: u16,
     free_spots: u16,
@@ -77,19 +147,15 @@ pub fn funding(
     locked_subsidy: u64,
     locked_holder: u64,
 ) -> Result<Funding> {
-    // Fewer eligible holders than free spots: the extra spots are not drawn and not bought.
-    let drawn_free = u32::from(free_spots).min(eligible_count) as u16;
-    let pool_size = spots_sold.checked_add(drawn_free).ok_or(BreaksError::MathOverflow)?;
-    require!(pool_size > 0, BreaksError::EmptyPool);
-    require!(usize::from(pool_size) <= prices.len(), BreaksError::InvalidPackList);
-
-    let pack_budget = cost_of_first(prices, usize::from(pool_size))?;
-    let average = pack_budget / u64::from(pool_size);
-    // Buyers must not have paid more than the packs they get cost on average. With nobody having paid, there is nothing to protect.
-    require!(
-        spots_sold == 0 || spot_price <= average,
-        BreaksError::PacksWorthLessThanSpots
-    );
+    let Pool {
+        drawn_free,
+        pool_size,
+        pack_budget,
+        average,
+    } = match plan_pool(spots_sold, free_spots, eligible_count, spot_price, prices)? {
+        Ok(pool) => pool,
+        Err(reason) => return Err(BreaksError::from(reason).into()),
+    };
 
     let from_escrow = mul(u64::from(spots_sold), spot_price)?;
     let mut from_holder = mul(u64::from(drawn_free), average)?;
@@ -322,6 +388,94 @@ mod tests {
         assert_eq!((f.unlock_subsidy, f.unlock_holder), (0, 12));
     }
 
+    // ---- a break that cannot be paid for: anyone may cancel it
+
+    #[test]
+    fn a_break_nobody_joined_is_unfundable() {
+        let prices = grail_break();
+        // Nobody bought a spot and nobody is eligible: no pack to buy.
+        assert_eq!(
+            unfundable(0, 2, 0, 300 * D, &prices).unwrap(),
+            Some(Unfundable::EmptyPool)
+        );
+        // One eligible holder is enough to buy a pack for.
+        assert_eq!(unfundable(0, 2, 1, 300 * D, &prices).unwrap(), None);
+        // A paid spot is enough too, with no free spots at all.
+        assert_eq!(unfundable(1, 0, 0, 10 * D, &same(P, 3)).unwrap(), None);
+        // A break with no free spots and no buyers has nothing to fund.
+        assert_eq!(
+            unfundable(0, 0, 0, 10 * D, &same(P, 3)).unwrap(),
+            Some(Unfundable::EmptyPool)
+        );
+    }
+
+    #[test]
+    fn a_break_whose_bought_packs_are_worth_less_than_the_spots_is_unfundable() {
+        let prices = grail_break();
+        // Two buyers paid $300 and no holder is eligible: the first two packs cost $250 each.
+        assert_eq!(
+            unfundable(2, 2, 0, 300 * D, &prices).unwrap(),
+            Some(Unfundable::PacksWorthLessThanSpots)
+        );
+        // With the two free spots drawn the first four packs still average $250.
+        assert_eq!(
+            unfundable(2, 2, 9, 300 * D, &prices).unwrap(),
+            Some(Unfundable::PacksWorthLessThanSpots)
+        );
+        // Filled, both grails are bought and the average is $350.
+        assert_eq!(unfundable(13, 2, 9, 300 * D, &prices).unwrap(), None);
+    }
+
+    #[test]
+    fn the_edge_is_the_same_as_the_one_funding_refuses_at() {
+        let prices = vec![10 * D, 10 * D, 100 * D, 100 * D]; // the whole list averages $55
+                                                             // Two sold spots at $55: the first two packs average $10, far below.
+        assert_eq!(
+            unfundable(2, 0, 0, 55 * D, &prices).unwrap(),
+            Some(Unfundable::PacksWorthLessThanSpots)
+        );
+        // At exactly the average of what is bought, it is fundable; one micro-dollar above, it is not.
+        assert_eq!(unfundable(2, 0, 0, 10 * D, &prices).unwrap(), None);
+        assert_eq!(
+            unfundable(2, 0, 0, 10 * D + 1, &prices).unwrap(),
+            Some(Unfundable::PacksWorthLessThanSpots)
+        );
+        assert!(funding(2, 0, 0, 10 * D, &prices, 0, 0).is_ok());
+        assert_fails_with(
+            funding(2, 0, 0, 10 * D + 1, &prices, 0, 0),
+            BreaksError::PacksWorthLessThanSpots,
+        );
+    }
+
+    #[test]
+    fn with_nobody_having_paid_the_spot_price_protects_nobody() {
+        // Free spots only: the check against the spot price does not apply, as in `funding`.
+        assert_eq!(unfundable(0, 2, 2, 999 * D, &same(P, 4)).unwrap(), None);
+    }
+
+    #[test]
+    fn other_problems_are_errors_not_reasons_to_cancel() {
+        // A list shorter than the pool is a broken break, not an unfundable one.
+        assert_fails_with(unfundable(3, 0, 0, D, &same(P, 2)), BreaksError::InvalidPackList);
+        // A pool that does not fit in 16 bits is an overflow.
+        assert_fails_with(unfundable(u16::MAX, 1, 1, D, &same(P, 2)), BreaksError::MathOverflow);
+        // A list whose cost does not fit in 64 bits cannot be added up.
+        assert_fails_with(unfundable(2, 0, 0, 1, &[u64::MAX, 1]), BreaksError::MathOverflow);
+    }
+
+    #[test]
+    fn the_reasons_are_the_errors_funding_gives() {
+        // `BreaksError` has no equality of its own: compare the numbers the chain reports.
+        assert_eq!(
+            u32::from(BreaksError::from(Unfundable::EmptyPool)),
+            u32::from(BreaksError::EmptyPool)
+        );
+        assert_eq!(
+            u32::from(BreaksError::from(Unfundable::PacksWorthLessThanSpots)),
+            u32::from(BreaksError::PacksWorthLessThanSpots)
+        );
+    }
+
     // ---- everything that must hold for any list
 
     /// A small deterministic generator, so the sweep needs no dependency and fails the same way every time.
@@ -367,6 +521,19 @@ mod tests {
             for sold in 0..=paid as u16 {
                 for eligible in 0..=(free as u32 + 1) {
                     let result = funding(sold, free as u16, eligible, spot, &prices, ls, lh);
+                    // The cancel anyone may send and the payment the keeper sends can never disagree: a break is
+                    // unfundable exactly when funding refuses it, and for exactly that reason.
+                    let reason = unfundable(sold, free as u16, eligible, spot, &prices).unwrap();
+                    match (&result, reason) {
+                        (Ok(_), None) => {}
+                        (Err(_), Some(why)) => assert_fails_with(
+                            funding(sold, free as u16, eligible, spot, &prices, ls, lh),
+                            BreaksError::from(why),
+                        ),
+                        _ => {
+                            panic!("funding and unfundable disagree for {sold} sold, {eligible} eligible, spot {spot}")
+                        }
+                    }
                     let drawn = (free as u32).min(eligible) as u16;
                     let Ok(f) = result else {
                         // The only allowed failures: nobody to buy for, or the bought packs are worth less than the spots.

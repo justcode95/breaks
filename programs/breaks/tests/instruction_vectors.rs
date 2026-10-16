@@ -358,6 +358,20 @@ fn breaks_instruction_vectors() {
         .to_account_metas(None),
     ));
     cases.push(instruction_case(
+        "breaks.cancel_unfundable",
+        &format!("{{ \"breakId\": \"{break_id}\" }}"),
+        &instruction::CancelUnfundable {}.data(),
+        &accounts::CancelUnfundable {
+            break_: b,
+            treasury_authority: treasury_authority(),
+            treasury_config: treasury_config(),
+            subsidy_vault: subsidy_vault(),
+            holder_vault: holder_vault(),
+            treasury_program: treasury::ID,
+        }
+        .to_account_metas(None),
+    ));
+    cases.push(instruction_case(
         "breaks.refund_spot",
         &format!("{{ \"breakId\": \"{break_id}\", \"index\": 3, \"ownerUsdc\": \"{owner_usdc}\" }}"),
         &instruction::RefundSpot {}.data(),

@@ -516,26 +516,73 @@ describe("BreakPipeline: before funding", () => {
     expect(w.chain.breaks.get(7n)!.poolSize).toBe(4);
   });
 
-  it("does not fund a break with nothing in it: the admin must cancel it", async () => {
+  it("does not fund a break with nothing in it: it cancels it, which anyone may do, and the reservation is released", async () => {
     const w = world({ paid: 0, free: 2, status: "Closed" });
     w.planner.values = { root: new Uint8Array(32), totalWeight: 0n, entryCount: 0, inputsHash: new Uint8Array(32).fill(0x22) };
+    w.chain.treasury.config.lockedSubsidy = 7n;
+    w.chain.treasury.config.lockedHolder = 9n;
+    const b = w.chain.breaks.get(7n)!;
+    b.lockedSubsidy = 7n;
+    b.lockedHolder = 9n;
     const r = await w.pipeline().advance(w.active);
-    expect(steps(r)).toEqual(["commit_eligibility"]);
-    expect(r.problem).toMatch(/nothing to fund.*admin must cancel/);
+    expect(steps(r)).toEqual(["commit_eligibility", "cancel_unfundable"]);
+    expect(r.problem).toBeUndefined();
+    expect(r.waiting).toBe("break was cancelled");
+    expect(w.chain.applied).toEqual(["commit_eligibility", "cancel_unfundable"]);
+    expect(w.chain.breaks.get(7n)).toMatchObject({ status: "Cancelled", lockedSubsidy: 0n, lockedHolder: 0n });
+    expect(w.chain.treasury.config).toMatchObject({ lockedSubsidy: 0n, lockedHolder: 0n });
     expect(w.chain.applied).not.toContain("fund_purchases");
+    // The next call finds it cancelled and sends nothing more.
+    const again = await w.pipeline().advance(w.active);
+    expect(again.sent).toEqual([]);
+    expect(again.waiting).toBe("break was cancelled");
   });
 
   describe("a break whose packs are worth less than its spots", () => {
     const tiers = (dollars: bigint) => [{ machine: new Uint8Array(32).fill(0x77), maxPrice: dollars * 1_000_000n }];
 
-    it("is not funded: the program would refuse it, so the pipeline says the admin must cancel it and sends nothing", async () => {
+    it("is not funded: the program would refuse it, so the pipeline cancels it and says why", async () => {
+      const logs: { msg: string; extra?: Record<string, unknown> }[] = [];
       const w = world({ status: "EligibilityCommitted" });
       // The three paid spots cost $20 each; the five packs that would be bought are $15 each at most.
       w.chain.breaks.get(7n)!.tiers = tiers(15n);
+      const r = await w.pipeline({ log: { info: (msg, extra) => void logs.push({ msg, ...(extra ? { extra } : {}) }), error: () => {} } }).advance(w.active);
+      expect(steps(r)).toEqual(["cancel_unfundable"]);
+      expect(r.problem).toBeUndefined();
+      expect(w.chain.applied).toEqual(["cancel_unfundable"]);
+      expect(w.chain.breaks.get(7n)!.status).toBe("Cancelled");
+      expect(logs.find((l) => l.msg === "cancelling a break that cannot be funded")?.extra?.reason).toMatch(
+        /cost at most 75000000 in all, less than the 3 spot\(s\) paid at 20000000 each on average/,
+      );
+    });
+
+    it("is cancelled while the program is paused too: cancelling always works, funding does not", async () => {
+      const w = world({ status: "EligibilityCommitted" });
+      w.chain.config = { ...w.chain.config, paused: true };
+      w.chain.breaks.get(7n)!.tiers = tiers(15n);
       const r = await w.pipeline().advance(w.active);
-      expect(r.problem).toMatch(/cost at most 75000000 in all, less than the 3 spot\(s\) paid at 20000000 each on average.*admin must cancel/);
+      expect(w.chain.applied).toEqual(["cancel_unfundable"]);
+      expect(r.waiting).toBe("break was cancelled");
+    });
+
+    it("is not cancelled just because the program is paused: a break that can be funded waits", async () => {
+      const w = world({ status: "EligibilityCommitted" });
+      w.chain.config = { ...w.chain.config, paused: true };
+      const r = await w.pipeline().advance(w.active);
+      expect(r.waiting).toMatch(/paused/);
       expect(w.chain.sendCalls).toBe(0);
+    });
+
+    it("reports a cancel the program refuses instead of pretending, and sends it again next time", async () => {
+      const w = world({ status: "EligibilityCommitted" });
+      w.chain.breaks.get(7n)!.tiers = tiers(15n);
+      w.chain.queueSend("fail");
+      const first = await w.pipeline().advance(w.active);
+      expect(first.problem).toMatch(/cancel_unfundable failed/);
       expect(w.chain.breaks.get(7n)!.status).toBe("EligibilityCommitted");
+      const second = await w.pipeline().advance(w.active);
+      expect(second.problem).toBeUndefined();
+      expect(w.chain.breaks.get(7n)!.status).toBe("Cancelled");
     });
 
     it("is funded when nobody paid for a spot, whatever the packs cost: only the holder bucket pays", async () => {
@@ -568,15 +615,16 @@ describe("BreakPipeline: before funding", () => {
       expect(b.packBudget).toBe(80_000_000n);
     });
 
-    it("is refused when the pool is cut to the cheap packs: three sold spots and one holder, all packs $10 but the last two", async () => {
+    it("is cancelled when the pool is cut to the cheap packs: three sold spots and one holder, all packs $10 but the last two", async () => {
       const w = world({ status: "Closed" });
       const b = w.chain.breaks.get(7n)!;
       b.tiers = [{ machine: new Uint8Array(32).fill(1), maxPrice: 10_000_000n }, { machine: new Uint8Array(32).fill(2), maxPrice: 50_000_000n }];
       b.packs = [0, 0, 0, 0, 1];
       w.planner.values = { ...w.planner.values, entryCount: 1 }; // 4 packs: $40 for spots that cost $20 each, $10 a pack
       const r = await w.pipeline().advance(w.active);
-      expect(r.problem).toMatch(/the 4 packs that would be bought cost at most 40000000/);
-      expect(w.chain.applied).toEqual(["commit_eligibility"]);
+      expect(r.problem).toBeUndefined();
+      expect(w.chain.applied).toEqual(["commit_eligibility", "cancel_unfundable"]);
+      expect(w.chain.breaks.get(7n)!.status).toBe("Cancelled");
     });
   });
 
