@@ -251,7 +251,7 @@ interface Def {
 }
 
 /** Walks up from a file to the first directory that is a git work tree, if any. */
-function gitRoot(path: string): string | undefined {
+export function gitRoot(path: string): string | undefined {
   for (let dir = dirname(resolve(path)); ; dir = dirname(dir)) {
     if (existsSync(join(dir, ".git"))) return dir;
     if (dirname(dir) === dir) return undefined;

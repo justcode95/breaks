@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import { RANDOMNESS_REQUEST_RENT } from "../src/app.js";
 import {
   ACCOUNT_OVERHEAD_BYTES,
+  BREAKS_CONFIG_ACCOUNT_BYTES,
   BREAK_ACCOUNT_BYTES,
   LAMPORTS_PER_BYTE,
   RANDOMNESS_REQUEST_ACCOUNT_BYTES,
   SIGNATURE_FEE,
   TOKEN_ACCOUNT_BYTES,
+  TREASURY_CONFIG_ACCOUNT_BYTES,
   createBreakCost,
   rentExempt,
 } from "../src/solana/rent.js";
@@ -40,6 +42,13 @@ describe("rent", () => {
   it("uses the size of the Rust accounts: the break the program writes and the SPL token account it makes", () => {
     expect(BREAK_ACCOUNT_BYTES).toBe(sizeOf(breaksVectors, "breaks.account.Break"));
     expect(TOKEN_ACCOUNT_BYTES).toBe(sizeOf(treasuryVectors, "spl.account.TokenAccount"));
+  });
+
+  it("uses the size of the two configuration accounts the programs' initialize makes, and what they cost to keep", () => {
+    expect(BREAKS_CONFIG_ACCOUNT_BYTES).toBe(sizeOf(breaksVectors, "breaks.account.BreaksConfig"));
+    expect(TREASURY_CONFIG_ACCOUNT_BYTES).toBe(sizeOf(treasuryVectors, "treasury.account.Config"));
+    expect(rentExempt(BREAKS_CONFIG_ACCOUNT_BYTES)).toBe(2_324_640n);
+    expect(rentExempt(TREASURY_CONFIG_ACCOUNT_BYTES)).toBe(1_760_880n);
   });
 
   it("costs a new break the rent of its two accounts, the fee, and what a wallet must keep to stay valid", () => {
