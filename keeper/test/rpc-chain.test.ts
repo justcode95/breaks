@@ -62,6 +62,26 @@ describe("RpcChainClient: reading", () => {
     expect(await rpc.getAccountInfo("Plain", { commitment: "confirmed" })).toMatchObject({ executable: false, lamports: 1n });
   });
 
+  it("reads a whole account with its owner, lamports and flags, a part of the data if asked, and never older than its own transaction", async () => {
+    const { node, client } = await setup((n) => {
+      n.landing = LANDED;
+      n.accounts.set("Prog", Uint8Array.of(1, 2, 3, 4, 5, 6));
+      n.owners.set("Prog", "Loader");
+      n.executables.add("Prog");
+      n.lamports.set("Prog", 1_141_440n);
+    });
+    expect(await client.getAccount("Prog")).toEqual({ data: Uint8Array.of(1, 2, 3, 4, 5, 6), owner: "Loader", slot: 500, lamports: 1_141_440n, executable: true });
+    expect(await client.getAccount("Prog", { dataSlice: { offset: 2, length: 2 } })).toMatchObject({ data: Uint8Array.of(3, 4) });
+    expect(await client.getAccount("Missing")).toBeUndefined();
+    expect(node.minContextSlots.at(-1)).toBeUndefined();
+    node.slot = 901;
+    await client.sendAndConfirm([commit()]);
+    await client.getAccount("Prog");
+    expect(node.minContextSlots.at(-1)).toBe(901);
+    // `getAccountData` is the same read, data only.
+    expect(await client.getAccountData("Prog")).toEqual(Uint8Array.of(1, 2, 3, 4, 5, 6));
+  });
+
   it("retries a read that was refused as too early, then gives up with the node's message", async () => {
     const ok = await setup((n) => {
       n.accounts.set("Acct", Uint8Array.of(9));
@@ -113,6 +133,50 @@ describe("RpcChainClient: sending", () => {
     const keys = message.accountKeys.map((k) => k.toBase58());
     expect(keys[message.instructions[0]?.programIdIndex as number]).toBe(PROGRAMS.breaks);
     expect(ed25519.verify(tx.signatures[0]?.signature as Uint8Array, tx.serializeMessage(), ed25519.getPublicKey(new Uint8Array(32).fill(1)))).toBe(true);
+  });
+
+  it("signs with the signers it is given instead of the keeper, the first paying the fee, and every signature verifies", async () => {
+    const payer = signerFromSecretKey(new Uint8Array(32).fill(5));
+    const other = signerFromSecretKey(new Uint8Array(32).fill(6));
+    const { node, client } = await setup((n) => {
+      n.landing = LANDED;
+    });
+    // An instruction that needs two signatures, neither of them the keeper's.
+    const ix: Instruction = {
+      programId: PROGRAMS.treasury,
+      accounts: [
+        { pubkey: payer.address, isSigner: true, isWritable: true },
+        { pubkey: other.address, isSigner: true, isWritable: false },
+      ],
+      data: Uint8Array.of(1),
+    };
+    expect((await client.sendAndConfirm([ix], { signers: [payer, other] })).outcome).toBe("confirmed");
+    const tx = Transaction.from(node.sent[0] as Uint8Array);
+    expect(tx.verifySignatures()).toBe(true);
+    expect(tx.feePayer?.toBase58()).toBe(payer.address);
+    expect(tx.signatures.map((s) => s.publicKey.toBase58())).toEqual([payer.address, other.address]);
+    expect(tx.signatures.map((s) => s.publicKey.toBase58())).not.toContain(keeper.address);
+  });
+
+  it("refuses, without sending, a transaction that needs a signature it was not given, and asks for at least one signer", async () => {
+    const payer = signerFromSecretKey(new Uint8Array(32).fill(5));
+    const { node, client } = await setup((n) => {
+      n.landing = LANDED;
+    });
+    const ix: Instruction = {
+      programId: PROGRAMS.treasury,
+      accounts: [
+        { pubkey: payer.address, isSigner: true, isWritable: true },
+        { pubkey: keeper.address, isSigner: true, isWritable: false },
+      ],
+      data: Uint8Array.of(1),
+    };
+    await expect(client.sendAndConfirm([ix], { signers: [payer] })).rejects.toThrow(MissingSignerError);
+    await expect(client.sendAndConfirm([commit()], { signers: [] })).rejects.toThrow("a transaction needs at least one signer");
+    expect(node.sent).toHaveLength(0);
+    // Without signers it still signs as the keeper.
+    expect((await client.sendAndConfirm([commit()])).outcome).toBe("confirmed");
+    expect(Transaction.from(node.sent[0] as Uint8Array).feePayer?.toBase58()).toBe(keeper.address);
   });
 
   it("sends the same signed transaction again while it has not landed", async () => {

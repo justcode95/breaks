@@ -18,7 +18,13 @@ export const rentExempt = (dataBytes: number): bigint => (ACCOUNT_OVERHEAD_BYTES
 /** A break's account: the 8-byte discriminator and `Break::INIT_SPACE` (programs/breaks/src/state.rs). */
 export const BREAK_ACCOUNT_BYTES = 1_418;
 
-/** An SPL token account (the break's USDC escrow). */
+/** The treasury's `Config` account: the 8-byte discriminator and `Config::INIT_SPACE` (programs/treasury/src/state.rs). */
+export const TREASURY_CONFIG_ACCOUNT_BYTES = 125;
+
+/** The breaks program's `BreaksConfig` account: the 8-byte discriminator and `BreaksConfig::INIT_SPACE` (programs/breaks/src/state.rs). */
+export const BREAKS_CONFIG_ACCOUNT_BYTES = 206;
+
+/** An SPL token account (the break's USDC escrow, the treasury's two vaults, a wallet's USDC account). */
 export const TOKEN_ACCOUNT_BYTES = 165;
 
 /** ORAO's randomness request account, as seen on devnet (CLAUDE.md, Randomness). */

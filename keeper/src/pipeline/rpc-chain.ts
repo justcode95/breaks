@@ -104,13 +104,25 @@ export class RpcChainClient implements ChainClient {
   }
 
   async getAccountData(address: Address): Promise<Uint8Array | undefined> {
+    return (await this.getAccount(address))?.data;
+  }
+
+  /**
+   * An account with its owner, lamports and flags, or undefined if it does not exist. Like `getAccountData` it never answers
+   * with state older than our own last transaction. `dataSlice` asks for only a part of the data (a program-data account holds the
+   * program's whole code).
+   */
+  async getAccount(
+    address: Address,
+    opts: { dataSlice?: { offset: number; length: number } } = {},
+  ): Promise<{ data: Uint8Array; owner: Address; lamports: bigint; executable: boolean } | undefined> {
     for (let attempt = 0; ; attempt++) {
       try {
-        const info = await this.rpc.getAccountInfo(address, {
+        return await this.rpc.getAccountInfo(address, {
           commitment: this.commitment,
           ...(this.minSlot !== undefined ? { minContextSlot: this.minSlot } : {}),
+          ...(opts.dataSlice ? { dataSlice: opts.dataSlice } : {}),
         });
-        return info?.data;
       } catch (err) {
         // -32016: the node has not reached the slot of our last transaction yet. Give it a moment.
         if (err instanceof RpcError && err.code === -32016 && attempt < 10) {
@@ -122,10 +134,17 @@ export class RpcChainClient implements ChainClient {
     }
   }
 
-  async sendAndConfirm(instructions: Instruction[]): Promise<SendResult> {
+  /**
+   * Sends the instructions as one transaction. `opts.signers` replaces the keeper as the signer: the first is the fee payer, and
+   * every signature the instructions ask for must be among them (setup tooling signs as the upgrade authority and the admin).
+   */
+  async sendAndConfirm(instructions: Instruction[], opts: { signers?: readonly Signer[] } = {}): Promise<SendResult> {
+    const signers = opts.signers ?? [this.signer];
+    const payer = signers[0];
+    if (!payer) throw new Error("a transaction needs at least one signer");
     // Nothing is sent before this succeeds, so an RPC outage here is an error, not an unknown result.
     const { blockhash, lastValidBlockHeight } = await this.rpc.getLatestBlockhash(this.commitment);
-    const tx = signTransaction(compileMessage(this.signer.address, instructions, blockhash), [this.signer]);
+    const tx = signTransaction(compileMessage(payer.address, instructions, blockhash), signers);
     const signature = signatureToString(tx.signatures[0] as Uint8Array);
 
     const start = this.now();

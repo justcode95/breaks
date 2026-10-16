@@ -21,6 +21,9 @@ export class FakeNode {
   /** How far the block height moves each time it is asked for. */
   public heightStep = 0;
   public lastValidOffset = 150;
+  /** Hands out a different blockhash each time, as a real node does (default: always the same one). */
+  public uniqueBlockhashes = false;
+  private blockhashes = 0;
   public genesis: string = GENESIS_HASHES.devnet;
   public readonly accounts = new Map<string, Uint8Array>();
   /** Who owns each account (default: the system program), which are programs, and how many lamports each holds (default 1; `getBalance` answers 0 for an unknown address). */
@@ -75,8 +78,10 @@ export class FakeNode {
     switch (method) {
       case "getGenesisHash":
         return reply(this.genesis);
-      case "getLatestBlockhash":
-        return reply({ context: { slot: this.slot }, value: { blockhash: "11111111111111111111111111111112", lastValidBlockHeight: this.blockHeight + this.lastValidOffset } });
+      case "getLatestBlockhash": {
+        const blockhash = this.uniqueBlockhashes ? base58.encode(Uint8Array.from({ length: 32 }, (_, i) => (i === 0 ? ++this.blockhashes & 0xff : 0x11))) : "11111111111111111111111111111112";
+        return reply({ context: { slot: this.slot }, value: { blockhash, lastValidBlockHeight: this.blockHeight + this.lastValidOffset } });
+      }
       case "getBlockHeight":
         this.blockHeight += this.heightStep;
         return reply(this.blockHeight);
