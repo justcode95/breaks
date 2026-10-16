@@ -6,7 +6,8 @@ import { PGlite } from "@electric-sql/pglite";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { beforeAll, describe, expect, it } from "vitest";
 import { type AppConfig, RANDOMNESS_REQUEST_RENT, buildJobs, checkSchema, sqlFromPool, verifyKeeperIdentity, verifyMint } from "../src/app.js";
-import { serializeInputs } from "../src/eligibility/eligibility.js";
+import { buildEligibility, serializeInputs } from "../src/eligibility/eligibility.js";
+import { listDocument } from "../src/eligibility/planner.js";
 import { hashv, toHex, utf8 } from "../src/draw/bytes.js";
 import { assignCards } from "../src/draw/pool.js";
 import { Tree } from "../src/draw/tree.js";
@@ -745,20 +746,31 @@ describe("the jobs, with the lists published as files", () => {
 
   it("publishes from the finalized view only: a break the confirmed view shows but the finalized one does not is not published", async () => {
     await shared.exec("truncate packs, twab_snapshots, eligibility_lists, breaks cascade");
-    const leaf = { wallet: addressToBytes(addr(31)), weight: 7n };
+    // A holder (a real public key: the rules leave out addresses off the curve) who held 7 all through the window.
+    const holder = addressFromBytes(ed25519.getPublicKey(new Uint8Array(32).fill(31)));
+    const leaf = { wallet: addressToBytes(holder), weight: 7n };
     const tree = Tree.build([leaf]);
     const breakId = await insertBreak(shared);
     await shared.query("update breaks set onchain_id = 31, status = 'eligibility_committed' where id = $1::bigint", [breakId]);
-    await shared.query("insert into twab_snapshots (break_id, wallet, twab, weight, eligible) values ($1::bigint, $2, 7, 7, true)", [breakId, addr(31)]);
+    await shared.query("insert into twab_snapshots (break_id, wallet, twab, weight, eligible) values ($1::bigint, $2, 7, 7, true)", [breakId, holder]);
     // The record of the inputs the planner would have published: its SHA-256 is what the chain committed.
-    const inputs = serializeInputs([{ signature: "sig-31", slot: 5n, time: 1_800_000_010, owner: addr(31), tokenAccount: addr(32), delta: 7n, balanceAfter: 7n }], { start: 1_800_000_000, end: 1_800_043_200 });
+    const window = { start: 1_800_000_000, end: 1_800_043_200 };
+    const events = [{ signature: "sig-31", slot: 5n, time: 1_799_999_990, owner: holder, tokenAccount: addr(32), delta: 7n, balanceAfter: 7n }];
+    const inputs = serializeInputs(events, window);
     const inputsHash = toHex(hashv(utf8(inputs)));
     await shared.query("insert into published_documents (sha256, content_type, body) values ($1, 'text/plain; charset=utf-8', $2) on conflict do nothing", [inputsHash, inputs]);
+    // And the record of why each wallet is in or out, as the planner stores it.
+    const policy = { minTwab: 1n };
+    const record = listDocument(breakId, window, policy, { root: tree.root.hash, totalWeight: 7n, entryCount: 1, inputsHash: hashv(utf8(inputs)) }, buildEligibility({ events, window, policy, exclusions: new Map() }));
+    const recordHash = toHex(hashv(utf8(record)));
+    await shared.query("insert into published_documents (sha256, content_type, body) values ($1, 'application/json', $2) on conflict do nothing", [recordHash, record]);
     await shared.query(
-      "insert into eligibility_lists (break_id, root, total_weight, entry_count, inputs_hash, list_uri, inputs_uri) values ($1::bigint, decode($2, 'hex'), 7, 1, decode($3, 'hex'), 'db:x', $4)",
-      [breakId, toHex(tree.root.hash), inputsHash, `db:sha256:${inputsHash}`],
+      "insert into eligibility_lists (break_id, root, total_weight, entry_count, inputs_hash, list_uri, inputs_uri) values ($1::bigint, decode($2, 'hex'), 7, 1, decode($3, 'hex'), $4, $5)",
+      [breakId, toHex(tree.root.hash), inputsHash, `db:sha256:${recordHash}`, `db:sha256:${inputsHash}`],
     );
-    const account = encodeBreak(brk({ id: 31n, status: "EligibilityCommitted", eligibilityRoot: tree.root.hash, eligibilityTotalWeight: 7n, eligibilityCount: 1, eligibilityInputsHash: hashv(utf8(inputs)) }));
+    const account = encodeBreak(
+      brk({ id: 31n, status: "EligibilityCommitted", opensAt: BigInt(window.start), closesAt: BigInt(window.end), eligibilityRoot: tree.root.hash, eligibilityTotalWeight: 7n, eligibilityCount: 1, eligibilityInputsHash: hashv(utf8(inputs)) }),
+    );
     const finalized = { getAccountData: async (a: string) => (a === breakAddress(PROGRAMS, 31n) ? account : undefined) };
     const w = world({ status: "Open", id: 8n }); // its chain knows nothing of break 31
     const dir = await mkdtemp(join(tmpdir(), "app-publish-"));
@@ -771,6 +783,9 @@ describe("the jobs, with the lists published as files", () => {
       // The balance events behind the weights go out too, under the hash the chain holds, byte for byte.
       expect(await readdir(join(dir, "inputs"))).toEqual([`${inputsHash}.txt`]);
       expect(await readFile(join(dir, "inputs", `${inputsHash}.txt`), "utf8")).toBe(inputs);
+      // And the record of why the holder is on the list, under the same inputs hash.
+      expect(await readdir(join(dir, "records"))).toEqual([`${inputsHash}.json`]);
+      expect(JSON.parse(await readFile(join(dir, "records", `${inputsHash}.json`), "utf8")).wallets).toEqual([{ wallet: holder, twab: "7", weight: "7", reason: null }]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

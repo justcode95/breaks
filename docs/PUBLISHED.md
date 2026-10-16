@@ -4,6 +4,10 @@ The chain commits to three things before a draw: the eligible wallets (a Merkle 
 were computed from (a hash, `inputs_hash`) and the pulled cards (a hash). A commitment is only worth something if what is
 behind it can be read, so the keeper publishes all three as plain files.
 
+A fourth file, the **record**, says why each wallet is in or out (its average balance, its weight and its reason, with the
+minimum and the cap that were applied). The chain commits to no hash of its own for it, so it is checked differently: see
+"How to check a file".
+
 Each file is **named by the hash the chain committed**. A reader fetches the file for a break's root or pool hash,
 recomputes the hash from what is in the file, and compares it with the chain. Where the files are hosted does not matter,
 and a host that serves a wrong or altered file is caught: it does not hash to its name. That is why nothing here needs to
@@ -22,6 +26,11 @@ A file is written only when the keeper's own data provably hashes to what the ch
 - the balance events: the SHA-256 of the stored text equals the `inputs_hash` in the break's account (and the one the
   keeper stored). It is published from the committed list on, and also when nobody was eligible: that is when a reader most
   wants to see why;
+- the record: its inputs hash, root, total weight, number of wallets and window equal the break account's, and it is
+  **exactly what the keeper's eligibility rules make of the committed balance events**, with the minimum, the cap and the
+  exclusions the record itself states: every wallet, its TWAB, its weight and its reason, in the same order. So the wallets it
+  calls eligible rebuild the committed root. Like the balance events it is published from the committed list on, also when
+  nobody was eligible;
 - the cards: the pool hash and the number of cards equal the ones committed by `commit_pool`, and the seed is final
   (`Settled` or `Drawn`), so the draw can be checked.
 
@@ -33,6 +42,7 @@ Files are never overwritten. A run first looks for the file by name, so a quiet 
 eligibility/<root>.json        root = the 64 hex digits committed in `commit_eligibility`
 inputs/<inputs hash>.txt       inputs hash = the 64 hex digits of `inputs_hash`, committed in `commit_eligibility`
 pool/<pool hash>.json          pool hash = the 64 hex digits committed in `commit_pool`
+records/<inputs hash>.json     the same inputs hash as the balance events it was computed from (a pointer, not its own hash)
 ```
 
 No eligibility file is published for a break whose list is empty (a zero root has nothing behind it); its inputs file
@@ -46,7 +56,14 @@ Numbers that can exceed 2^53 (weights) are decimal strings.
 ```json
 {"version":1,"kind":"eligibility","root":"<64 hex>","totalWeight":"<decimal>","entryCount":2,"entries":[{"wallet":"<base58>","weight":"<decimal>"}, ...]}
 {"version":1,"kind":"pool","poolHash":"<64 hex>","cards":["<mint base58>", ...]}
+{"version":1,"kind":"record","inputsHash":"<64 hex>","root":"<64 hex>","totalWeight":"<decimal>","entryCount":6,"window":{"start":<unix s>,"end":<unix s>},"policy":{"minTwab":"<decimal>","capPerWallet":"<decimal, only when there is a cap>"},"wallets":[{"wallet":"<base58>","twab":"<decimal>","weight":"<decimal>","reason":null}, ...]}
 ```
+
+In a record, `wallets` has every owner that appears in the balance events, sorted by the wallets' 32 bytes. `reason` is `null`
+for a wallet on the list, and otherwise one of `below_min_twab` (its TWAB is below the minimum, or zero), `off_curve` (the
+address is not on the ed25519 curve, so it is a program's account, such as a pool's vault, and never a holder) or
+`excluded:<code>` (left out on purpose; the code says why, for example `excluded:exchange`). A wallet that is out has weight
+`0`. A wallet on the list has the weight `min(TWAB, cap)`, or its TWAB when there is no cap.
 
 The inputs file is text, not JSON: the exact bytes the hash was made from.
 
@@ -84,7 +101,14 @@ and amounts are whole token base units. A change of owner is two lines, one for 
   where an account would have held less than nothing, or where a change does not lead to the next balance (a transaction is
   missing), is refused, not guessed at.
   A wallet on the list has a weight equal to its TWAB unless the break's rules cap it (a rule that is still being decided);
-  the wallets that are not on the list are below the minimum or left out on purpose, and the reasons are not published yet.
+  why each wallet that is not on the list is out is in the record.
+- **Record.** Its `inputsHash`, `root`, `totalWeight`, `entryCount` and `window` must equal the break account's
+  `eligibilityInputsHash`, `eligibilityRoot`, `eligibilityTotalWeight`, `eligibilityCount` and `opensAt` to `closesAt`.
+  With the balance events, every wallet's `twab` can be recomputed; every `below_min_twab` must be below `policy.minTwab`
+  (or zero), every `off_curve` address off the curve, every weight on the list `min(twab, capPerWallet)` (or the TWAB) and at
+  least the minimum, and the wallets with `reason: null`, built into the tree, must give the committed root. What cannot be
+  checked against the chain is the policy itself and why an `excluded:` wallet is excluded: those are the keeper's word,
+  published here for anyone to read and question.
 - **Cards.** `sha256("breaks:pool:v1" ‖ mint_0 ‖ mint_1 ‖ …)` over the sorted mints must equal the file's name and the
   `poolHash` on the break's account, and the number of cards `poolSize`.
 
@@ -101,7 +125,8 @@ website's own implementation (`web/lib/twab/`) is tested against it, so the two 
 Set `NEXT_PUBLIC_PUBLISHED_URL` when the site is built to the folder the files are served from (https, or http on this
 machine only; no login, query or fragment in it). When a person loads a break on the "Verify a draw" page, the page
 fetches `<folder>/eligibility/<root>.json` once a list is committed, `<folder>/inputs/<inputs hash>.txt` as soon as the
-inputs hash is committed (with the list), and `<folder>/pool/<pool hash>.json` once the seed is final, **using the root, the
+inputs hash is committed (with the list), and `<folder>/pool/<pool hash>.json` once the seed is final (it does not read the
+record yet), **using the root, the
 inputs hash and the pool hash it just read from the break's account**. It then checks each file before using it:
 
 - the file is the kind and version it expects, and the root or pool hash inside is the one it is named after;
@@ -119,22 +144,22 @@ With the balance events the page also **checks the weights**: it reads the text 
 definition above (its own implementation, not the keeper's), and compares each weight on the list with the wallet's TWAB. A
 weight that is equal is as it should be; one that is below the TWAB can only be explained by a cap on a wallet's weight (a rule
 that is still being decided); one that is above it, or for a wallet with no balance events at all, cannot be explained. The
-wallets that have a TWAB above zero and are not on the list are shown too (below the minimum, or left out on purpose: the
-reasons are not published yet). The text's window is compared with the break's `opens_at` to `closes_at`. None of this stops the
+wallets that have a TWAB above zero and are not on the list are shown too (below the minimum, or left out on purpose; the
+record says which, but the page does not read it yet). The text's window is compared with the break's `opens_at` to `closes_at`. None of this stops the
 draw itself from being checked.
 
 The only thing a request contains is the file's name (a hash from the chain): no cookies, no `Referer`, no credentials.
 The break's page links the same files.
 
-`docs/published-example/` holds a small list and pool made by the keeper's own code. The keeper's tests pin them, and the
+`docs/published-example/` holds a small list, its balance events, its record and a pool, made by the keeper's own code. The
+record has one wallet for each reason a wallet is out (an exchange that is excluded, a wallet below the minimum and a pool's
+vault off the curve). The keeper's tests pin them, and the
 website's tests read and check them, so the two sides cannot drift apart on the format. Regenerate them with
 `UPDATE_PUBLISHED_EXAMPLE=1 pnpm --filter keeper test` if the format ever changes on purpose.
 
 ## Not published yet
 
-- Every wallet's TWAB and why a wallet is out (they are in the keeper's `published_documents`; no public channel for
-  them yet, and nothing the chain commits to names them). The inputs file above is what lets anyone recompute the TWAB
-  itself; the minimum, a cap if there is one, and the reasons for being left out are the part that is not public yet.
-- The exclusion list (`exclusions`).
+- The whole exclusion list (`exclusions`). Each break's record names every excluded wallet that held the token, with its
+  code; a wallet on the list of exclusions that never held the token appears in no record.
 - A smaller form of the inputs file. It lists every balance event since the token's launch, which is fine for thousands of
   holders and will not be for a very busy token.

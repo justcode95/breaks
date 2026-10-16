@@ -5,6 +5,8 @@
 //   eligibility/<root>.json      root = the Merkle root committed in `commit_eligibility` (64 hex digits)
 //   inputs/<inputs hash>.txt     inputs hash = the `inputs_hash` of `commit_eligibility`: the SHA-256 of this very text
 //   pool/<pool hash>.json        pool hash = what `commit_pool` committed (64 hex digits)
+//   records/<inputs hash>.json   every wallet's average balance, weight and reason, under the same inputs hash as the text it
+//                                was computed from (the hash is a pointer here, not this file's own hash: see record.ts)
 //
 // The bytes of a file are fixed by the data alone (compact JSON, a newline at the end, entries in the order the tree
 // sorts them), so publishing the same list twice writes the same file. docs/PUBLISHED.md describes the formats.
@@ -13,11 +15,12 @@ import { hashv, toHex, utf8 } from "../draw/bytes.js";
 import { sortedPool } from "../draw/pool.js";
 import type { Leaf } from "../draw/tree.js";
 import { addressFromBytes } from "../solana/pubkey.js";
+import type { EligibilityRecord } from "./record.js";
 
 export const FORMAT_VERSION = 1;
 
 export interface PublishedFile {
-  /** Relative to the publish directory; always `<kind>/<64 hex digits>.json`. */
+  /** Relative to the publish directory; always `<folder>/<64 hex digits>.<json or txt>`. */
   path: string;
   body: string;
 }
@@ -54,5 +57,28 @@ export function poolFile(hash: Uint8Array, mints: readonly Uint8Array[]): Publis
   return {
     path: `pool/${hex}.json`,
     body: JSON.stringify({ version: FORMAT_VERSION, kind: "pool", poolHash: hex, cards: sortedPool(mints).map(addressFromBytes) }) + "\n",
+  };
+}
+
+/**
+ * Why each wallet is in or out of a break: every wallet that held the token, its time-weighted average balance, its weight and
+ * its reason, with the minimum and the cap that were applied. Named by the inputs hash of the balance events it was computed
+ * from, which the chain committed and which exists also when nobody was eligible.
+ */
+export function recordFile(r: EligibilityRecord): PublishedFile {
+  return {
+    path: `records/${r.inputsHash}.json`,
+    body:
+      JSON.stringify({
+        version: FORMAT_VERSION,
+        kind: "record",
+        inputsHash: r.inputsHash,
+        root: r.root,
+        totalWeight: r.totalWeight.toString(),
+        entryCount: r.entryCount,
+        window: { start: r.window.start, end: r.window.end },
+        policy: { minTwab: r.policy.minTwab.toString(), ...(r.policy.capPerWallet !== undefined ? { capPerWallet: r.policy.capPerWallet.toString() } : {}) },
+        wallets: r.wallets.map((w) => ({ wallet: w.wallet, twab: w.twab.toString(), weight: w.weight.toString(), reason: w.reason })),
+      }) + "\n",
   };
 }
