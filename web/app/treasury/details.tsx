@@ -83,7 +83,7 @@ export function TreasuryDetails({ treasury, program, now, readAt, refresh, shape
       <section className="card">
         <h2>How the money is used</h2>
         <ul>
-          <li>A break is only created when the buckets can cover its worst case: every free spot at the highest pack price, and every paid spot's gap between that price and its own price.</li>
+          <li>A break is only created when the buckets can cover its worst case: every free spot at the average price of the break's packs, and the rest of what the packs cost beyond what the paid spots bring in, as if every paid spot sells.</li>
           <li>Creating a break reserves that amount. Pay-outs can only come out of reserved money, so they never touch the money reserved for another break.</li>
           <li>The treasury only holds USDC. Fees arrive as SOL and are swapped before they are deposited.</li>
         </ul>

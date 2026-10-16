@@ -194,7 +194,7 @@ describe("the treasury page", () => {
 
   it("shows the reserve bar first when it is told the shape of the next break, and not otherwise", async () => {
     const treasury: Treasury = await load(world()).promise;
-    const shape = { paidSpots: 10, freeSpots: 2, spotPrice: 20_000_000n, maxPackPrice: 25_000_000n };
+    const shape = { paidSpots: 10, freeSpots: 2, spotPrice: 20_000_000n, packs: [{ machine: "classic", maxPrice: 25_000_000n, count: 12 }] };
     const withShape = renderToStaticMarkup(createElement(TreasuryDetails, { treasury, program: TREASURY, now: NOW, readAt: NOW - 90, refresh: () => {}, shape }));
     expect(withShape).toContain("Reserve for the next break");
     expect(withShape.indexOf("Reserve for the next break")).toBeLessThan(withShape.indexOf("Available for new breaks"));
@@ -214,6 +214,12 @@ describe("the treasury page", () => {
       "Holder pays for the packs of the free holder spots 30% $3 $0.50 $2.50",
       "Total 100% $10 $1.50 $8.50",
     ]);
+  });
+
+  it("says a break is funded for the average price of its packs, as the program does", async () => {
+    const t = text(await page());
+    expect(t).toContain("every free spot at the average price of the break's packs, and the rest of what the packs cost beyond what the paid spots bring in, as if every paid spot sells.");
+    expect(t).not.toContain("highest pack price");
   });
 
   it("shows who controls it, and says when nobody does yet", async () => {
