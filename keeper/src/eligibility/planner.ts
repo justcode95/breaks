@@ -190,7 +190,7 @@ export class SqlEligibilityPlanner implements EligibilityPlanner {
 }
 
 /** The public record of one break's eligibility: every wallet that held the token, its TWAB and why it is in or out. */
-function listDocument(breakId: string, window: Window, policy: WeightPolicy, v: CommitValues, e: Eligibility): string {
+export function listDocument(breakId: string, window: Window, policy: WeightPolicy, v: CommitValues, e: Eligibility): string {
   return JSON.stringify(
     {
       version: 1,

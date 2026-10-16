@@ -13,7 +13,6 @@ import { type Fetched, NOT_PUBLISHED, applyLoad, fetchEligibility, fetchInputs, 
 import { inputsHash } from "../lib/twab/inputs";
 import { emptyInput } from "../lib/example";
 import { type Verified, verifyDraw } from "../lib/verify";
-import { base58 } from "@scure/base";
 import { addressToBytes } from "../lib/chain/address";
 import { breakFieldsFromVector, encodeBreak, type BreakFields } from "./support/accounts";
 
@@ -26,6 +25,8 @@ const file = (folder: string) => {
 const ELIGIBILITY = file("eligibility");
 const POOL = file("pool");
 const INPUTS = file("inputs");
+// Why each wallet is in or out (the website does not read this file yet; the tests use it to name the wallets that are out).
+const RECORD = file("records");
 const ROOT = ELIGIBILITY.name.replace(".json", "");
 const INPUTS_HASH = INPUTS.name.replace(".txt", "");
 const POOL_HASH = POOL.name.replace(".json", "");
@@ -82,7 +83,10 @@ describe("reading the eligibility list", () => {
     expect(list.entryCount).toBe(6);
     expect(list.totalWeight).toBe(130n);
     expect(list.holders.split("\n")).toHaveLength(6);
-    expect(list.holders.split("\n")[0]).toBe("4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi 10");
+    // One `wallet weight` line per entry, in the file's order (the tree's).
+    const first = JSON.parse(ELIGIBILITY.text).entries[0];
+    expect(list.holders.split("\n")[0]).toBe(`${first.wallet} ${first.weight}`);
+    expect(list.holders.split("\n")[0]).toMatch(/^[1-9A-HJ-NP-Za-km-z]{32,44} \d+$/);
     // One request, for this root only, with nothing that identifies the visitor or the page they are on.
     expect(asked).toHaveLength(1);
     expect(asked[0]?.url).toBe(`${BASE}/eligibility/${ROOT}.json`);
@@ -319,7 +323,7 @@ describe("what a break needs, and loading it", () => {
     expect(r.stillToPaste).toEqual([]);
     expect(r.notes).toEqual([
       "The eligibility list was read from files.example: 6 wallets, and it hashes to the root committed on chain.",
-      "The balance events were read from files.example: 10 events, and they hash to the inputs hash committed on chain.",
+      "The balance events were read from files.example: 12 events, and they hash to the inputs hash committed on chain.",
       "The cards were read from files.example: 5 cards, and they hash to the pool hash committed on chain.",
     ]);
   });
@@ -446,19 +450,27 @@ describe("the verifier with the published lists", () => {
     ]);
     const w = result.weights;
     if (!w?.ok) throw new Error("the weights were not checked");
-    expect(w.events).toBe(10);
+    expect(w.events).toBe(12);
     expect(w.window).toEqual({ start: 1_800_000_000, end: 1_800_043_200 });
     expect(w.check.verdict).toBe("equal");
     expect(w.check.counts).toEqual({ equal: 6, below: 0, above: 0, "no-history": 0 });
-    // Wallet 7 held 1000 all along and is not on the list: below the minimum or left out on purpose.
-    expect(w.check.offList).toEqual([{ wallet: base58.encode(new Uint8Array(32).fill(7)), twab: 1000n }]);
+    // Three wallets held tokens and are not on the list, one for each reason the keeper's record gives: an exchange that is
+    // excluded (1000), a pool's vault, which is off the curve (7), and a wallet below the minimum (2). Biggest first.
+    const out = JSON.parse(RECORD.text).wallets.filter((x: { reason: string | null }) => x.reason !== null);
+    expect(out.map((x: { reason: string }) => x.reason).sort()).toEqual(["below_min_twab", "excluded:exchange", "off_curve"]);
+    const byTwab = (reason: string) => out.find((x: { reason: string }) => x.reason === reason).wallet;
+    expect(w.check.offList).toEqual([
+      { wallet: byTwab("excluded:exchange"), twab: 1000n },
+      { wallet: byTwab("off_curve"), twab: 7n },
+      { wallet: byTwab("below_min_twab"), twab: 2n },
+    ]);
   });
 
   it("does not trust a weight the balance events do not give, even when the list itself is the committed one", async () => {
     const r = await loadPublishedLists({ baseUrl: BASE, fetch: served().fetchFn, break: account() });
     const lines = (r.holders as string).split("\n");
     // The same list with one weight raised: it no longer hashes to the root, and its weight is above the wallet's balance.
-    const raised = [lines[0]?.replace(/ \d+$/, " 11"), ...lines.slice(1)].join("\n");
+    const raised = [lines[0]?.replace(/ (\d+)$/, (_, w: string) => ` ${BigInt(w) + 1n}`), ...lines.slice(1)].join("\n");
     const result = verifyDraw({ ...emptyInput(), seed: toHex(new Uint8Array(32).fill(9)), holders: raised, inputs: r.inputs as string, expected: { root: ROOT, totalWeight: "", entryCount: "", inputsHash: INPUTS_HASH, poolHash: "" } });
     if (!result.ok) throw new Error(result.errors.join(" | "));
     expect(result.checks.map((c) => [c.label, c.matches])).toEqual([["Eligibility root", false], ["Balance-event hash", true]]);

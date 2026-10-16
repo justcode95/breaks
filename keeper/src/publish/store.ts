@@ -26,6 +26,8 @@ export interface PublishStore {
   leaves(breakId: string): Promise<Leaf[]>;
   /** The balance-event text the planner published for the break (the one `inputs_hash` was made from), if it can be read. */
   inputsText(breakId: string): Promise<string | undefined>;
+  /** The eligibility record the planner stored for the break (`listDocument`: every wallet, its TWAB, weight and reason), if it can be read. */
+  recordText(breakId: string): Promise<string | undefined>;
 }
 
 // Statuses from the committed list on; `cancelled` and the ones before the commit have nothing to publish.
@@ -66,6 +68,14 @@ export class SqlPublishStore implements PublishStore {
     // `inputs_uri` is where the planner put the text (`db:sha256:<hash>` for the database publisher).
     const { rows } = await this.sql.query<{ body: string }>(
       "select p.body from eligibility_lists e join published_documents p on e.inputs_uri = 'db:sha256:' || p.sha256 where e.break_id = $1::bigint",
+      [breakId],
+    );
+    return rows[0]?.body;
+  }
+
+  async recordText(breakId: string): Promise<string | undefined> {
+    const { rows } = await this.sql.query<{ body: string }>(
+      "select p.body from eligibility_lists e join published_documents p on e.list_uri = 'db:sha256:' || p.sha256 where e.break_id = $1::bigint",
       [breakId],
     );
     return rows[0]?.body;
