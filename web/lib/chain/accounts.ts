@@ -83,6 +83,8 @@ export interface BreakAccount {
   /** The SHA-256 of the published balance-event text the weights were computed from. All zeros until a list is committed. */
   eligibilityInputsHash: Uint8Array;
   poolSize: number;
+  /** What the program paid the buyer wallet for the packs (the caps of the first `poolSize` of the list); 0 until funded. */
+  packBudget: bigint;
   poolHash: Uint8Array;
   /** All zeros until the randomness has been settled. */
   seed: Uint8Array;
@@ -116,7 +118,7 @@ export function decodeBreak(data: Uint8Array): BreakAccount {
   const eligibilityCount = r.u32();
   const eligibilityInputsHash = r.fixed(32);
   const poolSize = r.u16();
-  r.u64(); // pack budget
+  const packBudget = r.u64();
   const poolHash = r.fixed(32);
   r.u8(); // randomness attempt
   r.fixed(32); // randomness request id
@@ -142,6 +144,7 @@ export function decodeBreak(data: Uint8Array): BreakAccount {
     eligibilityCount,
     eligibilityInputsHash,
     poolSize,
+    packBudget,
     poolHash,
     seed,
     seededAt,
@@ -171,6 +174,8 @@ export function decodeSpot(data: Uint8Array): SpotAccount {
 export interface ConfigAccount {
   /** The wallet of the multisig that can pause the program. */
   admin: Address;
+  /** The buyer wallet: it is paid each break's pack budget, buys the packs, holds the cards and sends them. */
+  buyer: Address;
   /** The USDC mint the paid spots are bought with. */
   usdcMint: Address;
   /** The id the next break will get; the breaks that exist are `0 .. nextBreakId - 1`. */
@@ -182,7 +187,8 @@ export interface ConfigAccount {
 export function decodeConfig(data: Uint8Array): ConfigAccount {
   const r = accountReader(data, "BreaksConfig");
   const admin = r.address();
-  r.fixed(32 * 2); // keeper, buyer
+  r.fixed(32); // keeper
+  const buyer = r.address();
   const usdcMint = r.address();
   r.fixed(32); // randomness program
   r.u64(); // randomness timeout
@@ -192,5 +198,5 @@ export function decodeConfig(data: Uint8Array): ConfigAccount {
   r.u16(); // most paid spots
   r.u16(); // most free spots
   const paused = r.bool();
-  return { admin, usdcMint, nextBreakId, paused };
+  return { admin, buyer, usdcMint, nextBreakId, paused };
 }

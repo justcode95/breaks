@@ -94,7 +94,9 @@ export default function HowItWorksPage() {
       <h2>What you still have to trust</h2>
       <ul>
         <li>
-          The chain cannot prove that the keeper really bought every pack or sent every card. A ledger that makes any gap visible, spot by spot, is planned.
+          The chain cannot prove that the keeper really bought every pack or sent every card. Once a break's cards are all sent, its page shows a
+          ledger, spot by spot: the pack bought for each spot, the card that came out and where it was sent, with the transactions to look up
+          yourself. A break with no ledger after its draw is a gap you can see.
         </li>
         <li>
           The randomness comes from ORAO, a separate service. You rely on its group of oracles and on whoever can upgrade its program.

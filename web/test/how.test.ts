@@ -56,7 +56,12 @@ describe("the How it works page", () => {
     expect(body).toContain("the rule for very large holders is still being decided");
     expect(body).toContain("that list is meant to be public");
     expect(body).toContain("some of what is described below is designed but not built");
-    expect(body).toContain("A ledger that makes any gap visible, spot by spot, is planned.");
+  });
+
+  it("says where the ledger is and what it does not prove", () => {
+    expect(body).toContain("Once a break's cards are all sent, its page shows a ledger, spot by spot");
+    expect(body).toContain("with the transactions to look up yourself. A break with no ledger after its draw is a gap you can see.");
+    expect(body).not.toContain("is planned");
   });
 
   it("names what you still have to trust: the keeper, ORAO, and who decides what is in a pack", () => {

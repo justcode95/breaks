@@ -19,7 +19,7 @@ const TIMEOUT_MS = 30_000;
 
 export type Fetched<T> = { ok: true; value: T } | { ok: false; kind: "missing" | "unreachable" | "invalid"; message: string };
 
-interface Options {
+export interface Options {
   baseUrl: string;
   fetch?: typeof fetch;
   maxBytes?: number;
@@ -27,13 +27,13 @@ interface Options {
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
-type Folder = "eligibility" | "pool" | "inputs" | "records";
+export type Folder = "eligibility" | "pool" | "inputs" | "records" | "ledger";
 
-/** The balance events are text, the lists and the record JSON. */
-const EXTENSION: Record<Folder, string> = { eligibility: "json", pool: "json", inputs: "txt", records: "json" };
+/** The balance events are text, the lists, the record and the ledger JSON. */
+const EXTENSION: Record<Folder, string> = { eligibility: "json", pool: "json", inputs: "txt", records: "json", ledger: "json" };
 
 /** The text of `<base>/<folder>/<hash>.<json or txt>`, or why there is none. Only the hash is in the request. */
-async function fetchFile(opts: Options, folder: Folder, hash: string): Promise<Fetched<string>> {
+export async function fetchFile(opts: Options, folder: Folder, hash: string): Promise<Fetched<string>> {
   // The name comes from the chain, as hex; refuse anything else rather than build an address from it.
   if (!HEX64.test(hash)) throw new RangeError("a published file is named by 64 lowercase hex digits");
   const url = `${opts.baseUrl}/${folder}/${hash}.${EXTENSION[folder]}`;

@@ -185,6 +185,24 @@ draw itself from being checked.
 The only thing a request contains is the file's name (a hash from the chain): no cookies, no `Referer`, no credentials.
 The break's page links the same files.
 
+A break's page reads its **ledger** once the break is `Drawn` on chain: `<folder>/ledger/<pool hash>.json`, under the pool hash
+it just read from the break's account. The program's config is read for the buyer wallet, at `finalized`. With its own code,
+the page checks that:
+
+- the file is the format above, and the pool hash inside is its name;
+- the buyer wallet is the one the config names;
+- the packs are exactly the pool: their number is `poolSize`, and their cards, hashed with the page's own pool hash, give the
+  committed one;
+- no pack cost more than its own cap in the break's pack list;
+- each spot, in order, is the chain's: the paid spots' owners from their `Spot` accounts, then the free winners on the break;
+- each spot's card is the one the page's own Fisher–Yates gives it from the seed.
+
+A ledger that does not agree is not shown: the page lists what is wrong. A checked one is shown spot by spot, each row with
+the wallet, the card, the pack it came out of with its price and purchase transaction, and the delivery transaction (or "found
+at the wallet"). Below it are the buyer wallet and what the packs cost against the `packBudget` the program paid. A transaction
+that looks like a signature links to the devnet explorer; anything else is shown as text. A missing ledger is said in words,
+with a button to read it again.
+
 The "My spots" page reads the records too, to show the connected wallet where it stands. It looks at the newest ten breaks
 that are not cancelled. Each break whose list is committed has its `<folder>/records/<inputs hash>.json` fetched, and the
 record is used only if:
@@ -213,7 +231,8 @@ website's tests read and check them, so the two sides cannot drift apart on the 
 ## Not published yet
 
 - A ledger before every card is delivered. A break whose cards stop part way has a published pool but no ledger; what each
-  card's delivery looks like on chain depends on the card standard (Phase 0).
+  card's delivery looks like on chain depends on the card standard (Phase 0), so the site links the transactions and does not
+  read them.
 - The whole exclusion list (`exclusions`). Each break's record names every excluded wallet that held the token, with its
   code; a wallet on the list of exclusions that never held the token appears in no record.
 - A smaller form of the inputs file. It lists every balance event since the token's launch, which is fine for thousands of
