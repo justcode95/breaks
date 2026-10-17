@@ -305,7 +305,7 @@ export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]
   }
   if (config.publish.dir) {
     if (!deps.finalized) throw new Error("publishing the lists needs a chain reader at the finalized commitment");
-    log.info("publishing eligibility lists, the balance events behind them and card pools as files", { dir: config.publish.dir });
+    log.info("publishing eligibility lists, the balance events and records behind them, card pools and the ledgers of delivered breaks as files", { dir: config.publish.dir });
     const exporter = new PublishExporter({ store: new SqlPublishStore(sql), sink: new DirSink(config.publish.dir), chain: deps.finalized, programs: config.programs });
     jobs.push(publishJob({ exporter, intervalMs: config.publish.intervalSecs * 1000 }));
   }

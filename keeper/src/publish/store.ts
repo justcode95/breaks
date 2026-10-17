@@ -1,6 +1,7 @@
 import { compareBytes } from "../draw/bytes.js";
 import type { Leaf } from "../draw/tree.js";
 import type { Sql } from "../packs/sql-store.js";
+import type { StoredDelivery, StoredPack } from "./ledger.js";
 import { addressToBytes } from "../solana/pubkey.js";
 
 /** A break the keeper has on chain whose eligibility list is committed (or later): what may have lists to publish. */
@@ -28,6 +29,8 @@ export interface PublishStore {
   inputsText(breakId: string): Promise<string | undefined>;
   /** The eligibility record the planner stored for the break (`listDocument`: every wallet, its TWAB, weight and reason), if it can be read. */
   recordText(breakId: string): Promise<string | undefined>;
+  /** Every pack the buyer stored for the break, and every delivery with the spot it is for: what the ledger is made of. */
+  ledger(breakId: string): Promise<{ packs: StoredPack[]; deliveries: StoredDelivery[] }>;
 }
 
 // Statuses from the committed list on; `cancelled` and the ones before the commit have nothing to publish.
@@ -79,5 +82,38 @@ export class SqlPublishStore implements PublishStore {
       [breakId],
     );
     return rows[0]?.body;
+  }
+
+  async ledger(breakId: string): Promise<{ packs: StoredPack[]; deliveries: StoredDelivery[] }> {
+    const packs = await this.sql.query<{ pack_index: number; status: string; purchase_sig: string | null; price: string | null; card_mint: string | null; proof_ref: string | null }>(
+      "select pack_index, status, purchase_sig, price::text as price, card_mint, proof_ref from packs where break_id = $1::bigint order by pack_index",
+      [breakId],
+    );
+    const deliveries = await this.sql.query<{ kind: "paid" | "free"; idx: number; recipient: string | null; card_mint: string; status: string; tx_sig: string | null; adopted: boolean }>(
+      `select s.kind, s.idx, d.recipient, d.card_mint, d.status, d.tx_sig, d.adopted
+         from deliveries d join spots s on s.id = d.spot_id
+        where d.break_id = $1::bigint
+        order by s.kind desc, s.idx`,
+      [breakId],
+    );
+    return {
+      packs: packs.rows.map((r) => ({
+        index: r.pack_index,
+        status: r.status,
+        ...(r.purchase_sig !== null ? { purchaseSig: r.purchase_sig } : {}),
+        ...(r.price !== null ? { price: BigInt(r.price) } : {}),
+        ...(r.card_mint !== null ? { cardMint: r.card_mint } : {}),
+        ...(r.proof_ref !== null ? { proofRef: r.proof_ref } : {}),
+      })),
+      deliveries: deliveries.rows.map((r) => ({
+        kind: r.kind,
+        idx: r.idx,
+        ...(r.recipient !== null ? { recipient: r.recipient } : {}),
+        cardMint: r.card_mint,
+        status: r.status,
+        ...(r.tx_sig !== null ? { txSig: r.tx_sig } : {}),
+        adopted: r.adopted,
+      })),
+    };
   }
 }

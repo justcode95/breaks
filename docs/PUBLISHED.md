@@ -8,6 +8,10 @@ A fourth file, the **record**, says why each wallet is in or out (its average ba
 minimum and the cap that were applied). The chain commits to no hash of its own for it, so it is checked differently: see
 "How to check a file".
 
+A fifth, the **ledger**, is published once every card of a break is delivered. It follows each pack from its purchase to its
+card, and each spot to the card the draw gave it and the transaction that sent it there. The chain commits no hash of it
+either; it is filed under the pool hash and checked against the chain and the draw.
+
 Each file is **named by the hash the chain committed**. A reader fetches the file for a break's root or pool hash,
 recomputes the hash from what is in the file, and compares it with the chain. Where the files are hosted does not matter,
 and a host that serves a wrong or altered file is caught: it does not hash to its name. That is why nothing here needs to
@@ -33,6 +37,10 @@ A file is written only when the keeper's own data provably hashes to what the ch
   nobody was eligible;
 - the cards: the pool hash and the number of cards equal the ones committed by `commit_pool`, and the seed is final
   (`Settled` or `Drawn`), so the draw can be checked.
+- the ledger: the break is `Drawn` on chain and every card is delivered. The packs must be exactly the first `pool_size` of
+  the break's pack list, each pulled, with a purchase transaction and a price no higher than its own cap. Their cards must be
+  the committed pool. Every spot's card must have gone, confirmed, to the wallet the draw gives it, worked out from the
+  chain's seed, paid spots and free winners. The spots and the buyer wallet are read at `finalized` too.
 
 Files are never overwritten. A run first looks for the file by name, so a quiet run reads nothing from the chain.
 
@@ -43,6 +51,7 @@ eligibility/<root>.json        root = the 64 hex digits committed in `commit_eli
 inputs/<inputs hash>.txt       inputs hash = the 64 hex digits of `inputs_hash`, committed in `commit_eligibility`
 pool/<pool hash>.json          pool hash = the 64 hex digits committed in `commit_pool`
 records/<inputs hash>.json     the same inputs hash as the balance events it was computed from (a pointer, not its own hash)
+ledger/<pool hash>.json        the same pool hash as the cards (a pointer, not its own hash), once every card is delivered
 ```
 
 No eligibility file is published for a break whose list is empty (a zero root has nothing behind it); its inputs file
@@ -56,6 +65,7 @@ Numbers that can exceed 2^53 (weights) are decimal strings.
 ```json
 {"version":1,"kind":"eligibility","root":"<64 hex>","totalWeight":"<decimal>","entryCount":2,"entries":[{"wallet":"<base58>","weight":"<decimal>"}, ...]}
 {"version":1,"kind":"pool","poolHash":"<64 hex>","cards":["<mint base58>", ...]}
+{"version":1,"kind":"ledger","poolHash":"<64 hex>","buyer":"<base58>","packs":[{"index":0,"price":"<decimal or null>","purchaseTx":"<signature>","card":"<mint base58>","proof":"<reference or null>"}, ...],"spots":[{"kind":"paid","index":0,"wallet":"<base58>","card":"<mint base58>","deliveryTx":"<signature or null>"}, ...]}
 {"version":1,"kind":"record","inputsHash":"<64 hex>","root":"<64 hex>","totalWeight":"<decimal>","entryCount":6,"window":{"start":<unix s>,"end":<unix s>},"policy":{"minTwab":"<decimal>","capPerWallet":"<decimal, only when there is a cap>"},"wallets":[{"wallet":"<base58>","twab":"<decimal>","weight":"<decimal>","reason":null}, ...]}
 ```
 
@@ -64,6 +74,14 @@ for a wallet on the list, and otherwise one of `below_min_twab` (its TWAB is bel
 address is not on the ed25519 curve, so it is a program's account, such as a pool's vault, and never a holder) or
 `excluded:<code>` (left out on purpose; the code says why, for example `excluded:exchange`). A wallet that is out has weight
 `0`. A wallet on the list has the weight `min(TWAB, cap)`, or its TWAB when there is no cap.
+
+In a ledger, `buyer` is the buyer wallet the program's config names: it was paid the pack budget, bought the packs, held the
+cards and sent them. `packs` are the packs bought, in the order of the break's pack list (`index` from 0). `price` is what the pack
+cost in micro-USDC, or `null` when the purchase was found in the buyer wallet's history and its price is not known.
+`purchaseTx` is the purchase transaction, `card` the card that came out, and `proof` the reference to the card service's proof
+of the pull, or `null`. `spots` are the paid spots in purchase order, then the free spots in draw order (`index` from 0 within
+each kind). Each has the wallet the draw gives the card to, the card, and the transaction that sent it, or `null` when the
+card was found at the wallet without a transfer of ours on record.
 
 The inputs file is text, not JSON: the exact bytes the hash was made from.
 
@@ -111,6 +129,12 @@ and amounts are whole token base units. A change of owner is two lines, one for 
   published here for anyone to read and question.
 - **Cards.** `sha256("breaks:pool:v1" ‖ mint_0 ‖ mint_1 ‖ …)` over the sorted mints must equal the file's name and the
   `poolHash` on the break's account, and the number of cards `poolSize`.
+- **Ledger.** Its `poolHash` must be the file's name and the break account's `poolHash`, and its cards must be the pool. The
+  card of each spot must be the one the draw assigns: the Fisher–Yates under "Draw algorithm" in `CLAUDE.md`, over the pool
+  sorted by mint, with the paid spots' owners (the `Spot` accounts) and then the free winners (on the break). Each price must
+  be at most its pack's cap in the break's pack list. Their sum is what the packs cost; what the buyer wallet received is the
+  break's `packBudget`. The transactions are the keeper's word: look each one up on chain to see that it bought that pack, or
+  sent that card from the `buyer` wallet to that wallet.
 
 The site's "Verify a draw" page recomputes the draw from these (its own implementation of the tree and the hash, not the
 keeper's).
@@ -178,14 +202,18 @@ That line must follow from the record's rules and agree with the free-spot winne
 wallet's line is checked against the rules there; the verify page checks every wallet of one break. A record that passed is
 kept for the visit, so it is not fetched again; one that was missing or wrong is fetched again on the next read.
 
-`docs/published-example/` holds a small list, its balance events, its record and a pool, made by the keeper's own code. The
-record has one wallet for each reason a wallet is out (an exchange that is excluded, a wallet below the minimum and a pool's
-vault off the curve). The keeper's tests pin them, and the
+`docs/published-example/` holds a small list, its balance events, its record, a pool and its ledger, made by the keeper's own
+code. The record has one wallet for each reason a wallet is out (an exchange that is excluded, a wallet below the minimum and a
+pool's vault off the curve). The ledger is a draw that really happened: break id 7, seed `5a` × 32, the paid spots bought by
+the keeper test's holders 11, 12 and 13, and two free winners drawn from the list. It has one of each `null`: a price, a proof
+and a delivery transaction. The keeper's tests pin them, and the
 website's tests read and check them, so the two sides cannot drift apart on the format. Regenerate them with
 `UPDATE_PUBLISHED_EXAMPLE=1 pnpm --filter keeper test` if the format ever changes on purpose.
 
 ## Not published yet
 
+- A ledger before every card is delivered. A break whose cards stop part way has a published pool but no ledger; what each
+  card's delivery looks like on chain depends on the card standard (Phase 0).
 - The whole exclusion list (`exclusions`). Each break's record names every excluded wallet that held the token, with its
   code; a wallet on the list of exclusions that never held the token appears in no record.
 - A smaller form of the inputs file. It lists every balance event since the token's launch, which is fine for thousands of

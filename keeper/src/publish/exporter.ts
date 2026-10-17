@@ -1,10 +1,11 @@
-// Publishes a break's eligibility list, the balance events behind it, the record of why each wallet is in or out, and its card
-// pool, as files named by the hashes the chain committed.
+// Publishes a break's eligibility list, the balance events behind it, the record of why each wallet is in or out, its card
+// pool and, once every card is delivered, its per-spot ledger, as files named by the hashes the chain committed.
 //
 // A file is written only when the data the keeper holds provably hashes to what the chain (read at `finalized`) says
 // was committed: the rebuilt Merkle root, total weight and wallet count for the list, the SHA-256 of the balance-event
 // text for the record of the inputs, the pool hash and size for the cards. The record of why each wallet is in or out has no
-// hash of its own on chain, so it must be exactly what the eligibility rules make of the committed balance events (record.ts). Data that does not match is reported and never
+// hash of its own on chain, so it must be exactly what the eligibility rules make of the committed balance events (record.ts); nor does
+// the ledger, so its packs, cards and spots must agree with the chain and the draw (ledger.ts). Data that does not match is reported and never
 // published. Files are never overwritten, and a run first looks for the file by name, so a quiet run reads nothing from
 // the chain (and a busy one reads each break once).
 
@@ -13,9 +14,10 @@ import { poolHash } from "../draw/pool.js";
 import { Tree } from "../draw/tree.js";
 import type { Job } from "../job.js";
 import type { AccountReader } from "../pipeline/chain.js";
-import { type BreakAccount, type Programs, breakAddress, decodeBreak } from "../solana/breaks.js";
+import { type BreakAccount, type Programs, type SpotAccount, breakAddress, configAddress, decodeBreak, decodeBreaksConfig, decodeSpot, spotAddress } from "../solana/breaks.js";
 import { addressToBytes } from "../solana/pubkey.js";
-import { eligibilityFile, inputsFile, poolFile, recordFile } from "./files.js";
+import { eligibilityFile, inputsFile, ledgerFile, poolFile, recordFile } from "./files.js";
+import { type Ledger, buildLedger } from "./ledger.js";
 import { checkRecord, parseStoredRecord } from "./record.js";
 import type { FileSink } from "./sink.js";
 import type { Candidate, PublishStore } from "./store.js";
@@ -49,7 +51,7 @@ export class PublishExporter {
       let read: Promise<BreakAccount> | undefined;
       const chain = () => (read ??= this.onChain(c));
       const errors: string[] = [];
-      for (const step of [() => this.eligibility(c, chain), () => this.inputs(c, chain), () => this.record(c, chain), () => this.pool(c, chain)]) {
+      for (const step of [() => this.eligibility(c, chain), () => this.inputs(c, chain), () => this.record(c, chain), () => this.pool(c, chain), () => this.ledger(c, chain)]) {
         try {
           report.written.push(...(await step()));
         } catch (err) {
@@ -145,6 +147,35 @@ export class PublishExporter {
       );
     }
     return this.write(poolFile(hash, mints));
+  }
+
+  /**
+   * The per-spot ledger, once every card is delivered. It goes out only if the packs, their cards and every spot's wallet and
+   * card agree with the chain and the draw (`buildLedger`); the spots and the buyer wallet are read at `finalized` too.
+   */
+  private async ledger(c: Candidate, chain: () => Promise<BreakAccount>): Promise<string[]> {
+    if (c.status !== "delivered" || c.cards.length === 0) return [];
+    if (await this.deps.sink.exists(`ledger/${toHex(poolHash(c.cards.map(addressToBytes)))}.json`)) return [];
+
+    const b = await chain();
+    const { programs } = this.deps;
+    const config = await this.deps.chain.getAccountData(configAddress(programs));
+    if (!config) throw new Error("the breaks program has no config account on chain");
+    const breakKey = breakAddress(programs, b.id);
+    const paidSpots: SpotAccount[] = [];
+    for (let i = 0; i < b.spotsSold; i++) {
+      const data = await this.deps.chain.getAccountData(spotAddress(programs, breakKey, i));
+      if (!data) throw new Error(`spot ${i} of break ${b.id} has no account on chain`);
+      paidSpots.push(decodeSpot(data));
+    }
+    const { packs, deliveries } = await this.deps.store.ledger(c.breakId);
+    let ledger: Ledger;
+    try {
+      ledger = buildLedger({ chain: b, buyer: decodeBreaksConfig(config).buyer, paidSpots, packs, deliveries });
+    } catch (err) {
+      throw new Error(`the ledger does not add up: ${err instanceof Error ? err.message : String(err)}; nothing was published`);
+    }
+    return this.write(ledgerFile(ledger));
   }
 
   private async onChain(c: Candidate) {
