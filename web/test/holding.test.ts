@@ -136,7 +136,19 @@ describe("loading the wallet's tokens", () => {
       blockTime: 1_800_000_123,
     });
     const h = await loadHolding({ rpcUrl: RPC, mint: MINT, owner: WALLET, fetch: node.fetchFn });
-    expect(h).toEqual({ mint: { address: MINT, program: TOKEN_PROGRAM, decimals: 6, supply: 10n ** 15n }, total: 1_750_000n, accounts: 2, slot: 4242, time: 1_800_000_123 });
+    expect(h).toEqual({
+      mint: { address: MINT, program: TOKEN_PROGRAM, decimals: 6, supply: 10n ** 15n },
+      total: 1_750_000n,
+      accounts: 2,
+      // Every account of the wallet, the empty one too: the history of each is read when a sale is on.
+      held: new Map([
+        [fill(61), 1_500_000n],
+        [fill(62), 0n],
+        [fill(63), 250_000n],
+      ]),
+      slot: 4242,
+      time: 1_800_000_123,
+    });
     expect(node.methods()).toEqual(["getMultipleAccounts", "getTokenAccountsByOwner", "getBlockTime"]);
     expect(node.calls[0]?.params).toEqual([[MINT], { encoding: "base64", commitment: "finalized" }]);
     expect(node.calls[1]?.params).toEqual([WALLET, { mint: MINT }, { encoding: "base64", commitment: "finalized" }]);
@@ -246,7 +258,7 @@ describe("what the tokens held now give over the sale that is on", () => {
 
   it("counts the tokens for the part of the sale still to come, rounded down like the list", () => {
     // Half the sale left: half the balance.
-    expect(saleFloor([row(0)], 1_000_001n, T(10_800n))).toEqual({ kind: "on", number: 1, closesAt: CLOSES, left: 10_800n, length: 21_600n, floor: 500_000n });
+    expect(saleFloor([row(0)], 1_000_001n, T(10_800n))).toEqual({ kind: "on", number: 1, opensAt: OPENS, closesAt: CLOSES, left: 10_800n, length: 21_600n, floor: 500_000n });
     // At the opening: all of it. One second before the close: one second's worth.
     expect(saleFloor([row(0)], 21_600n * 7n, T(0n))).toMatchObject({ kind: "on", left: 21_600n, floor: 151_200n });
     expect(saleFloor([row(0)], 21_600n * 7n, T(21_599n))).toMatchObject({ kind: "on", left: 1n, floor: 7n });
