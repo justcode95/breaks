@@ -14,6 +14,7 @@ import { DrawError, type Leaf, treeRoot } from "./draw/tree";
 import { inputsHash, parseInputs } from "./twab/inputs";
 import { TwabError, twabByOwner } from "./twab/twab";
 import { type ListedWallet, type WeightCheck, checkWeights } from "./twab/weights";
+import { type ExclusionList, type ExclusionsCheck, checkExclusions, parseExclusions } from "./twab/exclusions";
 import { type EligibilityRecord, type RecordCheck, type RecordContext, checkRecord, parseRecord } from "./twab/record";
 
 /** The most free spots a break can have (the winner list is stored in the break account). */
@@ -29,6 +30,8 @@ export interface VerifyInput {
   inputs: string;
   /** The keeper's record of why each wallet is in or out (`records/<inputs hash>.json`), as it is published. Optional. */
   record: string;
+  /** The exclusion list the list was made with (`exclusions/<inputs hash>.json`), as it is published. Optional. */
+  exclusions: string;
   /** The break's number of free spots. */
   freeSpots: string;
   /** Wallets of the paid spots, one per line, in purchase order. */
@@ -84,6 +87,9 @@ export type WeightsReport =
 /** What the record of why each wallet is in or out says, and what does not add up in it; or why it could not be read. */
 export type RecordReport = { ok: true; record: EligibilityRecord; check: RecordCheck } | { ok: false; errors: string[] };
 
+/** The exclusion list, against the chain and the record; or why it could not be read. `record` is the record it was checked with. */
+export type ExclusionsReport = { ok: true; list: ExclusionList; check: ExclusionsCheck; record?: EligibilityRecord } | { ok: false; errors: string[] };
+
 export interface Verified {
   ok: true;
   seed: { hex: string; derived: boolean };
@@ -97,6 +103,8 @@ export interface Verified {
   weights?: WeightsReport;
   /** Present when the record was given: every wallet's reason against the rules, the commitments, the balance events and the list. */
   record?: RecordReport;
+  /** Present when the exclusion list was given: it against the inputs hash on chain and the record. */
+  exclusions?: ExclusionsReport;
   checks: Check[];
   /** Things worth saying that are not a match or a difference. */
   notes: string[];
@@ -309,6 +317,23 @@ export function verifyDraw(input: VerifyInput): VerifyResult {
     }
   }
 
+  // The whole exclusion list, against the chain and the record (a record that could not be read is not used). It never stops
+  // the draw from being checked either.
+  let exclusions: ExclusionsReport | undefined;
+  if (input.exclusions.trim() !== "") {
+    const parsed = parseExclusions(input.exclusions);
+    if (!parsed.ok) exclusions = { ok: false, errors: parsed.errors.map((m) => `Exclusion list: ${m}`) };
+    else {
+      const checkedWith = record?.ok ? record.record : undefined;
+      exclusions = {
+        ok: true,
+        list: parsed.list,
+        check: checkExclusions(parsed.list, { ...(checkedWith ? { record: checkedWith } : {}), ...(want.inputs ? { inputsHash: toHex(want.inputs) } : {}) }),
+        ...(checkedWith ? { record: checkedWith } : {}),
+      };
+    }
+  }
+
   if (want.pool) {
     if (pool) same("Pool hash", toHex(want.pool), pool);
     else wanted.push({ label: "Pool hash", expected: toHex(want.pool), actual: "no cards given", matches: false });
@@ -339,6 +364,7 @@ export function verifyDraw(input: VerifyInput): VerifyResult {
     ...(assigned ? { assignment: assigned } : {}),
     ...(weights ? { weights } : {}),
     ...(record ? { record } : {}),
+    ...(exclusions ? { exclusions } : {}),
     checks: wanted,
     notes,
   };

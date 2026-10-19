@@ -167,7 +167,8 @@ website's own implementation (`web/lib/twab/`) is tested against it, so the two 
 Set `NEXT_PUBLIC_PUBLISHED_URL` when the site is built to the folder the files are served from (https, or http on this
 machine only; no login, query or fragment in it). When a person loads a break on the "Verify a draw" page, the page
 fetches `<folder>/eligibility/<root>.json` once a list is committed, `<folder>/inputs/<inputs hash>.txt` as soon as the
-inputs hash is committed (with the list), `<folder>/records/<inputs hash>.json` at the same time, and
+inputs hash is committed (with the list), `<folder>/records/<inputs hash>.json` and
+`<folder>/exclusions/<inputs hash>.json` at the same time, and
 `<folder>/pool/<pool hash>.json` once the seed is final, **using the root, the
 inputs hash and the pool hash it just read from the break's account**. It then checks each file before using it:
 
@@ -178,6 +179,7 @@ inputs hash and the pool hash it just read from the break's account**. It then c
 - the balance events: the SHA-256 of the text is the break account's `eligibilityInputsHash`;
 - the record: it is the format above, it names the inputs hash it is filed under, and it states the root, total weight,
   number of wallets and window that are on the break's account;
+- the exclusion list: it is the format above and names the inputs hash it is filed under;
 - the file is not larger than 25 MB.
 
 A file that fails any of these is not used: the page says why, in words, and leaves the list or the cards to be pasted. A
@@ -199,6 +201,12 @@ wallets), and its wallets on the list are the eligibility list with the same wei
 the cap or none), how many wallets are out for each reason, every wallet that is out with its reason, biggest first, and
 anything that does not add up. It says plainly that the rules and why a wallet is left out on purpose are the keeper's word. The text's window is compared with the break's `opens_at` to `closes_at`. None of this stops the
 draw itself from being checked.
+
+With the exclusion list the page shows **every wallet left out on purpose**, with its code, and, with the record, checks with
+its own code that it is the list the record was made with: every wallet of the record is `excluded:<code>` exactly when the
+list names it, with that code. It says how many of the list's wallets held the token (the record has them) and how many held
+none of it (only this list shows those), and that why a wallet is on the list is the keeper's word. A list for another inputs
+hash than the chain's or the record's is said too. It never stops the draw from being checked either.
 
 The only thing a request contains is the file's name (a hash from the chain): no cookies, no `Referer`, no credentials.
 The break's page links the same files.

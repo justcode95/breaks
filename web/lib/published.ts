@@ -11,6 +11,7 @@ import { U64_MAX, toHex } from "./draw/bytes";
 import { poolHash } from "./draw/pool";
 import { DrawError, type Leaf, treeRoot } from "./draw/tree";
 import { inputsHash } from "./twab/inputs";
+import { parseExclusions } from "./twab/exclusions";
 import { type EligibilityRecord, parseRecord } from "./twab/record";
 
 /** The most a list may be: a list of tens of thousands of wallets is a few megabytes. */
@@ -27,10 +28,10 @@ export interface Options {
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
-export type Folder = "eligibility" | "pool" | "inputs" | "records" | "ledger";
+export type Folder = "eligibility" | "pool" | "inputs" | "records" | "exclusions" | "ledger";
 
-/** The balance events are text, the lists, the record and the ledger JSON. */
-const EXTENSION: Record<Folder, string> = { eligibility: "json", pool: "json", inputs: "txt", records: "json", ledger: "json" };
+/** The balance events are text, the lists, the record, the exclusion list and the ledger JSON. */
+const EXTENSION: Record<Folder, string> = { eligibility: "json", pool: "json", inputs: "txt", records: "json", exclusions: "json", ledger: "json" };
 
 /** The text of `<base>/<folder>/<hash>.<json or txt>`, or why there is none. Only the hash is in the request. */
 export async function fetchFile(opts: Options, folder: Folder, hash: string): Promise<Fetched<string>> {
@@ -221,6 +222,19 @@ export async function fetchRecord(opts: Options & { expected: RecordExpected }):
   return { ok: true, value: { text: got.value, wallets: r.wallets.length, record: r } };
 }
 
+/**
+ * The exclusion list a break's list was made with, if the file under the committed inputs hash exists, reads as one and names
+ * that hash. Whether it is the list the record was made with is for the verify page to check, with the record.
+ */
+export async function fetchExclusions(opts: Options & { expected: { inputsHash: string } }): Promise<Fetched<{ text: string; wallets: number }>> {
+  const got = await fetchFile(opts, "exclusions", opts.expected.inputsHash);
+  if (!got.ok) return got;
+  const parsed = parseExclusions(got.value);
+  if (!parsed.ok) return invalid(parsed.errors[0] as string);
+  if (parsed.list.inputsHash !== opts.expected.inputsHash) return invalid("the inputs hash inside the file is not the one it is named after");
+  return { ok: true, value: { text: got.value, wallets: parsed.list.entries.length } };
+}
+
 export interface PublishedLists {
   /** Set when the eligibility list was read and checked. */
   holders?: string;
@@ -230,6 +244,8 @@ export interface PublishedLists {
   inputs?: string;
   /** Set when the record of why each wallet is in or out was read and states the chain's commitments. */
   record?: string;
+  /** Set when the exclusion list was read and names the committed inputs hash. */
+  exclusions?: string;
   /** What happened, in words, for the person to read. */
   notes: string[];
   /** What the person still has to paste, because it was needed and could not be read. */
@@ -243,12 +259,13 @@ const isZero = (bytes: Uint8Array) => bytes.every((b) => b === 0);
  * the record of why each wallet is in or out (both committed with it, also when the list is empty), the cards once the seed is
  * final.
  */
-export function whatIsNeeded(b: BreakAccount): { list: boolean; inputs: boolean; record: boolean; cards: boolean } {
+export function whatIsNeeded(b: BreakAccount): { list: boolean; inputs: boolean; record: boolean; exclusions: boolean; cards: boolean } {
   const committed = !isZero(b.eligibilityInputsHash);
   return {
     list: b.eligibilityCount > 0 && !isZero(b.eligibilityRoot),
     inputs: committed,
     record: committed,
+    exclusions: committed,
     cards: (b.status === "Settled" || b.status === "Drawn") && !isZero(b.poolHash),
   };
 }
@@ -268,6 +285,7 @@ export async function loadPublishedLists(opts: { baseUrl?: string; fetch?: typeo
     if (needed.list) out.stillToPaste.push("the eligibility list");
     if (needed.inputs) out.stillToPaste.push(INPUTS_TO_PASTE);
     if (needed.record) out.stillToPaste.push(RECORD_TO_PASTE);
+    if (needed.exclusions) out.stillToPaste.push(EXCLUSIONS_TO_PASTE);
     if (needed.cards) out.stillToPaste.push("the cards");
     return out;
   }
@@ -317,6 +335,19 @@ export async function loadPublishedLists(opts: { baseUrl?: string; fetch?: typeo
     }
   }
 
+  if (needed.exclusions) {
+    const r = await safely(() => fetchExclusions({ ...options, expected: { inputsHash: toHex(b.eligibilityInputsHash) } }));
+    if (r.ok) {
+      out.exclusions = r.value.text;
+      out.notes.push(
+        `The exclusion list was read from ${host}: ${r.value.wallets} ${r.value.wallets === 1 ? "wallet" : "wallets"} left out on purpose (the chain commits no hash of it, so it is checked below against the record).`,
+      );
+    } else {
+      out.stillToPaste.push(EXCLUSIONS_TO_PASTE);
+      out.notes.push(failure("exclusion list", host, r));
+    }
+  }
+
   if (needed.cards) {
     const r = await safely(() => fetchPool({ ...options, expected: { poolHash: toHex(b.poolHash), poolSize: b.poolSize } }));
     if (r.ok) {
@@ -343,6 +374,8 @@ export async function safely<T>(read: () => Promise<Fetched<T>>): Promise<Fetche
 const INPUTS_TO_PASTE = "the balance events (to check the weights)";
 /** So is the record: it lets the reasons be checked. */
 const RECORD_TO_PASTE = "the record of why each wallet is in or out (to check the reasons)";
+/** And the exclusion list: it shows every wallet left out on purpose, also those that held none of the token. */
+const EXCLUSIONS_TO_PASTE = "the exclusion list (to see every wallet left out on purpose)";
 
 function failure(what: string, host: string, r: Extract<Fetched<unknown>, { ok: false }>): string {
   const plural = what === "cards" || what === "balance events";
@@ -366,10 +399,11 @@ export interface Provenance {
   holders: boolean;
   inputs: boolean;
   record: boolean;
+  exclusions: boolean;
   cards: boolean;
 }
 
-export const NOT_PUBLISHED: Provenance = { holders: false, inputs: false, record: false, cards: false };
+export const NOT_PUBLISHED: Provenance = { holders: false, inputs: false, record: false, exclusions: false, cards: false };
 
 /**
  * The form after a break was loaded. What the chain gave replaces the chain-backed fields. The list and the cards
@@ -380,7 +414,7 @@ export function applyLoad(
   prev: VerifyInput,
   provenance: Provenance,
   loaded: { patch: Partial<VerifyInput>; onChain: NonNullable<VerifyInput["onChain"]> },
-  published: Pick<PublishedLists, "holders" | "inputs" | "record" | "cards"> | undefined,
+  published: Pick<PublishedLists, "holders" | "inputs" | "record" | "exclusions" | "cards"> | undefined,
 ): { input: VerifyInput; provenance: Provenance } {
   const input: VerifyInput = { ...prev, ...loaded.patch, onChain: loaded.onChain };
   if (published?.holders !== undefined) input.holders = published.holders;
@@ -389,10 +423,18 @@ export function applyLoad(
   else if (provenance.inputs) input.inputs = "";
   if (published?.record !== undefined) input.record = published.record;
   else if (provenance.record) input.record = "";
+  if (published?.exclusions !== undefined) input.exclusions = published.exclusions;
+  else if (provenance.exclusions) input.exclusions = "";
   if (published?.cards !== undefined) input.cards = published.cards;
   else if (provenance.cards) input.cards = "";
   return {
     input,
-    provenance: { holders: published?.holders !== undefined, inputs: published?.inputs !== undefined, record: published?.record !== undefined, cards: published?.cards !== undefined },
+    provenance: {
+      holders: published?.holders !== undefined,
+      inputs: published?.inputs !== undefined,
+      record: published?.record !== undefined,
+      exclusions: published?.exclusions !== undefined,
+      cards: published?.cards !== undefined,
+    },
   };
 }

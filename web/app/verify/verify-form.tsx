@@ -6,6 +6,7 @@ import { emptyInput, exampleInput } from "../../lib/example";
 import { NOT_PUBLISHED, type Provenance, applyLoad, loadPublishedLists } from "../../lib/published";
 import { PUBLISHED_SETUP, SETUP } from "../../lib/site";
 import { type VerifyInput, type VerifyResult, verifyDraw } from "../../lib/verify";
+import { ExclusionsSection } from "./exclusions-section";
 import { RecordSection } from "./record-section";
 import { WeightsSection } from "./weights-section";
 
@@ -40,6 +41,7 @@ export function VerifyForm() {
         holders: f.provenance.holders && patch.holders === undefined,
         inputs: f.provenance.inputs && patch.inputs === undefined,
         record: f.provenance.record && patch.record === undefined,
+        exclusions: f.provenance.exclusions && patch.exclusions === undefined,
         cards: f.provenance.cards && patch.cards === undefined,
       },
     }));
@@ -91,8 +93,8 @@ export function VerifyForm() {
                 Fills in the seed, the free spots, the paid spots' wallets, the values to compare with and the winners recorded on the break, read from the chain
                 (finalized). Only the break number is sent to the node.{" "}
                 {PUBLISHED_SETUP.kind === "on"
-                  ? "The eligibility list, the balance events behind its weights, the record of why each wallet is in or out and the cards are read from the published files and checked against the chain; if they cannot be read, paste them."
-                  : "The eligibility list, the balance events, the record of why each wallet is in or out and the cards are published off chain, so paste those yourself."}
+                  ? "The eligibility list, the balance events behind its weights, the record of why each wallet is in or out, the exclusion list and the cards are read from the published files and checked against the chain; if they cannot be read, paste them."
+                  : "The eligibility list, the balance events, the record of why each wallet is in or out, the exclusion list and the cards are published off chain, so paste those yourself."}
               </p>
               <div className="inline">
                 <label htmlFor="number">Break number</label>
@@ -150,6 +152,14 @@ export function VerifyForm() {
           hint="The keeper's record, exactly as published: every wallet's average balance, weight and reason, with the minimum and the cap. With it, every reason is checked against those rules, the balance events and the list."
         >
           <textarea id="record" className="mono" rows={4} aria-describedby="record-hint" value={input.record} onChange={(e) => set({ record: e.target.value })} spellCheck={false} />
+        </Field>
+
+        <Field
+          id="exclusions"
+          label="The exclusion list (optional)"
+          hint="The keeper's list of every wallet left out on purpose, exactly as published, also those that held none of the token. With the record, it is checked to be the list the record was made with."
+        >
+          <textarea id="exclusions" className="mono" rows={3} aria-describedby="exclusions-hint" value={input.exclusions} onChange={(e) => set({ exclusions: e.target.value })} spellCheck={false} />
         </Field>
 
         <Field id="paid" label="Paid spots (optional)" hint="The buyer's wallet of each paid spot, one per line, in purchase order. Needed with the cards to see who gets which card.">
@@ -262,6 +272,7 @@ function Result({ result }: { result: VerifyResult }) {
 
       {result.weights && <WeightsSection weights={result.weights} reasons={result.record?.ok === true} />}
       {result.record && <RecordSection record={result.record} />}
+      {result.exclusions && <ExclusionsSection exclusions={result.exclusions} />}
 
       {result.checks.length > 0 && (
         <div className="scroll" role="region" aria-label="Comparison with the break's account" tabIndex={0}>
