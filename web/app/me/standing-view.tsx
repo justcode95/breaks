@@ -49,19 +49,28 @@ function standingLine(st: Standing, total: bigint, minTwab: bigint): { badge: st
   }
 }
 
+/** A chance in words, to the whole percent: never "0%" or "100%" for something that is neither. */
+export function chanceText(chance: number): string {
+  if (chance < 0.005) return "Less than 1%";
+  if (chance >= 0.995) return "More than 99%";
+  return `About ${Math.round(chance * 100)}%`;
+}
+
 /** What the draw did or will do for a wallet on the list, in a few words. */
 export function freeSpotText(free: FreeSpot, freeSpots: number): string {
   switch (free.kind) {
     case "won":
       return `Won: #${free.position} in the draw`;
+    case "wins":
+      return `Wins #${free.position} in the draw: the seed is final`;
     case "not-drawn":
-      return "Not drawn";
-    case "drawing":
-      return "Being drawn";
+      return free.recorded ? "Not drawn" : "Not drawn: the seed is final";
+    case "none":
+      return "No free spots in this break";
     case "everyone":
       return `One for each wallet on the list (${freeSpots} free ${freeSpots === 1 ? "spot" : "spots"})`;
-    case "later":
-      return `${freeSpots} free ${freeSpots === 1 ? "spot" : "spots"}, drawn after the cards are pulled`;
+    case "chance":
+      return `${chanceText(free.chance)} chance of ${free.draws === 1 ? "the free spot" : `one of the ${free.draws} free spots`}`;
   }
 }
 
@@ -72,6 +81,9 @@ export function freeSpotText(free: FreeSpot, freeSpots: number): string {
 export function StandingsView({ standings, host, onRetry }: { standings: readonly BreakStanding[]; host: string; onRetry?: () => void }) {
   const retry = standings.some((s) => s.kind === "unavailable" && (s.why === "missing" || s.why === "unreachable"));
   const cancellable = standings.some((s) => s.kind === "standing" && s.break.status === "EligibilityCommitted" && s.standing.kind === "listed");
+  const frees = standings.flatMap((s) => (s.kind === "standing" && s.free ? [s.free] : []));
+  const chance = frees.some((f) => f.kind === "chance");
+  const seeded = frees.some((f) => f.kind === "wins" || (f.kind === "not-drawn" && !f.recorded));
   return (
     <section className="card">
       <h2>On the free-spot lists</h2>
@@ -111,7 +123,7 @@ export function StandingsView({ standings, host, onRetry }: { standings: readonl
                         </div>
                       )}
                     </td>
-                    <td>{s.kind === "standing" && s.free ? freeSpotText(s.free, s.break.freeSpots) : "—"}</td>
+                    <td className="words">{s.kind === "standing" && s.free ? freeSpotText(s.free, s.break.freeSpots) : "—"}</td>
                   </tr>
                 );
               })}
@@ -125,6 +137,19 @@ export function StandingsView({ standings, host, onRetry }: { standings: readonl
         </div>
       )}
       {cancellable && <p className="hint">A break can still be cancelled before its packs are paid for, and then nobody gets a free spot in it.</p>}
+      {chance && (
+        <p className="hint">
+          The free spots are drawn after the cards are pulled, one at a time, each by weight among the wallets on the list not drawn yet, so a
+          wallet gets at most one. A chance is worked out on this page from the weights on the checked list; nobody knows who wins before the
+          randomness comes.
+        </p>
+      )}
+      {seeded && (
+        <p className="hint">
+          Once the seed is final the winners are already decided: this page draws them itself from the seed and the checked list, while they are
+          still being recorded on the break.
+        </p>
+      )}
       {standings.some((s) => s.kind === "standing") && (
         <p className="hint">
           Average balances and weights are in the token's smallest units. Each record was read from {host} and used only if it states what the

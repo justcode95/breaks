@@ -197,11 +197,52 @@ Minimum tables: `breaks`, `spots`, `packs` (spot_index, purchase_tx, card_mint, 
 - **Not on the list**: below the minimum, left out on purpose (with the keeper's code), a program's account, or not in the record at all ("held none of the token before the sale ended").
 - **Not known**, saying why: not published yet, could not be read, not what the chain committed, or does not add up. It links to the verify page for that break.
 
-For a wallet on the list, the free spot reads as won (with its place in the draw), not drawn, being drawn, one for each wallet on the list (when there are no more wallets than free spots), or how many free spots will be drawn after the cards are pulled. A hint says a break at `EligibilityCommitted` can still be cancelled, and then gives no free spots. The average balance and the reason stay the keeper's word, and the card says so; the verify page checks them against the balance events.
+For a wallet on the list, the free-spot column (`freeSpotOf`, `freeSpotText`) reads one of these:
+- **won**, with its place in the draw, once recorded on the break;
+- **not drawn**, once the break is `Drawn` without it;
+- **no free spots in this break**;
+- **one for each wallet on the list**, when there are no more wallets than free spots;
+- **its chance** before the randomness has come: "About 67% chance of one of the 2 free spots", or "Less than 1%" / "More than 99%" (`chanceText`: never 0% or 100% for something that is neither). See **The chance of a free spot** below.
+- **once the seed is final** (`Settled`), the draw's own answer before the winners are recorded: "Wins #2 in the draw: the seed is final" or "Not drawn: the seed is final". The page draws the winners itself (`drawFreeWinners`, the page's own draw) from the seed and the checked list. The winners already recorded on the break must be the first of them (wallet, range start and weight), or the line is **Not known** for every wallet on the list, a recorded winner included, since a mismatch means the page's draw or the list is wrong.
+
+A hint says a break at `EligibilityCommitted` can still be cancelled, and then gives no free spots. Another hint, when a chance is shown, says how the free spots are drawn (one at a time, by weight among those not drawn yet, so a wallet gets at most one) and that nobody knows who wins before the randomness comes; a third, when the seed decided, says the page drew the winners itself while they are still being recorded. The free-spot cell keeps its words whole on a phone (`td.words` in `globals.css`: `overflow-wrap: break-word`, so the table makes the column at least a word wide; other cells still break long addresses anywhere). The average balance and the reason stay the keeper's word, and the card says so; the verify page checks them against the balance events.
+
+**The chance of a free spot** (`web/lib/chance.ts`, `freeSpotChance(weights, index, draws)`): the chance that a wallet on a list gets one of `draws` free spots, drawn by weight without replacement as the program draws them. It is the chance that this wallet's exponential "clock" (rate = its weight) rings before the k-th ring of the others' clocks, which is the same process (the first to ring is wallet j with probability w_j over the weight left, and the clocks forget how long they ran):
+- `P(i) = ∫ w_i e^(−w_i t) Q(t) dt`, where `Q(t)` is the chance that fewer than k of the others have rung by t. It is worked out wallet by wallet, heaviest first, skipping clocks that cannot have rung (their rate × t is below 10^−17), and stopping once it is next to nothing.
+- The integral is taken over ln t, where it is a bump (this wallet's clock) times a step (the others'), with a window from y = w_i t = e^−40 to 50. Pieces are one unit wide from e^−20 up and five below, each integrated with adaptive Gauss–Kronrod (7 and 15 points, QUADPACK's qk15 constants), halving the piece with the largest error estimate until the estimates add up to less than `TOLERANCE` = 10^−7. At most 200 pieces are halved.
+- Shortcuts: 0 for no free spots, 1 when every wallet gets one, and exactly the share of the weight for one free spot.
+- Weights are divided by the list's total, so 64-bit weights work.
+- A list of 5,000 wallets takes about 0.1 s on the cloud sandbox's machine, and 20,000 about 0.4 s. It is worked out only for this wallet's lists whose randomness has not come, after the record's own check.
+
+Two lessons from building it are kept as tests:
+- The first version integrated over u = 1 − e^(−w_i t). There, a small wallet's whole chance sat in a sliver near u = 0 that none of the first rule's 15 points touched, so it answered 0 with an error estimate of 0: a wallet with a real chance of 0.05% read as nothing. In ln t every feature is at least about a quarter of a unit wide, because the k-th ring of independent clocks is spread at least as much as in the Gamma case, about 1/√k with k at most 16.
+- The window first started at e^−20, which left out exactly e^−20 ≈ 2·10^−9 of every answer.
+
+Tested by `web/test/chance.test.ts`:
+- the rule is exact for polynomials up to degree 22 (its Gauss part up to 13);
+- a bump narrower than the rule's gaps is missed by one wide piece and found with a cut at it;
+- a function that never settles stops after a bounded number of evaluations;
+- every wallet and every number of free spots of 160 small lists, from equal weights to 10^12 apart, against the definition (every order in which the winners can be drawn), within the tolerance;
+- the small wallet that the first version read as 0;
+- one wallet among many alike, which has a formula, over v/w from 10^−7 to 10^3 with 2 and 16 free spots (pieces 16 units wide fail it by 10^−6);
+- the shortcuts exactly, and weights at the 64-bit limit;
+- the chances of a whole list adding up to the number of free spots;
+- the real draw (`drawFreeWinners`) over 4,000 seeds winning as often as the chance says, within five standard deviations;
+- 5,000 wallets;
+- every refusal (a wallet that is not on the list, a number of free spots that is not a whole number from 0, a weight of 0).
+
+Also by `web/test/standing.test.ts` (every free-spot answer at every stage; the chance against the definition; the keeper's own draw from its golden ledger, seed `5a` × 32, giving the wallet of weight 50 #1 and the one of weight 30 #2 before they are recorded and after the first is; every way the recorded winners can differ from the draw, said to every wallet; other wallets' bad lines not changing the list the chance is over; the texts, the percent's edges and which hints appear; the cell of words). Deliberate breaks: 64 in the final run, 60 caught. The other four leave every answer within the tolerance: the shortcut for no free spots (the integral gives the same 0, with more work), and three ways of cutting the window more coarsely (pieces of 8 units instead of 1, the fine part starting at e^−2 instead of e^−20, rounding the number of pieces down), so one-unit pieces are a margin and pieces of 16 are caught. Earlier runs closed three gaps with new tests (a recorded winner that differs only in its wallet, the filter that picks the list's wallets out of a record, a problem with the draw reaching the page) and removed one piece of redundant code: a cut at the point where the others are expected to have rung k − ½ times, which one-unit pieces make unnecessary. The browser check, against a fake node with nine breaks (one at each stage the column has words for, a seeded break whose recorded winner is not the draw's) and a static host serving the golden record, with a pretend wallet switching between the wallets of weight 50, 30 and 5 and one below the minimum, found:
+- every chance equal, to the percent, to the definition worked out separately in the check script (67%, 85%, 48%, 70%, 9%, 16%);
+- the seeded breaks giving the keeper's draw;
+- the bad break "Not known" for every wallet on the list. Before a fix, the recorded wallet itself still read "Won", because the recorded winners were looked at before the draw was checked;
+- words split in the middle on a phone ("recorde d"). The texts were shortened and the cell keeps its words whole;
+- no sideways scroll, no `Referer` or cookie on any request, and only the browser's lines for deliberately missing files as console errors.
+
+**Never run against a real host, node or wallet.**
 
 **Checking only this wallet's line** is deliberate. Checking a whole record costs about 0.6 s per 5,000 wallets on the cloud sandbox's machine, mostly noble's SHA-256 at about 21 µs a hash, so a full check of ten big records would hold up a phone. The root check alone is about 0.23 s per 5,000. The records are fetched all at once, but checked one break at a time with a pause in between, so the page can draw. A record that passed both checks is kept for the visit (a module-level map in `my-standing.tsx`, keyed by everything the break commits), so Refresh and the quiet re-reads after a refund do not fetch it again. A missing or refused record is fetched again, and "Read the lists again" asks for those. `standingsKey` decides when to read again: the wallet, the breaks, their stage, their inputs hash and their winners. Switching wallet shows "Reading…" until the new wallet's standings are in, never the last wallet's.
 
-Not built: the wallet's average balance during a sale that is still on (nothing is published before the list is committed; "This wallet's tokens" gives a floor for it), and a chance of a free spot (only the share of the list is shown). Tested by `web/test/standing.test.ts`:
+Not built: the wallet's average balance during a sale that is still on (nothing is published before the list is committed; "This wallet's tokens" gives a floor for it), and so a chance before the list is made. Tested by `web/test/standing.test.ts`:
 - every standing from the keeper's golden record, and every refusal of a line;
 - the winners' agreement with the record;
 - every free-spot outcome and its order;
@@ -381,7 +422,7 @@ On-chain tests share helpers in `testkit/` (deploy with an upgrade authority, se
 2. **Treasury** (initialize, deposit_fees, set_split; merged). No admin-transfer instruction yet: decide whether to add a two-step handover.
 3. **Breaks program** — create/buy/close/commit/fund/cancel/refund, randomness (ORAO) and the free-spot draw, with the treasury lock/pay-out (merged and in review).
 4. **Keeper** — TWAB, eligibility, the draw logic and the instruction encoders / account decoders (built, tested against the Rust vectors); the pack buyer, delivery and the on-chain pipeline (mock providers, a modelled chain); the real RPC client (offline-tested only), the jobs wiring (`indexer`, `scheduler`, `fee-sweep`, `pipeline`, `pack-buyer`, `delivery`, `refunds`), the pre-funding steps (close, eligibility, fund), the balance indexer, the break scheduler and the fee sweep without a swapper, the devnet setup tool (offline-tested only); next: a first devnet run, the real pack provider and card transfer (after Phase 0).
-5. **Website** — live break, dashboard, transparency + verify tool (started: the verify tool, from pasted inputs or a break loaded from the chain, with the weights and every wallet's reason checked against the published balance events and record; the read-only page of one break, `/breaks/<number>`, and the list of breaks with the latest one on the home page; the treasury page; a wallet connection; buying a paid spot from the break page; a "My spots" page with refunds, the wallet's cards, its tokens and where it stands on the free-spot lists; the per-spot ledger and the randomness request on a break's page; the "How it works" page; the reserve bar; the exclusion list on the verify page).
+5. **Website** — live break, dashboard, transparency + verify tool (started: the verify tool, from pasted inputs or a break loaded from the chain, with the weights and every wallet's reason checked against the published balance events and record; the read-only page of one break, `/breaks/<number>`, and the list of breaks with the latest one on the home page; the treasury page; a wallet connection; buying a paid spot from the break page; a "My spots" page with refunds, the wallet's cards, its tokens, where it stands on the free-spot lists and its chance of a free spot; the per-spot ledger and the randomness request on a break's page; the "How it works" page; the reserve bar; the exclusion list on the verify page).
 6. **X bot** (built and tested offline against a pretend poster and a signature check; never run against X).
 7. **Hardening** — admin panel, monitoring/alerts, external audit, then mainnet with small breaks.
 
