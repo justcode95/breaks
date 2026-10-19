@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { StandingsView, freeSpotText, standingText } from "../app/me/standing-view";
+import { StandingsView, chanceText, freeSpotText, standingText } from "../app/me/standing-view";
 import { type BreakAccount, decodeBreak } from "../lib/chain/accounts";
 import type { BreakRow } from "../lib/chain/list";
 import { fromHex } from "../lib/draw/bytes";
@@ -21,6 +21,7 @@ const file = (folder: string) => {
   return { name: name as string, text: readFileSync(join(EXAMPLE, folder, name as string), "utf8") };
 };
 const RECORD = file("records");
+const LEDGER = JSON.parse(file("ledger").text) as { spots: { kind: string; index: number; wallet: string }[] };
 const ROOT = file("eligibility").name.replace(".json", "");
 const INPUTS_HASH = RECORD.name.replace(".json", "");
 const WINDOW = { start: 1_800_000_000n, end: 1_800_043_200n };
@@ -32,6 +33,27 @@ const SMALL = walletWith("below_min_twab");
 const EXCHANGE = walletWith("excluded:exchange");
 const VAULT = walletWith("off_curve");
 const STRANGER = fill(9);
+/** The wallets on the golden list and their weights, in the tree's order: 20, 30, 15, 10, 50 (TOP) and 5. */
+const LISTED = doc.wallets.filter((w) => w.reason === null).map((w) => ({ wallet: w.wallet, weight: BigInt(w.weight) }));
+/** The keeper's own draw with seed 0x5a × 32 from this list (its golden ledger): TOP first, then the wallet of weight 30. */
+const SEED = new Uint8Array(32).fill(0x5a);
+const [FIRST, SECOND] = LEDGER.spots.filter((s) => s.kind === "free").map((s) => s.wallet) as [string, string];
+const OTHER = LISTED.find((l) => l.weight === 15n)?.wallet as string;
+
+/** The chance by going through every order in which the free spots can be drawn. */
+function exactChance(weights: readonly number[], i: number, k: number): number {
+  const walk = (left: readonly number[], drawn: number): number => {
+    if (drawn === k) return 0;
+    const total = left.reduce((a, j) => a + (weights[j] as number), 0);
+    return left.reduce((p, j) => p + ((weights[j] as number) / total) * (j === i ? 1 : walk(left.filter((x) => x !== j), drawn + 1)), 0);
+  };
+  return walk(
+    weights.map((_, j) => j),
+    0,
+  );
+}
+const GOLDEN_WEIGHTS = LISTED.map((l) => Number(l.weight));
+const chanceOf = (wallet: string, k = 2) => exactChance(GOLDEN_WEIGHTS, LISTED.findIndex((l) => l.wallet === wallet), k);
 
 const edited = (edit: (d: any) => void) => {
   const d = JSON.parse(RECORD.text);
@@ -98,8 +120,12 @@ const only = async (owner: string, over: Partial<BreakFields> = {}, h = host(GOL
 };
 
 describe("where a wallet stands in a checked record", () => {
-  it("is on the list with the average balance and weight the record gives it", () => {
-    expect(standingOf(record(), TOP, brk(3))).toEqual({ ok: true, standing: { kind: "listed", twab: 50n, weight: 50n }, free: { kind: "later" } });
+  it("is on the list with the average balance and weight the record gives it, and its chance of a free spot", () => {
+    expect(standingOf(record(), TOP, brk(3))).toEqual({
+      ok: true,
+      standing: { kind: "listed", twab: 50n, weight: 50n },
+      free: { kind: "chance", chance: expect.closeTo(chanceOf(TOP), 9), draws: 2 },
+    });
   });
 
   it("is out for the reason the record gives, with its average balance", () => {
@@ -125,6 +151,20 @@ describe("where a wallet stands in a checked record", () => {
     expect(standingOf(wrongWeight, SMALL, brk(3))).toMatchObject({ ok: true });
   });
 
+  it("works out the chance over the wallets the list puts on it, whatever other lines say", () => {
+    // Another wallet's line does not follow the rules (an excluded wallet with a weight, a wallet below the minimum on the list
+    // with no weight): the list still builds the committed root, and the chance is over the same six wallets.
+    const loose = record(
+      edited((d) => {
+        rowOf(d, EXCHANGE).weight = "1";
+        rowOf(d, SMALL).reason = null;
+      }),
+    );
+    expect(listProblem(loose)).toBeUndefined();
+    expect(standingOf(loose, TOP, brk(3))).toEqual(standingOf(record(), TOP, brk(3)));
+    expect(standingOf(loose, TOP, brk(3))).toMatchObject({ ok: true, free: { kind: "chance", chance: expect.closeTo(chanceOf(TOP), 9) } });
+  });
+
   it("must agree with the winners the chain recorded", () => {
     expect(standingOf(record(), TOP, brk(3, { status: "Drawn", freeWinners: [winner(fill(8), 20n), winner(TOP, 50n)] }))).toEqual({
       ok: true,
@@ -147,21 +187,96 @@ describe("where a wallet stands in a checked record", () => {
 });
 
 describe("what the draw did or will do for a wallet on the list", () => {
-  it("is a win at its place in the draw, whatever the stage", () => {
-    expect(freeSpotOf(brk(3, { status: "Settled" }), 0)).toEqual({ kind: "won", position: 1 });
-    expect(freeSpotOf(brk(3, { status: "Drawn" }), 1)).toEqual({ kind: "won", position: 2 });
+  const free = (wallet: string, over: Partial<BreakFields> = {}) => freeSpotOf(brk(3, over), wallet, LISTED);
+
+  it("is a win at its place in the draw once it is recorded, whatever the stage", () => {
+    expect(free(TOP, { status: "Settled", seed: SEED, freeWinners: [{ wallet: TOP, start: 75n, weight: 50n }] })).toEqual({ ok: true, free: { kind: "won", position: 1 } });
+    expect(free(TOP, { status: "Drawn", freeWinners: [winner(fill(8), 20n), winner(TOP, 50n)] })).toEqual({ ok: true, free: { kind: "won", position: 2 } });
   });
 
   it("is not drawn once the break is drawn without it", () => {
-    expect(freeSpotOf(brk(3, { status: "Drawn" }), -1)).toEqual({ kind: "not-drawn" });
-    expect(freeSpotOf(brk(3, { status: "Drawn", eligibilityCount: 2, freeSpots: 2 }), -1)).toEqual({ kind: "not-drawn" });
+    expect(free(TOP, { status: "Drawn" })).toEqual({ ok: true, free: { kind: "not-drawn", recorded: true } });
+    expect(free(TOP, { status: "Drawn", eligibilityCount: 2, freeSpots: 2 })).toEqual({ ok: true, free: { kind: "not-drawn", recorded: true } });
+  });
+
+  it("is nothing to win in a break without free spots, at any stage", () => {
+    for (const status of ["EligibilityCommitted", "Funded", "Settled", "Drawn"] as const) {
+      expect(free(TOP, { status, freeSpots: 0 }), status).toEqual({ ok: true, free: { kind: "none" } });
+    }
   });
 
   it("is one for everyone when the list has no more wallets than free spots, until the break is drawn", () => {
     for (const status of ["EligibilityCommitted", "Funded", "PoolCommitted", "RandomnessRequested", "Settled"] as const) {
-      expect(freeSpotOf(brk(3, { status, eligibilityCount: 2, freeSpots: 2 }), -1), status).toEqual({ kind: "everyone" });
-      expect(freeSpotOf(brk(3, { status, eligibilityCount: 3, freeSpots: 2 }), -1), status).toEqual(status === "Settled" ? { kind: "drawing" } : { kind: "later" });
+      expect(free(TOP, { status, seed: SEED, freeSpots: 6 }), status).toEqual({ ok: true, free: { kind: "everyone" } });
+      expect(free(TOP, { status, seed: SEED, freeSpots: 7 }), status).toEqual({ ok: true, free: { kind: "everyone" } });
     }
+    // Once the seed is final, the winners are recorded in the draw's order, the first of them already a win.
+    const first = { wallet: FIRST, start: 75n, weight: 50n };
+    expect(free(FIRST, { status: "Settled", seed: SEED, freeSpots: 6, freeWinners: [first] })).toEqual({ ok: true, free: { kind: "won", position: 1 } });
+    expect(free(SECOND, { status: "Settled", seed: SEED, freeSpots: 6, freeWinners: [first] })).toEqual({ ok: true, free: { kind: "everyone" } });
+  });
+
+  it("is the chance worked out from the list's weights until the randomness has come", () => {
+    for (const status of ["EligibilityCommitted", "Funded", "PoolCommitted", "RandomnessRequested"] as const) {
+      for (const [wallet, k] of [
+        [TOP, 2],
+        [OTHER, 2],
+        [OTHER, 3],
+        [TOP, 5],
+      ] as const) {
+        expect(free(wallet, { status, freeSpots: k }), `${status} ${wallet} ${k}`).toEqual({
+          ok: true,
+          free: { kind: "chance", chance: expect.closeTo(chanceOf(wallet, k), 9), draws: k },
+        });
+      }
+    }
+    // The heaviest wallet's chance of one of two free spots is well above its share of the weight (50 of 130).
+    expect(chanceOf(TOP)).toBeGreaterThan(0.6);
+    expect(free(fill(8))).toEqual({ ok: false, problem: "this wallet is not among the wallets of the list" });
+  });
+
+  it("is the keeper's own draw once the seed is final, before the winners are recorded", () => {
+    const settled = { status: "Settled" as const, seed: SEED };
+    expect(FIRST).toBe(TOP);
+    expect(free(FIRST, settled)).toEqual({ ok: true, free: { kind: "wins", position: 1 } });
+    expect(free(SECOND, settled)).toEqual({ ok: true, free: { kind: "wins", position: 2 } });
+    expect(free(OTHER, settled)).toEqual({ ok: true, free: { kind: "not-drawn", recorded: false } });
+    // With the first winner recorded (at its range in the tree: weights 20, 30, 15 and 10 come before it), the second still wins.
+    const first = { wallet: FIRST, start: 75n, weight: 50n };
+    expect(free(SECOND, { ...settled, freeWinners: [first] })).toEqual({ ok: true, free: { kind: "wins", position: 2 } });
+    expect(free(OTHER, { ...settled, freeWinners: [first] })).toEqual({ ok: true, free: { kind: "not-drawn", recorded: false } });
+    // The seed decides: over other seeds the heaviest wallet is not always drawn first.
+    const firsts = Array.from({ length: 8 }, (_, i) => free(FIRST, { status: "Settled", seed: new Uint8Array(32).fill(i) }));
+    expect(firsts.filter((r) => r.ok && r.free.kind === "wins" && r.free.position === 1).length).toBeLessThan(8);
+    expect(firsts.some((r) => r.ok && r.free.kind === "not-drawn")).toBe(true);
+  });
+
+  it("refuses to say when the winners recorded on the break are not the draw's, even to a recorded winner, even when all win", () => {
+    const settled = { status: "Settled" as const, seed: SEED };
+    const wrong = [{ wallet: SECOND, start: 20n, weight: 30n }];
+    const problem = `the chain recorded free-spot winner #1 as ${SECOND}, but this page's draw from the seed and the list gives ${FIRST}`;
+    expect(free(SECOND, { ...settled, freeWinners: wrong })).toEqual({ ok: false, problem });
+    expect(free(SECOND, { ...settled, freeSpots: 6, freeWinners: wrong })).toEqual({ ok: false, problem });
+    expect(free(OTHER, { ...settled, freeWinners: [{ wallet: SECOND, start: 20n, weight: 30n }] })).toEqual({
+      ok: false,
+      problem: `the chain recorded free-spot winner #1 as ${SECOND}, but this page's draw from the seed and the list gives ${FIRST}`,
+    });
+    // Another wallet at the right place with the right weight, the right wallet at the wrong place, or with the wrong weight.
+    expect(free(OTHER, { ...settled, freeWinners: [{ wallet: SECOND, start: 75n, weight: 50n }] })).toEqual({
+      ok: false,
+      problem: `the chain recorded free-spot winner #1 as ${SECOND}, but this page's draw from the seed and the list gives ${FIRST}`,
+    });
+    expect(free(OTHER, { ...settled, freeWinners: [{ wallet: FIRST, start: 74n, weight: 50n }] })).toMatchObject({ ok: false });
+    expect(free(OTHER, { ...settled, freeWinners: [{ wallet: FIRST, start: 75n, weight: 51n }] })).toMatchObject({ ok: false });
+    // More winners recorded than there are free spots.
+    const both = [
+      { wallet: FIRST, start: 75n, weight: 50n },
+      { wallet: SECOND, start: 20n, weight: 30n },
+    ];
+    expect(free(OTHER, { ...settled, freeSpots: 1, freeWinners: both })).toEqual({
+      ok: false,
+      problem: `the chain recorded free-spot winner #2 as ${SECOND}, but this page's draw from the seed and the list gives nobody`,
+    });
   });
 });
 
@@ -186,7 +301,8 @@ describe("the standings of the newest breaks", () => {
   });
 
   it("gives every kind of standing from the golden record", async () => {
-    expect(await only(TOP)).toMatchObject({ kind: "standing", standing: { kind: "listed", twab: 50n, weight: 50n }, free: { kind: "later" }, minTwab: 3n });
+    expect(await only(TOP)).toMatchObject({ kind: "standing", standing: { kind: "listed", twab: 50n, weight: 50n }, free: { kind: "chance", draws: 2 }, minTwab: 3n });
+    expect(await only(SECOND, { status: "Settled", seed: SEED })).toMatchObject({ kind: "standing", free: { kind: "wins", position: 2 } });
     expect(await only(SMALL)).toMatchObject({ kind: "standing", standing: { kind: "out", reason: { kind: "below-min" } }, minTwab: 3n });
     expect(await only(STRANGER)).toMatchObject({ kind: "standing", standing: { kind: "absent" } });
     expect(await only(SMALL)).not.toHaveProperty("free");
@@ -234,6 +350,12 @@ describe("the standings of the newest breaks", () => {
       kind: "unavailable",
       why: "problem",
       message: "the chain recorded this wallet as a free-spot winner, but the record does not put it on the list",
+    });
+    // Once the seed is final, a recorded winner that is not the draw's is said for every wallet on the list.
+    expect(await only(OTHER, { status: "Settled", seed: SEED, freeWinners: [{ wallet: SECOND, start: 20n, weight: 30n }] })).toMatchObject({
+      kind: "unavailable",
+      why: "problem",
+      message: `the chain recorded free-spot winner #1 as ${SECOND}, but this page's draw from the seed and the list gives ${FIRST}`,
     });
   });
 
@@ -357,12 +479,25 @@ describe("how a standing is said", () => {
 
   it("for the free spot, singular and plural", () => {
     expect(freeSpotText({ kind: "won", position: 2 }, 3)).toBe("Won: #2 in the draw");
-    expect(freeSpotText({ kind: "not-drawn" }, 3)).toBe("Not drawn");
-    expect(freeSpotText({ kind: "drawing" }, 3)).toBe("Being drawn");
+    expect(freeSpotText({ kind: "wins", position: 2 }, 3)).toBe("Wins #2 in the draw: the seed is final");
+    expect(freeSpotText({ kind: "not-drawn", recorded: true }, 3)).toBe("Not drawn");
+    expect(freeSpotText({ kind: "not-drawn", recorded: false }, 3)).toBe("Not drawn: the seed is final");
+    expect(freeSpotText({ kind: "none" }, 0)).toBe("No free spots in this break");
     expect(freeSpotText({ kind: "everyone" }, 3)).toBe("One for each wallet on the list (3 free spots)");
     expect(freeSpotText({ kind: "everyone" }, 1)).toBe("One for each wallet on the list (1 free spot)");
-    expect(freeSpotText({ kind: "later" }, 2)).toBe("2 free spots, drawn after the cards are pulled");
-    expect(freeSpotText({ kind: "later" }, 1)).toBe("1 free spot, drawn after the cards are pulled");
+    expect(freeSpotText({ kind: "chance", chance: 0.123, draws: 3 }, 3)).toBe("About 12% chance of one of the 3 free spots");
+    expect(freeSpotText({ kind: "chance", chance: 0.5, draws: 1 }, 1)).toBe("About 50% chance of the free spot");
+  });
+
+  it("for a chance, to the whole percent, and never 0% or 100% for something that is neither", () => {
+    expect(chanceText(0)).toBe("Less than 1%");
+    expect(chanceText(0.0049999)).toBe("Less than 1%");
+    expect(chanceText(0.005)).toBe("About 1%");
+    expect(chanceText(0.125)).toBe("About 13%");
+    expect(chanceText(0.4449)).toBe("About 44%");
+    expect(chanceText(0.9949999)).toBe("About 99%");
+    expect(chanceText(0.995)).toBe("More than 99%");
+    expect(chanceText(1)).toBe("More than 99%");
   });
 });
 
@@ -410,11 +545,36 @@ describe("the section on the My spots page", () => {
   });
 
   it("warns that a break can still be cancelled only while a listed wallet's break is not funded yet", () => {
-    const committed = (standing: unknown) => at(4, { status: "EligibilityCommitted" }, { kind: "standing", standing, free: { kind: "later" }, minTwab: 3n });
+    const chance = { kind: "chance", chance: 0.4, draws: 2 };
+    const committed = (standing: unknown) => at(4, { status: "EligibilityCommitted" }, { kind: "standing", standing, free: chance, minTwab: 3n });
     const hint = "A break can still be cancelled before its packs are paid for, and then nobody gets a free spot in it.";
     expect(text(render([committed({ kind: "listed", twab: 50n, weight: 50n })]))).toContain(hint);
     expect(text(render([committed({ kind: "absent" })]))).not.toContain(hint);
-    expect(text(render([at(4, { status: "Funded" }, { kind: "standing", standing: { kind: "listed", twab: 50n, weight: 50n }, free: { kind: "later" }, minTwab: 3n })]))).not.toContain(hint);
+    expect(text(render([at(4, { status: "Funded" }, { kind: "standing", standing: { kind: "listed", twab: 50n, weight: 50n }, free: chance, minTwab: 3n })]))).not.toContain(hint);
+  });
+
+  it("says how a chance is worked out only when one is shown, and that the seed decides only once a result comes from it", () => {
+    const listedWith = (free: unknown, over: Partial<BreakFields> = {}) => at(4, { status: "Funded", ...over }, { kind: "standing", standing: { kind: "listed", twab: 50n, weight: 50n }, free, minTwab: 3n });
+    const chanceHint =
+      "The free spots are drawn after the cards are pulled, one at a time, each by weight among the wallets on the list not drawn yet, so a wallet gets at most one. A chance is worked out on this page from the weights on the checked list; nobody knows who wins before the randomness comes.";
+    const seedHint = "Once the seed is final the winners are already decided: this page draws them itself from the seed and the checked list, while they are still being recorded on the break.";
+    const html = render([listedWith({ kind: "chance", chance: 0.4, draws: 2 })]);
+    const chance = text(html);
+    expect(chance).toContain("About 40% chance of one of the 2 free spots");
+    // The column of words keeps its words whole on a phone.
+    expect(html).toContain('<td class="words">About 40% chance of one of the 2 free spots</td>');
+    expect(chance).toContain(chanceHint);
+    expect(chance).not.toContain(seedHint);
+    for (const free of [{ kind: "wins", position: 1 }, { kind: "not-drawn", recorded: false }]) {
+      const t = text(render([listedWith(free, { status: "Settled" })]));
+      expect(t, free.kind).toContain(seedHint);
+      expect(t, free.kind).not.toContain(chanceHint);
+    }
+    for (const free of [{ kind: "won", position: 1 }, { kind: "not-drawn", recorded: true }, { kind: "everyone" }, { kind: "none" }]) {
+      const t = text(render([listedWith(free, { status: "Drawn" })]));
+      expect(t, free.kind).not.toContain(seedHint);
+      expect(t, free.kind).not.toContain(chanceHint);
+    }
   });
 
   it("never reads a message as markup", () => {

@@ -177,6 +177,11 @@ td {
   overflow-wrap: anywhere;
 }
 
+/* a cell of words: the column is made at least a word wide, so words break only when one is wider than the whole column */
+td.words {
+  overflow-wrap: break-word;
+}
+
 .num {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;

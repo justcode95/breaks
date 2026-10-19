@@ -7,11 +7,14 @@
 // what concerns this wallet is checked here.
 
 import type { BreakAccount } from "./chain/accounts";
-import type { Address } from "./chain/address";
+import { type Address, addressFromBytes, addressToBytes } from "./chain/address";
 import type { BreakRow } from "./chain/list";
+import { freeSpotChance } from "./chance";
 import { toHex } from "./draw/bytes";
+import { drawFreeWinners } from "./draw/draw";
 import { type Fetched, fetchRecord, safely } from "./published";
 import { type EligibilityRecord, type Reason, listProblem, rowProblems } from "./twab/record";
+import type { ListedWallet } from "./twab/weights";
 
 /** How many of the newest breaks (not counting cancelled ones) are looked at. */
 export const STANDING_BREAKS = 10;
@@ -24,15 +27,21 @@ export type Standing =
 
 /** What the draw did, or will do, for a wallet on the list. */
 export type FreeSpot =
-  /** `position` counts from 1, in the order the winners were drawn. */
+  /** Recorded on the break as a winner. `position` counts from 1, in the order the winners were drawn. */
   | { kind: "won"; position: number }
-  | { kind: "not-drawn" }
-  /** The seed is final and the winners are being recorded. */
-  | { kind: "drawing" }
+  /** The seed is final and the page's own draw gives this wallet free spot `position`; it is not recorded yet. */
+  | { kind: "wins"; position: number }
+  /** Not a winner: the winners are all recorded (`recorded`), or the seed is final and the draw picks other wallets. */
+  | { kind: "not-drawn"; recorded: boolean }
+  /** The break has no free spots. */
+  | { kind: "none" }
   /** Not drawn yet, but there are no more wallets on the list than free spots, so each gets one. */
   | { kind: "everyone" }
-  /** Drawn once the cards are pulled and the randomness has come. */
-  | { kind: "later" };
+  /**
+   * Not drawn yet (it is drawn once the cards are pulled and the randomness has come): the chance this wallet gets one of the
+   * `draws` free spots, worked out from the weights on the list.
+   */
+  | { kind: "chance"; chance: number; draws: number };
 
 export type BreakStanding = { number: number; break: BreakAccount } & (
   /** The sale is on or has just closed: the list is made afterwards. */
@@ -41,13 +50,36 @@ export type BreakStanding = { number: number; break: BreakAccount } & (
   | { kind: "unavailable"; why: "missing" | "unreachable" | "invalid" | "problem"; message: string }
 );
 
-/** What the draw did or will do for a wallet on the list; `winner` is its place among the recorded winners, or -1. */
-export function freeSpotOf(b: BreakAccount, winner: number): FreeSpot {
-  if (winner >= 0) return { kind: "won", position: winner + 1 };
-  if (b.status === "Drawn") return { kind: "not-drawn" };
-  if (b.eligibilityCount <= b.freeSpots) return { kind: "everyone" };
-  if (b.status === "Settled") return { kind: "drawing" };
-  return { kind: "later" };
+/**
+ * What the draw did or will do for `wallet`, which is on the list `listed` (the wallets of the committed tree, in its order, as a
+ * checked record gives them). Once the seed is final the page draws the winners itself, and the winners already recorded on the
+ * break must be the first of them, for every wallet's answer.
+ */
+export function freeSpotOf(b: BreakAccount, wallet: Address, listed: readonly ListedWallet[]): { ok: true; free: FreeSpot } | { ok: false; problem: string } {
+  if (b.freeSpots === 0) return { ok: true, free: { kind: "none" } };
+  const winner = b.freeWinners.findIndex((w) => w.wallet === wallet);
+  const everyone = b.eligibilityCount <= b.freeSpots;
+  if (b.status === "Settled") {
+    const leaves = listed.map((l) => ({ wallet: addressToBytes(l.wallet), weight: l.weight }));
+    const draws = Math.min(b.freeSpots, leaves.length);
+    const drawn = drawFreeWinners(b.seed, leaves, draws).map((d) => ({ wallet: addressFromBytes((leaves[d.leafIndex] as { wallet: Uint8Array }).wallet), start: d.start, weight: d.weight }));
+    for (const [i, r] of b.freeWinners.entries()) {
+      const d = drawn[i];
+      if (!d || d.wallet !== r.wallet || d.start !== r.start || d.weight !== r.weight) {
+        return { ok: false, problem: `the chain recorded free-spot winner #${i + 1} as ${r.wallet}, but this page's draw from the seed and the list gives ${d?.wallet ?? "nobody"}` };
+      }
+    }
+    if (winner >= 0) return { ok: true, free: { kind: "won", position: winner + 1 } };
+    if (everyone) return { ok: true, free: { kind: "everyone" } };
+    const position = drawn.findIndex((d) => d.wallet === wallet);
+    return { ok: true, free: position >= 0 ? { kind: "wins", position: position + 1 } : { kind: "not-drawn", recorded: false } };
+  }
+  if (winner >= 0) return { ok: true, free: { kind: "won", position: winner + 1 } };
+  if (b.status === "Drawn") return { ok: true, free: { kind: "not-drawn", recorded: true } };
+  if (everyone) return { ok: true, free: { kind: "everyone" } };
+  const index = listed.findIndex((l) => l.wallet === wallet);
+  if (index < 0) return { ok: false, problem: "this wallet is not among the wallets of the list" };
+  return { ok: true, free: { kind: "chance", chance: freeSpotChance(listed.map((l) => l.weight), index, b.freeSpots), draws: b.freeSpots } };
 }
 
 /**
@@ -69,7 +101,10 @@ export function standingOf(record: EligibilityRecord, wallet: Address, b: BreakA
   }
   const won = b.freeWinners[winner];
   if (won && won.weight !== row.weight) return { ok: false, problem: `the chain recorded this wallet as a winner with weight ${won.weight}, but the record gives it ${row.weight}` };
-  return { ok: true, standing: { kind: "listed", twab: row.twab, weight: row.weight }, free: freeSpotOf(b, winner) };
+  const listed = record.wallets.filter((r) => r.reason.kind === "listed" && r.weight > 0n).map((r) => ({ wallet: r.wallet, weight: r.weight }));
+  const free = freeSpotOf(b, wallet, listed);
+  if (!free.ok) return free;
+  return { ok: true, standing: { kind: "listed", twab: row.twab, weight: row.weight }, free: free.free };
 }
 
 export interface StandingOptions {
