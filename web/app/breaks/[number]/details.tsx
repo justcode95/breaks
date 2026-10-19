@@ -16,10 +16,11 @@ function Hex({ bytes }: { bytes: Uint8Array }) {
 const ZERO = (bytes: Uint8Array) => bytes.every((b) => b === 0);
 
 /**
- * `buy` is the place for the buy card, which needs a wallet, and `ledger` the place for the per-spot ledger, which is read from
- * the published files: neither is part of this pure page.
+ * `buy` is the place for the buy card, which needs a wallet, `randomness` the place for the randomness request, which is read
+ * from more accounts than the break's, and `ledger` the place for the per-spot ledger, which is read from the published files:
+ * none of them is part of this pure page.
  */
-export function BreakDetails({ loaded, now, readAt, program, refresh, publishedUrl, buy, ledger }: { loaded: Loaded; now: number; readAt: number; program: string; refresh: () => void; publishedUrl?: string; buy?: ReactNode; ledger?: ReactNode }) {
+export function BreakDetails({ loaded, now, readAt, program, refresh, publishedUrl, buy, randomness, ledger }: { loaded: Loaded; now: number; readAt: number; program: string; refresh: () => void; publishedUrl?: string; buy?: ReactNode; randomness?: ReactNode; ledger?: ReactNode }) {
   const b = loaded.break;
   const cancelled = b.status === "Cancelled";
   const list = steps(b, now);
@@ -191,6 +192,8 @@ export function BreakDetails({ loaded, now, readAt, program, refresh, publishedU
           </dl>
         </section>
       )}
+
+      {randomness}
 
       {b.freeSpots > 0 && !cancelled && (
         <section className="card">
