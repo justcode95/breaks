@@ -150,3 +150,12 @@ const pause = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 export function standingsKey(owner: Address, rows: readonly BreakRow[]): string {
   return [owner, ...rows.map((r) => `${r.number}:${r.break.status}:${toHex(r.break.eligibilityInputsHash)}:${r.break.freeWinners.length}`)].join("|");
 }
+
+/**
+ * The minimum average balance of the newest list whose record was read and checked, with that break's number: what the last
+ * list asked of a wallet. The minimum is the keeper's setting, so a later list may ask for another.
+ */
+export function lastMinimum(standings: readonly BreakStanding[]): { number: number; minTwab: bigint } | undefined {
+  const s = standings.find((x) => x.kind === "standing");
+  return s?.kind === "standing" ? { number: s.number, minTwab: s.minTwab } : undefined;
+}

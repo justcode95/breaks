@@ -7,7 +7,7 @@ import { StandingsView, freeSpotText, standingText } from "../app/me/standing-vi
 import { type BreakAccount, decodeBreak } from "../lib/chain/accounts";
 import type { BreakRow } from "../lib/chain/list";
 import { fromHex } from "../lib/draw/bytes";
-import { type BreakStanding, STANDING_BREAKS, freeSpotOf, loadStandings, standingOf, standingsKey } from "../lib/standing";
+import { type BreakStanding, STANDING_BREAKS, freeSpotOf, lastMinimum, loadStandings, standingOf, standingsKey } from "../lib/standing";
 import { type EligibilityRecord, listProblem, parseRecord } from "../lib/twab/record";
 import { type BreakFields, breakFieldsFromVector, encodeBreak } from "./support/accounts";
 import { buttons } from "./support/tree";
@@ -421,5 +421,21 @@ describe("the section on the My spots page", () => {
     const html = render([at(3, {}, { kind: "unavailable", why: "problem", message: "<img src=x onerror=alert(1)>" })]);
     expect(html).not.toContain("<img");
     expect(html).toContain("&lt;img");
+  });
+});
+
+describe("the last list's minimum, for the card about the wallet's tokens", () => {
+  it("is the newest break whose record was read and checked, skipping the ones on sale and the ones not known", () => {
+    const onSale = at(9, { status: "Open" }, { kind: "not-yet" });
+    const unknown = at(8, {}, { kind: "unavailable", why: "missing", message: "there is no such file" });
+    const newer = at(7, {}, { kind: "standing", standing: { kind: "absent" }, minTwab: 40n });
+    const older = at(6, {}, { kind: "standing", standing: { kind: "listed", twab: 50n, weight: 50n }, minTwab: 3n });
+    expect(lastMinimum([onSale, unknown, newer, older])).toEqual({ number: 7, minTwab: 40n });
+    expect(lastMinimum([older, newer])).toEqual({ number: 6, minTwab: 3n });
+  });
+
+  it("is not known when no record was", () => {
+    expect(lastMinimum([])).toBeUndefined();
+    expect(lastMinimum([at(9, { status: "Open" }, { kind: "not-yet" }), at(8, {}, { kind: "unavailable", why: "invalid", message: "no" })])).toBeUndefined();
   });
 });

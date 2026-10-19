@@ -176,6 +176,27 @@ fn treasury_instruction_vectors() {
         )
     };
 
+    // An SPL token mint as the token program writes it: the keeper checks TOKEN_MINT with it and the website reads the
+    // coin's decimals from it. Both authorities are set, so a field read at the wrong offset shows.
+    let token_mint = {
+        use anchor_spl::token::spl_token::state::Mint;
+        use solana_program_pack::Pack;
+        let m = Mint {
+            mint_authority: Some(admin).into(),
+            supply: 987_654_321_000_000_000,
+            decimals: 9,
+            is_initialized: true,
+            freeze_authority: Some(controller).into(),
+        };
+        let mut bytes = vec![0u8; Mint::LEN];
+        Mint::pack(m, &mut bytes).unwrap();
+        value_case(
+            "spl.account.Mint",
+            &format!("{{ \"data\": \"{}\" }}", hex(&bytes)),
+            "{ \"supply\": \"987654321000000000\", \"decimals\": 9, \"initialized\": true }",
+        )
+    };
+
     check_vectors(
         concat!(env!("CARGO_MANIFEST_DIR"), "/instruction-vectors.json"),
         &format!("{{ \"treasury\": \"{}\" }}", treasury::ID),
@@ -190,6 +211,7 @@ fn treasury_instruction_vectors() {
             pay(Bucket::Holder, "Holder"),
             config_account,
             vault,
+            token_mint,
         ],
     );
 }

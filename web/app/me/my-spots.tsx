@@ -10,6 +10,7 @@ import { runRefund } from "../../lib/chain/run-refund";
 import { SETUP } from "../../lib/site";
 import { useWallet } from "../../lib/wallet/provider";
 import { shortAddress } from "../../lib/wallet/wallets";
+import { MyHolding } from "./my-holding";
 import { MyStanding } from "./my-standing";
 import { RefundStatusView } from "./refund-status";
 import { MySpotsView } from "./rows";
@@ -28,6 +29,8 @@ export function MySpots() {
   // The newest breaks, from the last read that worked. They are the same for every wallet, so the free-spot lists stay on the
   // page (and are not read again) while the spots are read again or another wallet's are read.
   const [breaks, setBreaks] = useState<BreakRow[] | undefined>(undefined);
+  // The minimum average balance the newest checked list asked for, from the free-spot lists below; the same for every wallet.
+  const [minimum, setMinimum] = useState<{ number: number; minTwab: bigint } | undefined>(undefined);
 
   // The page can go away in the middle of a refund (the visitor leaves): nothing should go on polling for it then.
   const alive = useRef(true);
@@ -109,7 +112,12 @@ export function MySpots() {
           <p className="hint">The spots are read from the chain (finalized). Nothing in them comes from a server of ours.</p>
         </>
       )}
-      {breaks && view.state !== "error" && <MyStanding owner={address} rows={breaks} />}
+      {breaks && view.state !== "error" && (
+        <>
+          <MyHolding owner={address} rows={breaks} minimum={minimum} />
+          <MyStanding owner={address} rows={breaks} onMinimum={setMinimum} />
+        </>
+      )}
     </div>
   );
 }

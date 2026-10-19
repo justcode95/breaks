@@ -63,6 +63,8 @@ export const escrowAddress = (program: Address, breakKey: Address): Address => f
 
 /** The programs a purchase talks to besides the breaks program. */
 export const TOKEN_PROGRAM: Address = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+/** The newer token program, which the coin's mint may belong to (launchpads use it): its accounts start like the classic ones. */
+export const TOKEN_2022_PROGRAM: Address = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 export const SYSTEM_PROGRAM: Address = "11111111111111111111111111111111";
 export const ASSOCIATED_TOKEN_PROGRAM: Address = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 

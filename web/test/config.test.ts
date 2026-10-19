@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_RPC_URL, breakShapeSetup, chainSetup, publishedSetup, treasurySetup } from "../lib/config";
+import { DEFAULT_RPC_URL, breakShapeSetup, chainSetup, publishedSetup, tokenSetup, treasurySetup } from "../lib/config";
 
 const PROGRAM = "8tmJjCG3D4TF7oPiPWNoaCjZ4pN2U4H237BSGVw2B8KU";
 
@@ -41,6 +41,20 @@ describe("where the treasury page reads from", () => {
     expect(treasurySetup({ program: PROGRAM, rpcUrl: "http://rpc.example" })).toEqual({ kind: "problem", problem: "NEXT_PUBLIC_SOLANA_RPC_URL must be an https:// address." });
     expect(treasurySetup({ program: PROGRAM, rpcUrl: "nope" })).toEqual({ kind: "problem", problem: "NEXT_PUBLIC_SOLANA_RPC_URL is not a web address." });
     expect(treasurySetup({ program: PROGRAM, rpcUrl: "http://localhost:8899" }).kind).toBe("on");
+  });
+});
+
+describe("the coin's mint", () => {
+  it("is off until one is named, and is the address it names, trimmed", () => {
+    for (const blank of [undefined, "", "   "]) expect(tokenSetup(blank)).toEqual({ kind: "off" });
+    const mint = "So11111111111111111111111111111111111111112";
+    expect(tokenSetup(` ${mint} `)).toEqual({ kind: "on", config: { mint } });
+  });
+
+  it("names the setting when it is not an address", () => {
+    for (const bad of ["not a mint", "So1111111111111111111111111111111111111111O", "0x1234"]) {
+      expect(tokenSetup(bad), bad).toEqual({ kind: "problem", problem: "NEXT_PUBLIC_TOKEN_MINT is not a Solana address." });
+    }
   });
 });
 
