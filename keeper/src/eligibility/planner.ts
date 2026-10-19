@@ -6,11 +6,15 @@
 //  2. It computes once. The result is stored (`eligibility_lists`) before anything is sent, and every later
 //     call returns the stored values, so a retry after a crash commits exactly what was published, even if the
 //     exclusion list or the history has changed since.
+// The exclusion list it used is stored with it, whole (`exclusions.ts`), so it can be published: the record names only the
+// excluded wallets that held the token. A row that list could not carry (not an address, or a code that is not a short name)
+// is a problem for a person and stops the planner until it is fixed, so every list's exclusions can go out.
 
 import { createHash } from "node:crypto";
 import { toHex } from "../draw/bytes.js";
 import type { Sql } from "../packs/sql-store.js";
 import { type Address } from "../solana/pubkey.js";
+import { exclusionProblem, exclusionsDocument } from "./exclusions.js";
 import {
   type Eligibility,
   type WeightPolicy,
@@ -28,7 +32,8 @@ export interface CommitValues {
   inputsHash: Uint8Array;
 }
 
-export type EligibilityPlan = { kind: "ready"; values: CommitValues } | { kind: "wait"; reason: string };
+/** `wait` is time that will pass on its own; `problem` needs a person (it is logged as an error). */
+export type EligibilityPlan = { kind: "ready"; values: CommitValues } | { kind: "wait"; reason: string } | { kind: "problem"; reason: string };
 
 export interface EligibilityPlanner {
   /** The values to commit for a break whose window is `window`, or why not yet. `breakId` is `breaks.id`. */
@@ -94,8 +99,9 @@ export class SqlEligibilityPlanner implements EligibilityPlanner {
       return { kind: "wait", reason: `the balance indexer has read up to ${state[0].until} but needs ${needed} (window end + ${this.options.settleSecs} s)` };
     }
 
-    const events = await this.events(window);
     const exclusions = await this.exclusions();
+    if (typeof exclusions === "string") return { kind: "problem", reason: exclusions };
+    const events = await this.events(window);
     const eligibility = buildEligibility({ events, window, policy: this.options.policy, exclusions });
     const tree = treeOf(eligibility);
     const values: CommitValues = {
@@ -107,7 +113,8 @@ export class SqlEligibilityPlanner implements EligibilityPlanner {
 
     const listUri = await this.publisher.publish({ contentType: "application/json", body: listDocument(breakId, window, this.options.policy, values, eligibility) });
     const inputsUri = await this.publisher.publish({ contentType: "text/plain; charset=utf-8", body: serializeInputs(events, window) });
-    await this.store(breakId, eligibility, values, listUri, inputsUri);
+    const exclusionsUri = await this.publisher.publish({ contentType: "application/json", body: exclusionsDocument(values.inputsHash, exclusions) });
+    await this.store(breakId, eligibility, values, { list: listUri, inputs: inputsUri, exclusions: exclusionsUri });
 
     // Read back what is stored: if another process stored first, theirs is the one that counts.
     const final = await this.stored(breakId);
@@ -155,10 +162,15 @@ export class SqlEligibilityPlanner implements EligibilityPlanner {
     }));
   }
 
-  private async exclusions(): Promise<Map<Address, string>> {
+  /** The active exclusions, or what is wrong with one that the public list could not carry. */
+  private async exclusions(): Promise<Map<Address, string> | string> {
     const { rows } = await this.sql.query<{ wallet: string; reason_code: string }>(
-      "select wallet, reason_code from exclusions where removed_at is null",
+      "select wallet, reason_code from exclusions where removed_at is null order by wallet",
     );
+    for (const r of rows) {
+      const problem = exclusionProblem(r.wallet, r.reason_code);
+      if (problem !== undefined) return `the exclusions table has a row the public exclusion list cannot carry: ${problem}; fix or remove it`;
+    }
     return new Map(rows.map((r) => [r.wallet, r.reason_code]));
   }
 
@@ -167,7 +179,7 @@ export class SqlEligibilityPlanner implements EligibilityPlanner {
    * The writes are upserts, so two planners computing the same list at once cannot collide. (The history is frozen
    * once the indexer is past the window, so they do compute the same list; the keeper still runs as one process.)
    */
-  private async store(breakId: string, e: Eligibility, v: CommitValues, listUri: string, inputsUri: string): Promise<void> {
+  private async store(breakId: string, e: Eligibility, v: CommitValues, uris: { list: string; inputs: string; exclusions: string }): Promise<void> {
     for (const row of e.snapshot) {
       await this.sql.query(
         `insert into twab_snapshots (break_id, wallet, twab, weight, eligible, reason) values ($1::bigint, $2, $3::numeric, $4::numeric, $5, $6)
@@ -181,10 +193,10 @@ export class SqlEligibilityPlanner implements EligibilityPlanner {
       [breakId, JSON.stringify(e.snapshot.map((s) => s.wallet))],
     );
     await this.sql.query(
-      `insert into eligibility_lists (break_id, root, total_weight, entry_count, inputs_hash, list_uri, inputs_uri)
-       values ($1::bigint, decode($2, 'hex'), $3::numeric, $4, decode($5, 'hex'), $6, $7)
+      `insert into eligibility_lists (break_id, root, total_weight, entry_count, inputs_hash, list_uri, inputs_uri, exclusions_uri)
+       values ($1::bigint, decode($2, 'hex'), $3::numeric, $4, decode($5, 'hex'), $6, $7, $8)
        on conflict (break_id) do nothing`,
-      [breakId, toHex(v.root), v.totalWeight.toString(), v.entryCount, toHex(v.inputsHash), listUri, inputsUri],
+      [breakId, toHex(v.root), v.totalWeight.toString(), v.entryCount, toHex(v.inputsHash), uris.list, uris.inputs, uris.exclusions],
     );
   }
 }

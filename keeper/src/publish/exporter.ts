@@ -1,10 +1,12 @@
-// Publishes a break's eligibility list, the balance events behind it, the record of why each wallet is in or out, its card
-// pool and, once every card is delivered, its per-spot ledger, as files named by the hashes the chain committed.
+// Publishes a break's eligibility list, the balance events behind it, the record of why each wallet is in or out, the
+// exclusion list it was made with, its card pool and, once every card is delivered, its per-spot ledger, as files named by the
+// hashes the chain committed.
 //
 // A file is written only when the data the keeper holds provably hashes to what the chain (read at `finalized`) says
 // was committed: the rebuilt Merkle root, total weight and wallet count for the list, the SHA-256 of the balance-event
 // text for the record of the inputs, the pool hash and size for the cards. The record of why each wallet is in or out has no
-// hash of its own on chain, so it must be exactly what the eligibility rules make of the committed balance events (record.ts); nor does
+// hash of its own on chain, so it must be exactly what the eligibility rules make of the committed balance events (record.ts),
+// and the exclusion list must be the one that record was made with (eligibility/exclusions.ts); nor does
 // the ledger, so its packs, cards and spots must agree with the chain and the draw (ledger.ts). Data that does not match is reported and never
 // published. Files are never overwritten, and a run first looks for the file by name, so a quiet run reads nothing from
 // the chain (and a busy one reads each break once).
@@ -16,9 +18,10 @@ import type { Job } from "../job.js";
 import type { AccountReader } from "../pipeline/chain.js";
 import { type BreakAccount, type Programs, type SpotAccount, breakAddress, configAddress, decodeBreak, decodeBreaksConfig, decodeSpot, spotAddress } from "../solana/breaks.js";
 import { addressToBytes } from "../solana/pubkey.js";
-import { eligibilityFile, inputsFile, ledgerFile, poolFile, recordFile } from "./files.js";
+import { type ExclusionList, checkExclusions, parseExclusions } from "../eligibility/exclusions.js";
+import { eligibilityFile, exclusionsFile, inputsFile, ledgerFile, poolFile, recordFile } from "./files.js";
 import { type Ledger, buildLedger } from "./ledger.js";
-import { checkRecord, parseStoredRecord } from "./record.js";
+import { type EligibilityRecord, checkRecord, parseStoredRecord } from "./record.js";
 import type { FileSink } from "./sink.js";
 import type { Candidate, PublishStore } from "./store.js";
 
@@ -51,7 +54,14 @@ export class PublishExporter {
       let read: Promise<BreakAccount> | undefined;
       const chain = () => (read ??= this.onChain(c));
       const errors: string[] = [];
-      for (const step of [() => this.eligibility(c, chain), () => this.inputs(c, chain), () => this.record(c, chain), () => this.pool(c, chain), () => this.ledger(c, chain)]) {
+      for (const step of [
+        () => this.eligibility(c, chain),
+        () => this.inputs(c, chain),
+        () => this.record(c, chain),
+        () => this.exclusions(c, chain),
+        () => this.pool(c, chain),
+        () => this.ledger(c, chain),
+      ]) {
         try {
           report.written.push(...(await step()));
         } catch (err) {
@@ -113,8 +123,11 @@ export class PublishExporter {
   private async record(c: Candidate, chain: () => Promise<BreakAccount>): Promise<string[]> {
     if (c.inputsHash === undefined) return [];
     if (await this.deps.sink.exists(`records/${c.inputsHash}.json`)) return [];
+    return this.write(recordFile(await this.checkedRecord(c, await chain())));
+  }
 
-    const b = await chain();
+  /** The stored record, once it is exactly what the rules make of the committed balance events (`checkRecord`). */
+  private async checkedRecord(c: Candidate, b: BreakAccount): Promise<EligibilityRecord> {
     const committed = toHex(b.eligibilityInputsHash);
     if (committed !== c.inputsHash) {
       // The same words as the balance events' own step: it is the same fault, and the report says it once.
@@ -130,7 +143,30 @@ export class PublishExporter {
     } catch (err) {
       throw new Error(`${err instanceof Error ? err.message : String(err)}; nothing was published`);
     }
-    return this.write(recordFile(record));
+    return record;
+  }
+
+  /**
+   * Every wallet the list's rules left out on purpose, with its code, also the ones that held none of the token: the record
+   * names only those that did. Published under the same inputs hash, from the committed list on, and only once the record checks
+   * out and the list is the one it was made with (`checkExclusions`). A list made before the planner kept one has none.
+   */
+  private async exclusions(c: Candidate, chain: () => Promise<BreakAccount>): Promise<string[]> {
+    if (c.inputsHash === undefined) return [];
+    if (await this.deps.sink.exists(`exclusions/${c.inputsHash}.json`)) return [];
+    const stored = await this.deps.store.exclusionsText(c.breakId);
+    if (stored.kind === "none") return [];
+    if (stored.kind === "missing") throw new Error("the stored exclusion list cannot be read, though its list was committed");
+
+    const record = await this.checkedRecord(c, await chain());
+    let list: ExclusionList;
+    try {
+      list = parseExclusions(stored.body);
+      checkExclusions(list, record);
+    } catch (err) {
+      throw new Error(`${err instanceof Error ? err.message : String(err)}; nothing was published`);
+    }
+    return this.write(exclusionsFile(list));
   }
 
   private async pool(c: Candidate, chain: () => Promise<BreakAccount>): Promise<string[]> {

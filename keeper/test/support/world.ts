@@ -42,9 +42,12 @@ export class FakePlanner implements EligibilityPlanner {
     public stored = true,
     /** When set, `plan` says wait with this reason. */
     public waitReason?: string,
+    /** When set, `plan` says there is a problem for a person, with this reason. */
+    public problemReason?: string,
   ) {}
   async plan(): Promise<EligibilityPlan> {
     this.plans++;
+    if (this.problemReason) return { kind: "problem", reason: this.problemReason };
     return this.waitReason ? { kind: "wait", reason: this.waitReason } : { kind: "ready", values: this.values };
   }
   async committed(): Promise<CommitValues | undefined> {

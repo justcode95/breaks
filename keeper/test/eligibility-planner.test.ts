@@ -6,6 +6,7 @@ import { toHex } from "../src/draw/bytes.js";
 import { Tree } from "../src/draw/tree.js";
 import { DbPublisher, SqlEligibilityPlanner } from "../src/eligibility/planner.js";
 import { inputsHash } from "../src/eligibility/eligibility.js";
+import { exclusionProblem, exclusionsDocument, parseExclusions } from "../src/eligibility/exclusions.js";
 import type { BalanceEvent } from "../src/eligibility/twab.js";
 import { addressFromBytes, addressToBytes } from "../src/solana/pubkey.js";
 import { insertBreak, migratedDb } from "./support/db.js";
@@ -203,6 +204,80 @@ describe("SqlEligibilityPlanner: it computes once", () => {
     const [x, y] = await Promise.all([planner().plan(id, WINDOW), planner().plan(id, WINDOW)]);
     expect(x).toEqual(y);
     expect((await db.query<{ n: string }>("select count(*)::text as n from eligibility_lists where break_id = $1", [id])).rows[0]!.n).toBe("1");
+  });
+});
+
+describe("SqlEligibilityPlanner: the exclusion list it used", () => {
+  const storedExclusions = async (id: string) => {
+    const { rows } = await db.query<{ uri: string | null; body: string | null }>(
+      "select e.exclusions_uri as uri, p.body from eligibility_lists e left join published_documents p on e.exclusions_uri = 'db:sha256:' || p.sha256 where e.break_id = $1",
+      [id],
+    );
+    return rows[0];
+  };
+
+  it("stores the whole active list with the list: every wallet and its code, also those that held nothing, and never the note", async () => {
+    const { id, d } = await scenario();
+    const [never, removed] = [wallet(counter + 7), wallet(counter + 8)];
+    await db.query("update exclusions set note = 'private: flagged by a friend' where wallet = $1", [d]);
+    await db.query("insert into exclusions (wallet, reason_code, note) values ($1, 'bundle', 'also private')", [never]);
+    await db.query("insert into exclusions (wallet, reason_code, removed_at) values ($1, 'exchange', now())", [removed]);
+    await indexerAt(END + SETTLE);
+    const plan = await planner().plan(id, WINDOW);
+    if (plan.kind !== "ready") throw new Error(plan.reason);
+
+    const stored = await storedExclusions(id);
+    expect(stored?.body).toBe(exclusionsDocument(plan.values.inputsHash, new Map([[d, "team"], [never, "bundle"]])));
+    expect(stored?.uri).toBe(`db:sha256:${createHash("sha256").update(stored?.body ?? "").digest("hex")}`);
+    expect(stored?.body).not.toContain("private");
+    expect(stored?.body).not.toContain(removed);
+    expect(parseExclusions(stored?.body ?? "").inputsHash).toBe(toHex(plan.values.inputsHash));
+  });
+
+  it("keeps the list it used however the exclusions change afterwards", async () => {
+    const { id, a, d } = await scenario();
+    await indexerAt(END + SETTLE);
+    const first = await planner().plan(id, WINDOW);
+    if (first.kind !== "ready") throw new Error(first.reason);
+    const before = await storedExclusions(id);
+    await db.query("insert into exclusions (wallet, reason_code) values ($1, 'exchange')", [a]);
+    await db.query("update exclusions set removed_at = now() where wallet = $1", [d]);
+    await planner().plan(id, WINDOW);
+    expect(await storedExclusions(id)).toEqual(before);
+  });
+
+  it("stores an empty list when nothing is excluded", async () => {
+    const { id } = await scenario();
+    await db.query("delete from exclusions");
+    await indexerAt(END + SETTLE);
+    const plan = await planner().plan(id, WINDOW);
+    if (plan.kind !== "ready") throw new Error(plan.reason);
+    expect((await storedExclusions(id))?.body).toBe(`{"version":1,"kind":"exclusions","inputsHash":"${toHex(plan.values.inputsHash)}","entries":[]}\n`);
+  });
+
+  it("is a problem for a person, and stores nothing, while a row is one the public list cannot carry", async () => {
+    for (const [wallet_, code] of [["not-a-wallet", "team"], [wallet(counter + 9), "has space"], [wallet(counter + 9), ""], [wallet(counter + 9), "x".repeat(65)]] as const) {
+      const { id } = await scenario();
+      await db.query("insert into exclusions (wallet, reason_code) values ($1, $2)", [wallet_, code]);
+      await indexerAt(END + SETTLE);
+      const docs = (await db.query<{ n: string }>("select count(*)::text as n from published_documents")).rows[0]!.n;
+      const plan = await planner().plan(id, WINDOW);
+      expect(plan, `${wallet_} ${code}`).toEqual({ kind: "problem", reason: `the exclusions table has a row the public exclusion list cannot carry: ${exclusionProblem(wallet_, code)}; fix or remove it` });
+      expect(plan.kind === "problem" && plan.reason).toContain(code === "team" ? '"not-a-wallet" is not a Solana address' : `the code of ${wallet_}`);
+      expect(await planner().committed(id)).toBeUndefined();
+      expect((await db.query<{ n: string }>("select count(*)::text as n from published_documents")).rows[0]!.n).toBe(docs);
+      expect((await db.query<{ n: string }>("select count(*)::text as n from twab_snapshots where break_id = $1", [id])).rows[0]!.n).toBe("0");
+      // Fixed: the list is made.
+      await db.query("delete from exclusions where wallet = $1", [wallet_]);
+      expect((await planner().plan(id, WINDOW)).kind).toBe("ready");
+    }
+  });
+
+  it("is not stopped by a bad row that was removed", async () => {
+    const { id } = await scenario();
+    await db.query("insert into exclusions (wallet, reason_code, removed_at) values ('not-a-wallet', 'team', now())");
+    await indexerAt(END + SETTLE);
+    expect((await planner().plan(id, WINDOW)).kind).toBe("ready");
   });
 });
 

@@ -494,6 +494,15 @@ describe("BreakPipeline: before funding", () => {
     expect(w.chain.sendCalls).toBe(0);
   });
 
+  it("reports a planner that needs a person as a problem, not as waiting, and commits nothing", async () => {
+    const w = world({ status: "Closed" });
+    w.planner.problemReason = "the exclusions table has a row the public exclusion list cannot carry: x; fix or remove it";
+    const r = await w.pipeline().advance(w.active);
+    expect(r.problem).toBe("eligibility: the exclusions table has a row the public exclusion list cannot carry: x; fix or remove it");
+    expect(r.waiting).toBeUndefined();
+    expect(w.chain.sendCalls).toBe(0);
+  });
+
   it("refuses a list whose weight and entry count disagree about being empty", async () => {
     const w = world({ status: "Closed" });
     w.planner.values = { ...w.planner.values, totalWeight: 0n };

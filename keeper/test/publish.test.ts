@@ -8,6 +8,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildEligibility, serializeInputs } from "../src/eligibility/eligibility.js";
 import { type BalanceEvent, twabByOwner } from "../src/eligibility/twab.js";
 import { DbPublisher, SqlEligibilityPlanner, listDocument } from "../src/eligibility/planner.js";
+import { checkExclusions, exclusionsDocument, parseExclusions } from "../src/eligibility/exclusions.js";
 import { compareBytes, hashv, toHex, utf8 } from "../src/draw/bytes.js";
 import { drawFreeWinners } from "../src/draw/draw.js";
 import { assignCards, poolHash } from "../src/draw/pool.js";
@@ -16,7 +17,7 @@ import type { JobContext } from "../src/job.js";
 import type { AccountReader } from "../src/pipeline/chain.js";
 import { PublishExporter, publishJob } from "../src/publish/exporter.js";
 import { buildDeliveryPlan } from "../src/delivery/plan.js";
-import { eligibilityFile, inputsFile, ledgerFile, poolFile, recordFile } from "../src/publish/files.js";
+import { eligibilityFile, exclusionsFile, inputsFile, ledgerFile, poolFile, recordFile } from "../src/publish/files.js";
 import { buildLedger } from "../src/publish/ledger.js";
 import { checkRecord, parseStoredRecord } from "../src/publish/record.js";
 import { parseInputsText } from "../src/eligibility/inputs-text.js";
@@ -56,6 +57,8 @@ const CARDS = [addr(60), addr(40), addr(50)]; // only their count matters: see m
 const POLICY = { minTwab: 2n };
 /** The holder who is out: an average balance of 1, below the minimum. */
 const OUT = 99;
+/** A team wallet on the exclusion list that holds none of the token: the record does not name it, the exclusion list does. */
+const TEAM = 77;
 
 /**
  * The balance events of a break: one per break (the window differs), as the planner would have published it. Each holder in
@@ -81,6 +84,8 @@ function inputsFor(onchainId: bigint, weights = WEIGHTS) {
 const inputsPath = (b: { chain: BreakAccount }) => `inputs/${toHex(b.chain.eligibilityInputsHash)}.txt`;
 /** Where the record of why each wallet is in or out is published: under the same inputs hash. */
 const recordPath = (b: { chain: BreakAccount }) => `records/${toHex(b.chain.eligibilityInputsHash)}.json`;
+/** Where the exclusion list the list was made with is published: under the same inputs hash too. */
+const exclusionsPath = (b: { chain: BreakAccount }) => `exclusions/${toHex(b.chain.eligibilityInputsHash)}.json`;
 
 interface Made {
   breakId: string;
@@ -92,7 +97,11 @@ interface Made {
  * A break the keeper has: its row, a stored eligibility list (the wallets in `weights`, inserted in no particular
  * order), its pulled cards, and the account the chain holds for it. `over` changes what the chain says.
  */
-async function makeBreak(onchainId: bigint, status: string, over: { weights?: [number, bigint][]; cards?: string[]; chainStatus?: BreakAccount["status"]; chain?: Partial<BreakAccount>; list?: boolean } = {}): Promise<Made> {
+async function makeBreak(
+  onchainId: bigint,
+  status: string,
+  over: { weights?: [number, bigint][]; cards?: string[]; chainStatus?: BreakAccount["status"]; chain?: Partial<BreakAccount>; list?: boolean; exclusions?: [number, string][] | "none" } = {},
+): Promise<Made> {
   const breakId = await insertBreak(db);
   await db.query("update breaks set onchain_id = $1::bigint, status = $2 where id = $3::bigint", [onchainId.toString(), status, breakId]);
   const leaves = leavesOf(over.weights, holder);
@@ -105,6 +114,14 @@ async function makeBreak(onchainId: bigint, status: string, over: { weights?: [n
   const record = listDocument(breakId, inputs.window, POLICY, { root: listTree?.root.hash ?? new Uint8Array(32), totalWeight: eligibility.totalWeight, entryCount: eligibility.leaves.length, inputsHash: inputs.hash }, eligibility);
   const recordHex = toHex(hashv(utf8(record)));
   await db.query("insert into published_documents (sha256, content_type, body) values ($1, 'application/json', $2) on conflict do nothing", [recordHex, record]);
+  // The exclusion list the planner used, unless the list was made before it kept one.
+  let exclusionsUri: string | null = null;
+  if (over.exclusions !== "none") {
+    const body = exclusionsDocument(inputs.hash, new Map((over.exclusions ?? [[TEAM, "team"]]).map(([n, code]) => [holder(n), code])));
+    const sha = toHex(hashv(utf8(body)));
+    await db.query("insert into published_documents (sha256, content_type, body) values ($1, 'application/json', $2) on conflict do nothing", [sha, body]);
+    exclusionsUri = `db:sha256:${sha}`;
+  }
   if (over.list !== false) {
     const tree = Tree.build(leaves);
     for (const l of [...leaves].reverse()) {
@@ -113,11 +130,14 @@ async function makeBreak(onchainId: bigint, status: string, over: { weights?: [n
     // A wallet that is out: never part of the list.
     await db.query("insert into twab_snapshots (break_id, wallet, twab, weight, eligible, reason) values ($1::bigint, $2, 1, 0, false, 'below_min_twab')", [breakId, holder(OUT)]);
     await db.query(
-      "insert into eligibility_lists (break_id, root, total_weight, entry_count, inputs_hash, list_uri, inputs_uri) values ($1::bigint, decode($2, 'hex'), $3::numeric, $4, decode($5, 'hex'), $6, $7)",
-      [breakId, toHex(tree.root.hash), tree.root.sum.toString(), leaves.length, inputsHex, `db:sha256:${recordHex}`, `db:sha256:${inputsHex}`],
+      "insert into eligibility_lists (break_id, root, total_weight, entry_count, inputs_hash, list_uri, inputs_uri, exclusions_uri) values ($1::bigint, decode($2, 'hex'), $3::numeric, $4, decode($5, 'hex'), $6, $7, $8)",
+      [breakId, toHex(tree.root.hash), tree.root.sum.toString(), leaves.length, inputsHex, `db:sha256:${recordHex}`, `db:sha256:${inputsHex}`, exclusionsUri],
     );
   } else {
-    await db.query("insert into eligibility_lists (break_id, root, total_weight, entry_count, inputs_hash, list_uri, inputs_uri) values ($1::bigint, decode($2, 'hex'), 0, 0, decode($3, 'hex'), $4, $5)", [breakId, "00".repeat(32), inputsHex, `db:sha256:${recordHex}`, `db:sha256:${inputsHex}`]);
+    await db.query(
+      "insert into eligibility_lists (break_id, root, total_weight, entry_count, inputs_hash, list_uri, inputs_uri, exclusions_uri) values ($1::bigint, decode($2, 'hex'), 0, 0, decode($3, 'hex'), $4, $5, $6)",
+      [breakId, "00".repeat(32), inputsHex, `db:sha256:${recordHex}`, `db:sha256:${inputsHex}`, exclusionsUri],
+    );
   }
   // Card mints are unique across breaks, so each break gets its own by default.
   const cards = over.cards ?? CARDS.map((_, i) => addr(120 + Number(onchainId) * 3 + i));
@@ -204,9 +224,10 @@ describe("the published example the website reads", () => {
   const leaves = leavesOf([[1, 10n], [2, 30n], [3, 5n], [4, 50n], [5, 20n], [6, 15n]], holder);
   const cards = [44, 40, 43, 41, 42].map((n) => addressToBytes(addr(n)));
   const tree = Tree.build(leaves);
-  // The rules: an average of at least 3, no cap; wallet 7 is an exchange's and left out.
+  // The rules: an average of at least 3, no cap; wallet 7 is an exchange's and left out, and so is wallet 20, the team's, which
+  // held none of the token (so only the exclusion list names it, not the record).
   const POLICY = { minTwab: 3n };
-  const EXCLUDED = new Map([[holder(7), "exchange"]]);
+  const EXCLUDED = new Map([[holder(7), "exchange"], [holder(20), "team"]]);
   // A pool's vault: a program-derived address, off the curve, so never a holder.
   const POOL_VAULT = addr(2);
 
@@ -291,7 +312,8 @@ describe("the published example the website reads", () => {
       adopted: i === 1,
     })),
   });
-  const made = [eligibilityFile(tree.root.hash, tree.root.sum, leaves), poolFile(poolHash(cards), cards), inputsFile(inputsText), recordFile(record), ledgerFile(ledger)];
+  const exclusions = parseExclusions(exclusionsDocument(values.inputsHash, EXCLUDED));
+  const made = [eligibilityFile(tree.root.hash, tree.root.sum, leaves), poolFile(poolHash(cards), cards), inputsFile(inputsText), recordFile(record), exclusionsFile(exclusions), ledgerFile(ledger)];
 
   it("has a ledger of a draw that really happened: the free winners are drawn from the list, every card goes where the draw says", () => {
     expect(winners.map((w) => w.wallet).every((w) => leaves.some((l) => toBase58(l.wallet) === w))).toBe(true);
@@ -312,8 +334,10 @@ describe("the published example the website reads", () => {
     // One wallet for each reason a wallet is out.
     const reasons = Object.fromEntries(record.wallets.filter((w) => w.reason !== null).map((w) => [w.wallet, w.reason]));
     expect(reasons).toEqual({ [holder(7)]: "excluded:exchange", [holder(8)]: "below_min_twab", [POOL_VAULT]: "off_curve" });
-    // The record passes the exporter's own check against the commitments.
+    // The record passes the exporter's own check against the commitments, and the exclusion list is the one it was made with.
     checkRecord(record, inputsText, brk({ eligibilityRoot: tree.root.hash, eligibilityTotalWeight: tree.root.sum, eligibilityCount: 6, eligibilityInputsHash: values.inputsHash, opensAt: BigInt(WINDOW.start), closesAt: BigInt(WINDOW.end) }));
+    checkExclusions(exclusions, record);
+    expect(record.wallets.map((w) => w.wallet)).not.toContain(holder(20));
     // And the file is named by the hash of its text, which is what the chain's inputs hash is.
     expect(inputsFile(inputsText).path).toBe(`inputs/${toHex(hashv(utf8(inputsText)))}.txt`);
   });
@@ -332,6 +356,7 @@ describe("the published example the website reads", () => {
       ...(await readdir(join(EXAMPLE, "inputs"))).map((n) => `inputs/${n}`),
       ...(await readdir(join(EXAMPLE, "pool"))).map((n) => `pool/${n}`),
       ...(await readdir(join(EXAMPLE, "records"))).map((n) => `records/${n}`),
+      ...(await readdir(join(EXAMPLE, "exclusions"))).map((n) => `exclusions/${n}`),
       ...(await readdir(join(EXAMPLE, "ledger"))).map((n) => `ledger/${n}`),
     ].sort();
     expect(found).toEqual(made.map((f) => f.path).sort());
@@ -343,7 +368,7 @@ describe("publishing a committed eligibility list", () => {
     const b = await makeBreak(4n, "eligibility_committed");
     const report = await exporter(chainOf(b).reader).run();
     const root = toHex(b.chain.eligibilityRoot);
-    expect(report).toEqual({ written: [`eligibility/${root}.json`, inputsPath(b), recordPath(b)], problems: [] });
+    expect(report).toEqual({ written: [`eligibility/${root}.json`, inputsPath(b), recordPath(b), exclusionsPath(b)], problems: [] });
     expect(await files("eligibility")).toEqual([`${root}.json`]);
 
     const text = await readFile(join(dir, "eligibility", `${root}.json`), "utf8");
@@ -371,7 +396,7 @@ describe("publishing a committed eligibility list", () => {
     const b = await makeBreak(4n, "settled");
     const chain = chainOf(b);
     const first = await exporter(chain.reader).run();
-    expect(first.written).toHaveLength(4);
+    expect(first.written).toHaveLength(5);
     const reads = chain.reads.length;
     expect(await exporter(chain.reader).run()).toEqual({ written: [], problems: [] });
     expect(chain.reads).toHaveLength(reads);
@@ -385,18 +410,18 @@ describe("publishing a committed eligibility list", () => {
     expect(report.problems).toEqual([]);
     // Newest first (the first break is drawn, so its cards are published too).
     expect(report.written.filter((p) => p.startsWith("eligibility/"))).toEqual([`eligibility/${toHex(second.chain.eligibilityRoot)}.json`, `eligibility/${toHex(first.chain.eligibilityRoot)}.json`]);
-    expect(report.written).toHaveLength(7);
+    expect(report.written).toHaveLength(9);
     expect((await files("eligibility")).length).toBe(2);
     expect((await files("records")).length).toBe(2);
     const third = await makeBreak(2n, "funded", { weights: [[4, 2n], [5, 3n]] });
     const later = await exporter(chainOf(first, second, third).reader).run();
-    expect(later.written).toEqual([`eligibility/${toHex(third.chain.eligibilityRoot)}.json`, inputsPath(third), recordPath(third)]);
+    expect(later.written).toEqual([`eligibility/${toHex(third.chain.eligibilityRoot)}.json`, inputsPath(third), recordPath(third), exclusionsPath(third)]);
   });
 
   it("publishes no list for an empty one, only the record of the inputs behind it (which is where to see why nobody is on it)", async () => {
     const b = await makeBreak(4n, "eligibility_committed", { list: false, cards: [] });
     const chain = chainOf(b);
-    expect(await exporter(chain.reader).run()).toEqual({ written: [inputsPath(b), recordPath(b)], problems: [] });
+    expect(await exporter(chain.reader).run()).toEqual({ written: [inputsPath(b), recordPath(b), exclusionsPath(b)], problems: [] });
     expect(chain.reads).toHaveLength(1);
     expect(await files("eligibility")).toEqual([]);
     // The record says why: the one holder had an average of 1, below the minimum of 2.
@@ -430,7 +455,7 @@ describe("a list that is not what the chain committed is never published", () =>
     await db.query("update twab_snapshots set weight = weight + 1 where break_id = $1::bigint and wallet = $2", [b.breakId, holder(3)]);
     const report = await exporter(chainOf(b).reader).run();
     // The balance events and the record are their own steps, checked against the chain on their own, and still go out.
-    expect(report.written).toEqual([inputsPath(b), recordPath(b)]);
+    expect(report.written).toEqual([inputsPath(b), recordPath(b), exclusionsPath(b)]);
     expect(report.problems).toHaveLength(1);
     expect(report.problems[0]?.breakId).toBe(b.breakId);
     expect(report.problems[0]?.message).toMatch(/is not what was committed on chain/);
@@ -448,7 +473,7 @@ describe("a list that is not what the chain committed is never published", () =>
       const b = await makeBreak(BigInt(4 + i), "eligibility_committed");
       await change(b.breakId);
       const report = await exporter(chainOf(b).reader).run();
-      expect(report.written).toEqual([inputsPath(b), recordPath(b)]);
+      expect(report.written).toEqual([inputsPath(b), recordPath(b), exclusionsPath(b)]);
       expect(report.problems[0]?.message).toMatch(/not what was committed on chain/);
     }
   });
@@ -473,7 +498,7 @@ describe("a list that is not what the chain committed is never published", () =>
     const b = await makeBreak(4n, "eligibility_committed");
     await db.query("delete from twab_snapshots where break_id = $1::bigint", [b.breakId]);
     const report = await exporter(chainOf(b).reader).run();
-    expect(report.written).toEqual([inputsPath(b), recordPath(b)]);
+    expect(report.written).toEqual([inputsPath(b), recordPath(b), exclusionsPath(b)]);
     expect(report.problems[0]?.message).toBe("the stored eligibility list is empty but a list was committed");
   });
 
@@ -493,7 +518,7 @@ describe("a list that is not what the chain committed is never published", () =>
     const chain = chainOf(bad, good);
     const first = await exporter(chain.reader).run();
     // Newest first. The bad break's list and record are held back, its (consistent) record of the inputs is not.
-    expect(first.written).toEqual([`eligibility/${toHex(good.chain.eligibilityRoot)}.json`, inputsPath(good), recordPath(good), inputsPath(bad)]);
+    expect(first.written).toEqual([`eligibility/${toHex(good.chain.eligibilityRoot)}.json`, inputsPath(good), recordPath(good), exclusionsPath(good), inputsPath(bad)]);
     expect(first.problems.map((p) => p.breakId)).toEqual([bad.breakId]);
     const second = await exporter(chain.reader).run();
     expect(second.written).toEqual([]);
@@ -563,7 +588,7 @@ describe("publishing the balance events behind the weights", () => {
     const b = await makeBreak(4n, "settled");
     const chain = chainOf(b);
     const report = await exporter(chain.reader).run();
-    expect(report.written).toHaveLength(4);
+    expect(report.written).toHaveLength(5);
     expect(chain.reads).toHaveLength(1);
 
     await db.exec("truncate packs, twab_snapshots, eligibility_lists, published_documents, breaks cascade");
@@ -610,6 +635,9 @@ describe("what the real planner stores is what gets published", () => {
       );
     }
     await db.query("insert into indexer_state (id, indexed_until) values (1, to_timestamp($1)) on conflict (id) do update set indexed_until = excluded.indexed_until", [WINDOW.end + 1_000]);
+    // A team wallet that held none of the token: only the exclusion list shows it.
+    const team = wallet(13);
+    await db.query("insert into exclusions (wallet, reason_code, note) values ($1, 'team', 'not for the public')", [team]);
 
     const breakId = await insertBreak(db);
     const plan = await new SqlEligibilityPlanner(sql, new DbPublisher(sql), { policy: { minTwab: 100n }, settleSecs: 120 }).plan(breakId, WINDOW);
@@ -636,7 +664,10 @@ describe("what the real planner stores is what gets published", () => {
     const text = serializeInputs(events, WINDOW);
     const hex = toHex(plan.values.inputsHash);
     expect(report.problems).toEqual([]);
-    expect(report.written).toEqual([`eligibility/${toHex(plan.values.root)}.json`, `inputs/${hex}.txt`, `records/${hex}.json`]);
+    expect(report.written).toEqual([`eligibility/${toHex(plan.values.root)}.json`, `inputs/${hex}.txt`, `records/${hex}.json`, `exclusions/${hex}.json`]);
+    // The exclusion list the planner used, whole: the team wallet with its code, and never the private note.
+    const exclusions = await readFile(join(dir, "exclusions", `${hex}.json`), "utf8");
+    expect(exclusions).toBe(`{"version":1,"kind":"exclusions","inputsHash":"${hex}","entries":[{"wallet":"${team}","code":"team"}]}\n`);
     expect(await readFile(join(dir, "inputs", `${hex}.txt`), "utf8")).toBe(text);
     expect(createHash("sha256").update(text, "utf8").digest("hex")).toBe(hex);
     // The list and the record agree: A held 1000 all window, B held 1000 for half of it.
@@ -648,6 +679,7 @@ describe("what the real planner stores is what gets published", () => {
     expect(record.policy).not.toHaveProperty("capPerWallet");
     expect(Object.fromEntries(record.wallets.map((w: { wallet: string; twab: string; reason: string | null }) => [w.wallet, [w.twab, w.reason]]))).toEqual({ [a]: ["1000", null], [b]: ["500", null] });
     await db.query("delete from balance_events");
+    await db.query("delete from exclusions");
   });
 });
 
@@ -716,7 +748,7 @@ describe("publishing the cards", () => {
   it("publishes the list even when the cards have a problem, and says what the problem is", async () => {
     const b = await makeBreak(4n, "settled", { chain: { poolSize: 99 } });
     const report = await exporter(chainOf(b).reader).run();
-    expect(report.written).toEqual([`eligibility/${toHex(b.chain.eligibilityRoot)}.json`, inputsPath(b), recordPath(b)]);
+    expect(report.written).toEqual([`eligibility/${toHex(b.chain.eligibilityRoot)}.json`, inputsPath(b), recordPath(b), exclusionsPath(b)]);
     expect(report.problems).toHaveLength(1);
     expect(report.problems[0]?.message).toMatch(/not the pool/);
   });
@@ -781,12 +813,19 @@ describe("the directory the files go to", () => {
 
   it("only writes the names the formats use, whatever it is asked", async () => {
     const sink = new DirSink(dir);
-    for (const path of ["../escape.json", "eligibility/../x.json", "eligibility/short.json", `eligibility/${"A".repeat(64)}.json`, `other/${"a".repeat(64)}.json`, `eligibility/${"a".repeat(64)}.txt`, `inputs/${"a".repeat(64)}.json`, `pool/${"a".repeat(64)}.txt`, `inputs/${"A".repeat(64)}.txt`, `inputs/${"a".repeat(65)}.txt`, `inputs/short.txt`, `records/${"a".repeat(64)}.txt`, `records/${"A".repeat(64)}.json`, `record/${"a".repeat(64)}.json`, `/eligibility/${"a".repeat(64)}.json`, `eligibility/${"a".repeat(64)}.json/../../x`]) {
+    for (const path of ["../escape.json", "eligibility/../x.json", "eligibility/short.json", `eligibility/${"A".repeat(64)}.json`, `other/${"a".repeat(64)}.json`, `eligibility/${"a".repeat(64)}.txt`, `inputs/${"a".repeat(64)}.json`, `pool/${"a".repeat(64)}.txt`, `inputs/${"A".repeat(64)}.txt`, `inputs/${"a".repeat(65)}.txt`, `inputs/short.txt`, `records/${"a".repeat(64)}.txt`, `records/${"A".repeat(64)}.json`, `record/${"a".repeat(64)}.json`, `exclusions/${"a".repeat(64)}.txt`, `exclusion/${"a".repeat(64)}.json`, `exclusions/${"A".repeat(64)}.json`, `/eligibility/${"a".repeat(64)}.json`, `eligibility/${"a".repeat(64)}.json/../../x`]) {
       await expect(sink.write({ path, body: "x" }), path).rejects.toThrow(/not a published file name/);
       await expect(sink.exists(path), path).rejects.toThrow(/not a published file name/);
     }
     await mkdir(join(dir, "ok"), { recursive: true });
     expect(await readdir(dir)).not.toContain("escape.json");
+  });
+
+  it("writes an exclusion list under its own folder", async () => {
+    const sink = new DirSink(dir);
+    const file = { path: `exclusions/${"a".repeat(64)}.json`, body: "{}\n" };
+    expect(await sink.write(file)).toBe("written");
+    expect(await readFile(join(dir, file.path), "utf8")).toBe("{}\n");
   });
 });
 
@@ -964,6 +1003,120 @@ describe("publishing the record of why each wallet is in or out", () => {
   });
 });
 
+describe("publishing the exclusion list a list was made with", () => {
+  /** Rewrites the record the planner stored for a break, as if it had been changed after the commit. */
+  const tamper = async (b: Made, edit: (doc: any) => void) => {
+    const { rows } = await db.query<{ list_uri: string }>("select list_uri from eligibility_lists where break_id = $1::bigint", [b.breakId]);
+    const sha = (rows[0]?.list_uri as string).replace("db:sha256:", "");
+    const { rows: docs } = await db.query<{ body: string }>("select body from published_documents where sha256 = $1", [sha]);
+    const doc = JSON.parse(docs[0]?.body as string);
+    edit(doc);
+    await db.query("update published_documents set body = $2 where sha256 = $1", [sha, JSON.stringify(doc)]);
+  };
+  /** Rewrites the stored exclusion list itself. */
+  const tamperList = async (b: Made, body: string) => {
+    const { rows } = await db.query<{ uri: string }>("select exclusions_uri as uri from eligibility_lists where break_id = $1::bigint", [b.breakId]);
+    await db.query("update published_documents set body = $2 where sha256 = $1", [(rows[0]?.uri as string).replace("db:sha256:", ""), body]);
+  };
+  /**
+   * A break whose rules left wallet 3 out (it held 10) as `code`, with the exclusion list `list`: the record says wallet 3 is
+   * excluded as the team's, and wallet 9 alone is on the list.
+   */
+  const excludedBreak = async (list: [number, string][]) => {
+    const b = await makeBreak(4n, "eligibility_committed", { weights: [[3, 10n], [9, 5n]], exclusions: list });
+    const tree = Tree.build(leavesOf([[9, 5n]], holder));
+    await tamper(b, (doc) => {
+      Object.assign(doc, { root: toHex(tree.root.hash), totalWeight: "5", entryCount: 1 });
+      for (const w of doc.wallets) if (w.wallet === holder(3)) Object.assign(w, { weight: "0", eligible: false, reason: "excluded:team" });
+    });
+    await db.query("update twab_snapshots set weight = 0, eligible = false, reason = 'excluded:team' where break_id = $1::bigint and wallet = $2", [b.breakId, holder(3)]);
+    return { ...b, chain: { ...b.chain, eligibilityRoot: tree.root.hash, eligibilityTotalWeight: 5n, eligibilityCount: 1 } };
+  };
+  const problemOf = async (b: Made) => {
+    const report = await exporter(chainOf(b).reader).run();
+    expect(report.written, "the exclusion list must not go out").not.toContain(exclusionsPath(b));
+    expect(await files("exclusions")).toEqual([]);
+    return report.problems.map((p) => p.message).join("; ");
+  };
+
+  it("writes the list the planner stored under the inputs hash: every wallet left out, also one that held none of the token", async () => {
+    const b = await makeBreak(4n, "eligibility_committed");
+    const chain = chainOf(b);
+    const report = await exporter(chain.reader).run();
+    expect(report.problems).toEqual([]);
+    expect(report.written).toContain(exclusionsPath(b));
+    const body = await readFile(join(dir, exclusionsPath(b)), "utf8");
+    expect(body).toBe(exclusionsDocument(b.chain.eligibilityInputsHash, new Map([[holder(TEAM), "team"]])));
+    // The team wallet held nothing, so only this file names it: the record does not.
+    expect(await readFile(join(dir, recordPath(b)), "utf8")).not.toContain(holder(TEAM));
+    // The break's account was read once for every file, and a second run is quiet.
+    expect(chain.reads).toHaveLength(1);
+    expect(await exporter(chain.reader).run()).toEqual({ written: [], problems: [] });
+    expect(chain.reads).toHaveLength(1);
+  });
+
+  it("pins the bytes of the file", () => {
+    const list = { inputsHash: "ab".repeat(32), entries: [{ wallet: addr(1), code: "team" }] };
+    expect(exclusionsFile(list)).toEqual({ path: `exclusions/${"ab".repeat(32)}.json`, body: `{"version":1,"kind":"exclusions","inputsHash":"${"ab".repeat(32)}","entries":[{"wallet":"${addr(1)}","code":"team"}]}\n` });
+  });
+
+  it("publishes a list whose wallet held the token, when the record leaves it out with the same code", async () => {
+    const b = await excludedBreak([[3, "team"], [TEAM, "bundle"]]);
+    const report = await exporter(chainOf(b).reader).run();
+    expect(report.problems).toEqual([]);
+    expect(report.written).toEqual(expect.arrayContaining([recordPath(b), exclusionsPath(b)]));
+    expect(parseExclusions(await readFile(join(dir, exclusionsPath(b)), "utf8")).entries.map((e) => [e.wallet, e.code]).sort()).toEqual([[holder(3), "team"], [holder(TEAM), "bundle"]].sort());
+  });
+
+  it("refuses a list that is not the one the record was made with, and says why", async () => {
+    const cases: [[number, string][], string][] = [
+      [[[TEAM, "team"]], `the record leaves ${holder(3)} out as "team", but the stored exclusion list does not name it`],
+      [[[3, "exchange"]], `the stored exclusion list gives ${holder(3)} the code "exchange", but the record says "team"`],
+      [[[3, "team"], [9, "team"]], `the stored exclusion list names ${holder(9)} ("team"), but the record does not leave it out`],
+    ];
+    for (const [list, message] of cases) {
+      await db.exec("truncate packs, twab_snapshots, eligibility_lists, published_documents, breaks cascade");
+      await rm(join(dir, "exclusions"), { recursive: true, force: true });
+      const b = await excludedBreak(list);
+      expect(await problemOf(b), message).toBe(`${message}; nothing was published`);
+    }
+  });
+
+  it("refuses a list for another inputs hash, and one that is not written the way the keeper writes it", async () => {
+    const b = await makeBreak(4n, "eligibility_committed");
+    await tamperList(b, exclusionsDocument("ef".repeat(32), new Map([[holder(TEAM), "team"]])));
+    expect(await problemOf(b)).toBe(`the stored exclusion list is for inputs hash ${"ef".repeat(32)}, not the ${toHex(b.chain.eligibilityInputsHash)} of its record; nothing was published`);
+    await tamperList(b, `${JSON.stringify(JSON.parse(exclusionsDocument(b.chain.eligibilityInputsHash, new Map([[holder(TEAM), "team"]]))), null, 2)}\n`);
+    expect(await problemOf(b)).toBe("the stored exclusion list is not written the way the keeper writes it; nothing was published");
+  });
+
+  it("does not publish the list while its record does not add up, and says the record's fault once", async () => {
+    const b = await makeBreak(4n, "eligibility_committed");
+    await tamper(b, (d) => (d.wallets.find((w: any) => w.weight === "30").weight = "29"));
+    const message = await problemOf(b);
+    expect(message).toMatch(/^the stored eligibility record is not what the rules make of the committed balance events \(first difference at wallet \d+/);
+    expect(message.split("first difference").length).toBe(2);
+  });
+
+  it("says nothing for a list made before the planner kept its exclusions, and reports one it points to but cannot read", async () => {
+    const old = await makeBreak(4n, "eligibility_committed", { exclusions: "none" });
+    expect(await exporter(chainOf(old).reader).run()).toMatchObject({ problems: [] });
+    expect(await files("exclusions")).toEqual([]);
+
+    await db.exec("truncate packs, twab_snapshots, eligibility_lists, published_documents, breaks cascade");
+    const lost = await makeBreak(4n, "eligibility_committed");
+    await db.query("update eligibility_lists set exclusions_uri = 'ipfs://somewhere' where break_id = $1::bigint", [lost.breakId]);
+    expect(await problemOf(lost)).toBe("the stored exclusion list cannot be read, though its list was committed");
+  });
+
+  it("publishes it for an empty list too, like the record", async () => {
+    const b = await makeBreak(4n, "eligibility_committed", { list: false });
+    const report = await exporter(chainOf({ ...b, chain: { ...b.chain, eligibilityRoot: new Uint8Array(32), eligibilityTotalWeight: 0n, eligibilityCount: 0 } }).reader).run();
+    expect(report.problems).toEqual([]);
+    expect(report.written).toEqual([inputsPath(b), recordPath(b), exclusionsPath(b)]);
+  });
+});
+
 describe("reading back the published balance-event text", () => {
   const WINDOW = { start: 100, end: 200 };
   const events: BalanceEvent[] = [
@@ -1019,6 +1172,7 @@ describe("the job", () => {
       ["published", { path: `eligibility/${toHex(good.chain.eligibilityRoot)}.json` }],
       ["published", { path: inputsPath(good) }],
       ["published", { path: recordPath(good) }],
+      ["published", { path: exclusionsPath(good) }],
     ]);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatch(/could not publish a break's lists/);

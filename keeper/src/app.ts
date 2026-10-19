@@ -78,6 +78,7 @@ export async function checkSchema(sql: Sql): Promise<string[]> {
     ["indexed_accounts", "until_sig", "0006"],
     ["fee_swaps", "signature", "0007"],
     ["bot_posts", "valid_until", "0008"],
+    ["eligibility_lists", "exclusions_uri", "0010"],
   ];
   for (const [table, column, migration] of columns) {
     const ok = await have(
@@ -305,7 +306,7 @@ export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]
   }
   if (config.publish.dir) {
     if (!deps.finalized) throw new Error("publishing the lists needs a chain reader at the finalized commitment");
-    log.info("publishing eligibility lists, the balance events and records behind them, card pools and the ledgers of delivered breaks as files", { dir: config.publish.dir });
+    log.info("publishing eligibility lists, the balance events, records and exclusion lists behind them, card pools and the ledgers of delivered breaks as files", { dir: config.publish.dir });
     const exporter = new PublishExporter({ store: new SqlPublishStore(sql), sink: new DirSink(config.publish.dir), chain: deps.finalized, programs: config.programs });
     jobs.push(publishJob({ exporter, intervalMs: config.publish.intervalSecs * 1000 }));
   }
