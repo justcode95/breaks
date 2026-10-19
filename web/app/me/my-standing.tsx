@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Address } from "../../lib/chain/address";
 import type { BreakRow } from "../../lib/chain/list";
 import { PUBLISHED_SETUP } from "../../lib/site";
-import { type BreakStanding, loadStandings, standingsKey } from "../../lib/standing";
+import { type BreakStanding, lastMinimum, loadStandings, standingsKey } from "../../lib/standing";
 import type { EligibilityRecord } from "../../lib/twab/record";
 import { StandingsView } from "./standing-view";
 
@@ -19,12 +19,14 @@ const RECORDS = new Map<string, EligibilityRecord>();
 /**
  * Where the wallet stands on the free-spot lists of the breaks My spots has just read. Reads the published records again only
  * when something that decides it changes (another wallet, a break's stage, list or winners), and keeps the records it has
- * checked (`RECORDS`), so the re-reads of the spots cost nothing here.
+ * checked (`RECORDS`), so the re-reads of the spots cost nothing here. Tells `onMinimum` what the newest checked list asked for.
  */
-export function MyStanding({ owner, rows }: { owner: Address; rows: readonly BreakRow[] }) {
+export function MyStanding({ owner, rows, onMinimum }: { owner: Address; rows: readonly BreakRow[]; onMinimum?: (m: { number: number; minTwab: bigint }) => void }) {
   const [view, setView] = useState<State>({ state: "loading" });
   const latestRows = useRef(rows);
   latestRows.current = rows;
+  const latestOnMinimum = useRef(onMinimum);
+  latestOnMinimum.current = onMinimum;
   const newest = useRef(0);
   const [attempt, setAttempt] = useState(0);
   const key = standingsKey(owner, rows);
@@ -32,9 +34,14 @@ export function MyStanding({ owner, rows }: { owner: Address; rows: readonly Bre
   useEffect(() => {
     if (PUBLISHED_SETUP.kind !== "on") return;
     const mine = ++newest.current;
-    void loadStandings({ baseUrl: PUBLISHED_SETUP.config.baseUrl, owner, rows: latestRows.current, cache: RECORDS }).then(
-      (standings) => mine === newest.current && setView({ state: "loaded", owner, standings }),
-    );
+    void loadStandings({ baseUrl: PUBLISHED_SETUP.config.baseUrl, owner, rows: latestRows.current, cache: RECORDS }).then((standings) => {
+      if (mine !== newest.current) return;
+      setView({ state: "loaded", owner, standings });
+      // The last list's minimum, for the card about the wallet's tokens. When no record could be read this time, the one known
+      // from before stays: a minimum belongs to a list, not to a wallet.
+      const m = lastMinimum(standings);
+      if (m) latestOnMinimum.current?.(m);
+    });
   }, [key, owner, attempt]);
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);

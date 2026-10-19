@@ -3,6 +3,8 @@
 //   NEXT_PUBLIC_TREASURY_PROGRAM_ID   the deployed treasury program (the treasury page is hidden without it)
 //   NEXT_PUBLIC_PUBLISHED_URL         where the keeper's published lists are served (the verify page loads them from there)
 //   NEXT_PUBLIC_SOLANA_RPC_URL        a node that answers browsers (default: the public devnet node)
+//   NEXT_PUBLIC_TOKEN_MINT            the coin's mint, copied from the keeper's TOKEN_MINT (My spots shows a wallet's balance
+//                                     of it; the chain does not name it anywhere the site could read)
 //   NEXT_PUBLIC_BREAK_PAID_SPOTS, NEXT_PUBLIC_BREAK_FREE_SPOTS, NEXT_PUBLIC_BREAK_SPOT_PRICE, NEXT_PUBLIC_BREAK_PACKS
 //                                     the shape of the next break, copied from the keeper's BREAK_* settings (all four or none:
 //                                     without them there is no reserve bar). Prices are micro-USDC, as in the keeper, and
@@ -79,6 +81,18 @@ export function publishedSetup(raw: string | undefined): Setup<PublishedSetting>
     return { kind: "problem", problem: "NEXT_PUBLIC_PUBLISHED_URL must be a plain folder address, without a login, a query or a fragment." };
   }
   return { kind: "on", config: { baseUrl: `${url.origin}${url.pathname.replace(/\/+$/, "")}` } };
+}
+
+export interface TokenSetting {
+  mint: Address;
+}
+
+/** The coin's mint: the keeper's TOKEN_MINT, copied. Off without it. */
+export function tokenSetup(raw: string | undefined): Setup<TokenSetting> {
+  const mint = raw?.trim();
+  if (!mint) return { kind: "off" };
+  if (!isAddress(mint)) return { kind: "problem", problem: "NEXT_PUBLIC_TOKEN_MINT is not a Solana address." };
+  return { kind: "on", config: { mint } };
 }
 
 /** The raw text of the four settings that describe the next break. */

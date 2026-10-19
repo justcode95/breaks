@@ -99,3 +99,36 @@ export async function getProgramAccounts(
     return { address: entry.pubkey, account: { data: base64.decode(data), owner: entry.account.owner } };
   });
 }
+
+/**
+ * `owner`'s token accounts for `mint` (of either token program: the node finds the program from the mint), and the slot the
+ * answer is from. As with `getProgramAccounts`, the node does the searching, so each account still has to be checked.
+ */
+export async function getTokenAccountsByOwner(
+  opts: RpcOptions & { owner: Address; mint: Address; commitment?: "finalized" | "confirmed" },
+): Promise<{ slot: number; accounts: ProgramAccount[] }> {
+  const result = await rpc<{ context?: { slot?: unknown }; value?: unknown } | null>(opts, "getTokenAccountsByOwner", [
+    opts.owner,
+    { mint: opts.mint },
+    { encoding: "base64", commitment: opts.commitment ?? "finalized" },
+  ]);
+  const slot = result?.context?.slot;
+  if (typeof slot !== "number" || !Number.isSafeInteger(slot) || slot < 0) throw new RpcFailure("the node's answer did not say which slot it is from");
+  if (!Array.isArray(result?.value)) throw new RpcFailure("the node's answer was not a list of accounts");
+  const accounts = result.value.map((entry: { pubkey?: unknown; account?: { data?: unknown; owner?: unknown } } | null) => {
+    const data = Array.isArray(entry?.account?.data) ? entry?.account?.data[0] : undefined;
+    if (typeof entry?.pubkey !== "string" || typeof data !== "string" || typeof entry.account?.owner !== "string") {
+      throw new RpcFailure("the node's answer for an account was malformed");
+    }
+    return { address: entry.pubkey, account: { data: base64.decode(data), owner: entry.account.owner } };
+  });
+  return { slot, accounts };
+}
+
+/** When the block of `slot` was made, in seconds since 1970, as the chain records it; `null` when the node does not know. */
+export async function getBlockTime(opts: RpcOptions, slot: number): Promise<number | null> {
+  const result = await rpc<unknown>(opts, "getBlockTime", [slot]);
+  if (result === null) return null;
+  if (typeof result !== "number" || !Number.isSafeInteger(result)) throw new RpcFailure("the node's answer for a block's time was not a whole number");
+  return result;
+}

@@ -211,6 +211,15 @@ export function encodeTokenAccount(t: { mint: Address; owner: Address; amount: b
   );
 }
 
+/** An SPL token mint as the token program packs it (82 bytes); `extension` makes it a Token-2022 mint with room after it. */
+export function encodeMint(m: { supply: bigint; decimals: number; authority?: Address; freeze?: Address; initialized?: number; extension?: boolean }): Uint8Array {
+  const option = (a: Address | undefined) => (a ? concat(u(4, 1), addressToBytes(a)) : new Uint8Array(4 + 32));
+  const base = concat(option(m.authority), u(8, m.supply), u(1, m.decimals), u(1, m.initialized ?? 1), option(m.freeze));
+  if (!m.extension) return base;
+  // Token-2022: the base padded to 165 bytes, the account type (1, a mint), then an extension (here a made-up 4-byte one).
+  return concat(base, new Uint8Array(165 - base.length), u(1, 1), u(2, 99), u(2, 0));
+}
+
 export interface Served {
   data: Uint8Array;
   owner: Address;

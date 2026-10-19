@@ -4,7 +4,7 @@ import { fromHex, toHex } from "../src/draw/bytes.js";
 import * as breaks from "../src/solana/breaks.js";
 import { Reader, Writer } from "../src/solana/codec.js";
 import type { Instruction } from "../src/solana/instruction.js";
-import { decodeTokenAccount } from "../src/solana/token.js";
+import { decodeMint, decodeTokenAccount } from "../src/solana/token.js";
 import * as treasury from "../src/solana/treasury.js";
 
 // The Rust tests generate these files from the programs themselves (instruction data, account order and
@@ -181,6 +181,7 @@ type Decoder = (data: Uint8Array) => unknown;
 const decoders: Record<string, Decoder> = {
   "treasury.account.Config": treasury.decodeTreasuryConfig,
   "spl.account.TokenAccount": decodeTokenAccount,
+  "spl.account.Mint": decodeMint,
   "breaks.account.Break": breaks.decodeBreak,
   "breaks.account.BreaksConfig": breaks.decodeBreaksConfig,
   "breaks.account.Spot": breaks.decodeSpot,
