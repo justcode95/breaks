@@ -8,7 +8,7 @@ import { shortAddress } from "../../../lib/wallet/wallets";
 export type LedgerViewState = LedgerState | { kind: "off" } | { kind: "loading" };
 
 /** A transaction as a link to the devnet explorer when it looks like a signature, otherwise as text (it came from the host). */
-function Tx({ signature, label }: { signature: string; label: string }) {
+export function Tx({ signature, label }: { signature: string; label: string }) {
   const url = explorerTxUrl(signature);
   return url ? (
     <a href={url} target="_blank" rel="noopener noreferrer" title={signature}>
@@ -24,7 +24,7 @@ function Tx({ signature, label }: { signature: string; label: string }) {
   );
 }
 
-const Short = ({ address }: { address: string }) => (
+export const Short = ({ address }: { address: string }) => (
   <code className="mono" title={address}>
     {shortAddress(address)}
   </code>
