@@ -132,3 +132,39 @@ export async function getBlockTime(opts: RpcOptions, slot: number): Promise<numb
   if (typeof result !== "number" || !Number.isSafeInteger(result)) throw new RpcFailure("the node's answer for a block's time was not a whole number");
   return result;
 }
+
+export interface SignatureInfo {
+  signature: string;
+  slot: number;
+  /** When its block was made (seconds since 1970); `null` when the node does not say. */
+  blockTime: number | null;
+  /** The transaction failed: it changed nothing but the fee. */
+  failed: boolean;
+}
+
+/**
+ * Up to `limit` of the transactions that name `address`, newest first, at `finalized`; `before` continues from an older one. The
+ * node does the searching, so a transaction's effects still have to be read from the transaction itself.
+ */
+export async function getSignaturesForAddress(opts: RpcOptions & { address: Address; limit: number; before?: string }): Promise<SignatureInfo[]> {
+  const result = await rpc<unknown>(opts, "getSignaturesForAddress", [
+    opts.address,
+    { limit: opts.limit, commitment: "finalized", ...(opts.before !== undefined ? { before: opts.before } : {}) },
+  ]);
+  if (!Array.isArray(result)) throw new RpcFailure("the node's answer was not a list of transactions");
+  return result.map((entry: { signature?: unknown; slot?: unknown; blockTime?: unknown; err?: unknown } | null) => {
+    const { signature, slot, blockTime, err } = entry ?? {};
+    if (typeof signature !== "string" || typeof slot !== "number" || !Number.isSafeInteger(slot) || slot < 0) {
+      throw new RpcFailure("the node's answer for a transaction was malformed");
+    }
+    if (blockTime !== null && blockTime !== undefined && (typeof blockTime !== "number" || !Number.isSafeInteger(blockTime))) {
+      throw new RpcFailure("the node's answer for a transaction's time was not a whole number");
+    }
+    return { signature, slot, blockTime: blockTime ?? null, failed: err !== null && err !== undefined };
+  });
+}
+
+/** The transaction with `signature` as the node reads it (`jsonParsed`, `finalized`), still to be checked; `null` when it has none. */
+export async function getTransaction(opts: RpcOptions & { signature: string }): Promise<unknown> {
+  return rpc<unknown>(opts, "getTransaction", [opts.signature, { encoding: "jsonParsed", commitment: "finalized", maxSupportedTransactionVersion: 0 }]);
+}

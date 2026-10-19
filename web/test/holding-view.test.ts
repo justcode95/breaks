@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { HoldingView, minimumText, saleText } from "../app/me/holding-view";
+import { HoldingView, averageText, historyProblemText, minimumText, saleText } from "../app/me/holding-view";
 import { decodeBreak } from "../lib/chain/accounts";
 import { TOKEN_PROGRAM } from "../lib/chain/address";
 import { type Holding, type SaleFloor, saleFloor } from "../lib/chain/holding";
@@ -28,6 +28,7 @@ const holding = (total: bigint, over: Partial<Holding> = {}): Holding => ({
   mint: { address: fill(31), program: TOKEN_PROGRAM, decimals: 6, supply: 10n ** 15n },
   total,
   accounts: total === 0n ? 0 : 1,
+  held: new Map(total === 0n ? [] : [[fill(41), total]]),
   slot: 7,
   time: Number(OPENS) + 10_800,
   ...over,
@@ -190,5 +191,87 @@ describe("the card", () => {
 
   it("has no button without something to call", () => {
     expect(buttons(createElement(HoldingView, { view: { state: "loaded", holding: holding(M) }, rows: [] }))).toHaveLength(0);
+  });
+});
+
+describe("the wallet's average so far, from its history in the sale", () => {
+  const h = holding(3_000_000n * M);
+  const on = saleFloor([row(4)], h.total, h.time) as Extract<SaleFloor, { kind: "on" }>;
+  const read = (over: Partial<{ soFar: bigint | undefined; toClose: bigint; transactions: number; accounts: number }> = {}) =>
+    ({ kind: "read" as const, soFar: 2_000_000n * M, toClose: 2_500_000n * M, transactions: 12, accounts: 2, ...over });
+  const card = (history: Parameters<typeof HoldingView>[0]["history"], hh: Holding = h, minimum = { number: 4, minTwab: 1_000_000n * M }) =>
+    text(render({ view: { state: "loaded", holding: hh }, rows: [row(4)], minimum, history }));
+
+  it("says the average so far and over the whole sale if the balance stays, instead of the floor", () => {
+    expect(averageText(on, h, read())).toBe(
+      "Break #5 is on sale until 2027-01-15 14:00 UTC. This wallet's average balance over the sale so far is 2,000,000 tokens. If it holds what it holds now until then, its average over the whole sale will be 2,500,000 tokens.",
+    );
+    expect(averageText(on, h, read({ soFar: undefined, toClose: M }))).toBe(
+      "Break #5 is on sale until 2027-01-15 14:00 UTC. The sale has only just opened. If it holds what it holds now until then, its average over the whole sale will be 1 token.",
+    );
+    expect(averageText(on, holding(0n), read({ soFar: 7n * M, toClose: 3n * M }))).toBe(
+      "Break #5 is on sale until 2027-01-15 14:00 UTC. This wallet's average balance over the sale so far is 7 tokens. It holds none of the token now, so if that does not change, its average over the whole sale will be 3 tokens.",
+    );
+    const body = card({ state: "done", history: read() });
+    expect(body).toContain("This wallet's average balance over the sale so far is 2,000,000 tokens.");
+    expect(body).not.toContain("at least");
+    expect(body).not.toContain("a floor, not a forecast");
+    expect(body).toContain(
+      "Worked out on this page from the wallet's own transactions of the token since the sale opened (12 transactions, 2 token accounts), by the lists' rule: the area under its balance, divided by the sale's length. A history with a transaction missing does not add up and is not used. The list itself is made by the keeper after the close, and a wallet it leaves out on purpose is not on it whatever it holds.",
+    );
+    expect(card({ state: "done", history: read({ transactions: 1, accounts: 1 }) })).toContain("(1 transaction, 1 token account)");
+  });
+
+  it("compares the average over the whole sale with the last list's minimum, to the last unit, and for a wallet that holds none now", () => {
+    const minimum = { number: 4, minTwab: 1_000_000n * M };
+    expect(minimumText(on, h, minimum, 1_000_000n * M)).toBe("That is enough for the minimum the last list asked for (break #4: 1,000,000 tokens on average), if the next list asks the same.");
+    expect(minimumText(on, h, minimum, 1_000_000n * M - 1n)).toBe("That is below the minimum the last list asked for (break #4: 1,000,000 tokens on average).");
+    // The floor would have said "enough on its own": the history's figure decides.
+    expect(on.floor).toBe(1_500_000n * M);
+    expect(card({ state: "done", history: read({ toClose: 900_000n * M }) })).toContain("That is below the minimum the last list asked for");
+    // A wallet that holds none now but held some earlier in the sale is still compared; one that never held any is not.
+    expect(minimumText(on, holding(0n), minimum, 2_000_000n * M)).toContain("That is enough for the minimum");
+    expect(minimumText(on, holding(0n), minimum, 0n)).toBeUndefined();
+    expect(minimumText(on, h, { number: 4, minTwab: 0n }, 0n)).toContain("That is below the minimum");
+  });
+
+  it("says it is reading, and shows the floor meanwhile", () => {
+    const body = card({ state: "reading" });
+    expect(body).toContain("Reading this wallet's transactions of the token since the sale opened, for its average so far…");
+    expect(body).toContain("will be at least 1,500,000 tokens");
+    expect(body).toContain("This is a floor, not a forecast");
+  });
+
+  it("says why the history was not used, and falls back to the floor", () => {
+    expect(historyProblemText({ kind: "too-much", message: "it has more than 200 transactions to read since the sale opened" })).toBe(
+      "Its average so far is not worked out here: it has more than 200 transactions to read since the sale opened. Only the least it can reach is shown.",
+    );
+    expect(historyProblemText({ kind: "unreadable", message: "the node refused the request" })).toBe(
+      "Its transactions in this sale could not be read (the node refused the request), so only the least it can reach is shown.",
+    );
+    expect(historyProblemText({ kind: "does-not-add-up", message: "a transaction is missing" })).toBe(
+      "Its transactions in this sale, as the node gave them, do not add up (a transaction is missing), so they are not used: only the least it can reach is shown.",
+    );
+    const body = card({ state: "done", history: { kind: "unreadable", message: "<b>down</b>" } });
+    expect(body).toContain("could not be read (<b>down</b>)");
+    expect(render({ view: { state: "loaded", holding: h }, rows: [row(4)], history: { state: "done", history: { kind: "unreadable", message: "<b>down</b>" } } })).toContain("&lt;b&gt;down&lt;/b&gt;");
+    expect(body).toContain("will be at least 1,500,000 tokens");
+    expect(body).toContain("That is enough on its own for the minimum");
+    expect(body).toContain("This is a floor, not a forecast");
+  });
+
+  it("uses no history outside a sale that is on", () => {
+    for (const hh of [holding(M, { time: Number(OPENS) - 5 }), holding(M, { time: Number(CLOSES) })]) {
+      const body = card({ state: "done", history: read() }, hh);
+      expect(body).not.toContain("so far is");
+      expect(body).not.toContain("Reading this wallet's transactions");
+      expect(body).not.toContain("Worked out on this page");
+      expect(card({ state: "done", history: { kind: "unreadable", message: "down" } }, hh)).not.toContain("could not be read");
+    }
+    // Before the sale, the comparison is the floor's, not a history's.
+    const early = card({ state: "done", history: read({ toClose: 0n }) }, holding(2_000_000n * M, { time: Number(OPENS) - 5 }));
+    expect(early).toContain("That is enough on its own for the minimum");
+    expect(early).toContain("This is a floor, not a forecast");
+    expect(card({ state: "reading" }, holding(M, { time: Number(CLOSES) }))).not.toContain("Reading this wallet's transactions");
   });
 });

@@ -60,6 +60,8 @@ export interface Holding {
   total: bigint;
   /** How many of its token accounts hold any. */
   accounts: number;
+  /** What each of its token accounts of the mint holds, those that hold nothing included. */
+  held: ReadonlyMap<Address, bigint>;
   /** The slot the balances are from. */
   slot: number;
   /** When that slot's block was made (seconds since 1970), by the chain's clock; `null` when the node could not say. */
@@ -90,18 +92,18 @@ export async function loadHolding(opts: HoldingOptions): Promise<Holding> {
     const mint: TokenMint = { address: opts.mint, program: account.owner, ...decoded };
 
     const listed = await getTokenAccountsByOwner({ ...net, owner: opts.owner, mint: opts.mint });
-    const seen = new Set<Address>();
+    const held = new Map<Address, bigint>();
     let total = 0n;
     let holding = 0;
     for (const entry of listed.accounts) {
-      if (seen.has(entry.address)) throw new LoadError(`The node listed the token account ${short(entry.address)} twice.`);
-      seen.add(entry.address);
+      if (held.has(entry.address)) throw new LoadError(`The node listed the token account ${short(entry.address)} twice.`);
       let amount: bigint;
       try {
         amount = tokenAccountAmount(entry, mint, opts.owner);
       } catch (err) {
         throw new LoadError(`The node listed ${short(entry.address)} as one of this wallet's token accounts, but ${err instanceof Error ? err.message : String(err)}.`);
       }
+      held.set(entry.address, amount);
       total += amount;
       if (amount > 0n) holding++;
     }
@@ -112,7 +114,7 @@ export async function loadHolding(opts: HoldingOptions): Promise<Holding> {
     } catch (err) {
       if (!(err instanceof RpcFailure)) throw err;
     }
-    return { mint, total, accounts: holding, slot: listed.slot, time };
+    return { mint, total, accounts: holding, held, slot: listed.slot, time };
   } catch (err) {
     if (err instanceof LoadError) throw err;
     if (err instanceof RpcFailure) throw new LoadError(`The wallet's tokens could not be read: ${err.message}.`);
@@ -131,7 +133,7 @@ export type SaleFloor =
   /** The sale had not opened yet: tokens held from the opening to the close count in full. */
   | { kind: "before"; number: number; opensAt: bigint; closesAt: bigint; floor: bigint }
   /** The sale is on: `left` of its `length` seconds were still to come. */
-  | { kind: "on"; number: number; closesAt: bigint; left: bigint; length: bigint; floor: bigint };
+  | { kind: "on"; number: number; opensAt: bigint; closesAt: bigint; left: bigint; length: bigint; floor: bigint };
 
 /**
  * The least average balance over the sale that is on that `balance`, held at `time` and kept until the close, gives the wallet:
@@ -149,7 +151,7 @@ export function saleFloor(rows: readonly BreakRow[], balance: bigint, time: numb
   // Here opensAt <= now < closesAt, so the sale has a length.
   const left = closesAt - now;
   const length = closesAt - opensAt;
-  return { kind: "on", number: row.number, closesAt, left, length, floor: (balance * left) / length };
+  return { kind: "on", number: row.number, opensAt, closesAt, left, length, floor: (balance * left) / length };
 }
 
 /** Whether an average balance puts a wallet on a list with this minimum (the record's rule: at least the minimum, and not zero). */
