@@ -5,6 +5,7 @@ import { loadBreak } from "../../../lib/chain/load";
 import { PUBLISHED_SETUP, SETUP } from "../../../lib/site";
 import { BuyPanel } from "./buy-panel";
 import { BreakDetails, type Loaded } from "./details";
+import { LedgerCard } from "./ledger-card";
 
 /** `refreshError` is why the last read failed, while the break read before is still on show. */
 type State = { state: "loading" } | { state: "error"; message: string } | { state: "loaded"; loaded: Loaded; readAt: number; refreshError?: string };
@@ -73,6 +74,7 @@ export function BreakView({ number }: { number: number }) {
                 refresh={() => void load()}
                 publishedUrl={PUBLISHED_SETUP.kind === "on" ? PUBLISHED_SETUP.config.baseUrl : undefined}
                 buy={<BuyPanel b={view.loaded.break} number={number} now={now} config={SETUP.config} reload={reload} />}
+                ledger={<LedgerCard loaded={view.loaded} config={SETUP.config} publishedUrl={PUBLISHED_SETUP.kind === "on" ? PUBLISHED_SETUP.config.baseUrl : undefined} />}
               />
               {view.refreshError && <p className="problem">Could not read the break again: {view.refreshError}</p>}
             </>

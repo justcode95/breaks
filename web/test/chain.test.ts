@@ -54,7 +54,7 @@ describe("the accounts, as the Rust program writes them", () => {
     expect(b.id.toString()).toBe(o.id);
     expect(b.status).toBe(o.status);
     expect([b.paidSpots, b.freeSpots, b.spotsSold, b.eligibilityCount, b.poolSize, b.freeWinnerCount]).toEqual([o.paidSpots, o.freeSpots, o.spotsSold, o.eligibilityCount, o.poolSize, o.freeWinnerCount]);
-    expect([b.spotPrice, b.opensAt, b.closesAt, b.eligibilityTotalWeight, b.seededAt].map(String)).toEqual([o.spotPrice, o.opensAt, o.closesAt, o.eligibilityTotalWeight, o.seededAt]);
+    expect([b.spotPrice, b.opensAt, b.closesAt, b.eligibilityTotalWeight, b.packBudget, b.seededAt].map(String)).toEqual([o.spotPrice, o.opensAt, o.closesAt, o.eligibilityTotalWeight, o.packBudget, o.seededAt]);
     expect([toHex(b.eligibilityRoot), toHex(b.poolHash), toHex(b.seed)]).toEqual([o.eligibilityRoot, o.poolHash, o.seed]);
     expect(b.tiers.map((t) => ({ machine: toHex(t.machine), maxPrice: t.maxPrice.toString() }))).toEqual(o.tiers);
     expect(b.packs).toEqual(o.packs);
@@ -74,11 +74,19 @@ describe("the accounts, as the Rust program writes them", () => {
     expect({ breakId: s.breakId.toString(), index: s.index, owner: s.owner, paid: s.paid.toString(), refunded: s.refunded }).toEqual({ breakId: o.breakId, index: o.index, owner: o.owner, paid: o.paid, refunded: o.refunded });
   });
 
-  it("reads the admin, the USDC mint, the id the next break will get and the pause from the config", () => {
+  it("reads the admin, the buyer wallet, the USDC mint, the id the next break will get and the pause from the config", () => {
     const v = named("breaks.account.BreaksConfig");
     const c = decodeConfig(fromHex(v.inputs.data as string));
     const o = v.outputs as Record<string, unknown>;
-    expect({ admin: c.admin, usdcMint: c.usdcMint, nextBreakId: c.nextBreakId.toString(), paused: c.paused }).toEqual({ admin: o.admin, usdcMint: o.usdcMint, nextBreakId: o.nextBreakId, paused: o.paused });
+    expect({ admin: c.admin, buyer: c.buyer, usdcMint: c.usdcMint, nextBreakId: c.nextBreakId.toString(), paused: c.paused }).toEqual({
+      admin: o.admin,
+      buyer: o.buyer,
+      usdcMint: o.usdcMint,
+      nextBreakId: o.nextBreakId,
+      paused: o.paused,
+    });
+    // The buyer is the third address, after the admin and the keeper: not the keeper's.
+    expect(c.buyer).not.toBe(o.keeper);
     // The sample is paused; flip the byte before the bump to see the other way round.
     const open = fromHex(v.inputs.data as string);
     open[open.length - 2] = 0;
