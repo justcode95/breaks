@@ -8,6 +8,7 @@ import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { checkSchema, verifyKeeperIdentity, verifyMint } from "../app.js";
 import { type Config, parseConfig } from "../config.js";
+import { exclusionProblem } from "../eligibility/exclusions.js";
 import type { TokenReader } from "../indexer/reader.js";
 import { readTransaction } from "../indexer/parse.js";
 import type { AccountReader } from "../pipeline/chain.js";
@@ -721,6 +722,25 @@ const DEFS: Def[] = [
       return missing.length === 0
         ? ok("the role in DATABASE_URL can insert and update every table the keeper writes")
         : fail(`the role in DATABASE_URL cannot write: ${missing.join(", ")}`, "grant it: GRANT INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO <role>");
+    },
+  },
+  {
+    section: "The database",
+    title: "the exclusion list can be published",
+    run: async (c) => {
+      const sql = await c.db.need();
+      const table = (await sql.query<{ n: string }>("select count(*)::text as n from information_schema.tables where table_schema = 'public' and table_name = 'exclusions'")).rows[0]?.n !== "0";
+      if (!table) throw new Skip("there is no exclusions table (the migration check says why)");
+      const { rows } = await sql.query<{ wallet: string; reason_code: string }>("select wallet, reason_code from exclusions where removed_at is null order by wallet");
+      // The planner stops at the same rows: every list's exclusion list is published, so each row must be one it can carry.
+      const bad = rows.map((r) => exclusionProblem(r.wallet, r.reason_code)).filter((p): p is string => p !== undefined);
+      if (bad.length > 0) {
+        return fail(
+          `${bad.length} of the ${rows.length} active exclusions cannot go out in the public exclusion list: ${bad.slice(0, 5).join("; ")}${bad.length > 5 ? `; and ${bad.length - 5} more` : ""}`,
+          'fix or remove those rows (a wallet address, and a code of 1 to 64 letters, digits, "_", "." or "-"): until then the keeper makes no eligibility list',
+        );
+      }
+      return ok(rows.length === 0 ? "no wallet is excluded" : `${rows.length} ${rows.length === 1 ? "wallet is" : "wallets are"} excluded, each with a code the public exclusion list can carry`);
     },
   },
 

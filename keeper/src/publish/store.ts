@@ -29,6 +29,11 @@ export interface PublishStore {
   inputsText(breakId: string): Promise<string | undefined>;
   /** The eligibility record the planner stored for the break (`listDocument`: every wallet, its TWAB, weight and reason), if it can be read. */
   recordText(breakId: string): Promise<string | undefined>;
+  /**
+   * The exclusion list the planner made the break's list with (`exclusionsDocument`): `none` for a list made before the planner
+   * kept one (migration 0010), `missing` when it points to a document this store cannot read.
+   */
+  exclusionsText(breakId: string): Promise<{ kind: "none" } | { kind: "missing" } | { kind: "text"; body: string }>;
   /** Every pack the buyer stored for the break, and every delivery with the spot it is for: what the ledger is made of. */
   ledger(breakId: string): Promise<{ packs: StoredPack[]; deliveries: StoredDelivery[] }>;
 }
@@ -82,6 +87,16 @@ export class SqlPublishStore implements PublishStore {
       [breakId],
     );
     return rows[0]?.body;
+  }
+
+  async exclusionsText(breakId: string): Promise<{ kind: "none" } | { kind: "missing" } | { kind: "text"; body: string }> {
+    const { rows } = await this.sql.query<{ uri: string | null; body: string | null }>(
+      "select e.exclusions_uri as uri, p.body from eligibility_lists e left join published_documents p on e.exclusions_uri = 'db:sha256:' || p.sha256 where e.break_id = $1::bigint",
+      [breakId],
+    );
+    const r = rows[0];
+    if (!r || r.uri === null) return { kind: "none" };
+    return r.body === null ? { kind: "missing" } : { kind: "text", body: r.body };
   }
 
   async ledger(breakId: string): Promise<{ packs: StoredPack[]; deliveries: StoredDelivery[] }> {

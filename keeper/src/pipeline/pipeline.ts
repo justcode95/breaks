@@ -208,6 +208,7 @@ export class BreakPipeline {
   private async commitEligibility(active: ActiveBreak, b: BreakAccount, report: PipelineReport): Promise<Step> {
     const plan = await this.deps.planner.plan(active.id, { start: Number(b.opensAt), end: Number(b.closesAt) });
     if (plan.kind === "wait") return wait(`eligibility: ${plan.reason}`);
+    if (plan.kind === "problem") return problem(`eligibility: ${plan.reason}`);
     const v = plan.values;
     if ((v.totalWeight === 0n) !== (v.entryCount === 0)) {
       return problem("the stored eligibility list has a total weight and an entry count that disagree about being empty");

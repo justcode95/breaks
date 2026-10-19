@@ -9,6 +9,8 @@
 //                                was computed from (the hash is a pointer here, not this file's own hash: see record.ts)
 //   ledger/<pool hash>.json      every pack's price, purchase and card, and every spot's wallet, card and delivery, once all
 //                                the cards are delivered (a pointer too: see ledger.ts)
+//   exclusions/<inputs hash>.json  every wallet the list's rules left out on purpose, with its code, whether or not it held the
+//                                token (a pointer, like the record: see eligibility/exclusions.ts)
 //
 // The bytes of a file are fixed by the data alone (compact JSON, a newline at the end, entries in the order the tree
 // sorts them), so publishing the same list twice writes the same file. docs/PUBLISHED.md describes the formats.
@@ -17,6 +19,7 @@ import { hashv, toHex, utf8 } from "../draw/bytes.js";
 import { sortedPool } from "../draw/pool.js";
 import type { Leaf } from "../draw/tree.js";
 import { addressFromBytes } from "../solana/pubkey.js";
+import { type ExclusionList, exclusionsDocument } from "../eligibility/exclusions.js";
 import type { Ledger } from "./ledger.js";
 import type { EligibilityRecord } from "./record.js";
 
@@ -84,6 +87,11 @@ export function recordFile(r: EligibilityRecord): PublishedFile {
         wallets: r.wallets.map((w) => ({ wallet: w.wallet, twab: w.twab.toString(), weight: w.weight.toString(), reason: w.reason })),
       }) + "\n",
   };
+}
+
+/** The exclusion list a break's eligibility list was made with, under the same inputs hash as its record. */
+export function exclusionsFile(list: ExclusionList): PublishedFile {
+  return { path: `exclusions/${list.inputsHash}.json`, body: exclusionsDocument(list.inputsHash, new Map(list.entries.map((e) => [e.wallet, e.code]))) };
 }
 
 /**

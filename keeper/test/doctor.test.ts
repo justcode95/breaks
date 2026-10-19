@@ -1,5 +1,6 @@
 import { chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { exclusionProblem } from "../src/eligibility/exclusions.js";
 import { describe, expect, it } from "vitest";
 import { amount, clockVerdict, keeperSolNeed } from "../src/doctor/checks.js";
 import { main, realPorts } from "../src/doctor/main.js";
@@ -63,6 +64,7 @@ const EVERY_CHECK = [
   "it answers", // the database's
   "every migration is applied",
   "the keeper's role can write",
+  "the exclusion list can be published",
   "the published lists have somewhere to go",
   "the X bot",
 ];
@@ -84,7 +86,7 @@ describe("a healthy setup", () => {
     expect(checks.map((c) => c.title)).toEqual(EVERY_CHECK);
     expect(checks.filter((c) => c.status !== "ok").map((c) => `${c.status}: ${c.title}`)).toEqual(["warn: real packs and cards"]);
     const report = summarize(checks);
-    expect(report).toMatchObject({ ok: 33, warned: 1, failed: 0, skipped: 0, ready: true });
+    expect(report).toMatchObject({ ok: 34, warned: 1, failed: 0, skipped: 0, ready: true });
     expect(w.node.sent).toEqual([]);
     expect(w.node.requests.map((r) => r.method).filter((m) => !READS.has(m))).toEqual([]);
   });
@@ -882,6 +884,28 @@ describe("the database", () => {
     expect(check.fix).toContain("db/migrations");
   });
 
+  it("checks that every active exclusion can go out in the public exclusion list, as the planner will", async () => {
+    const w = await healthyWorld({ ownDb: true });
+    expect(find(await w.run(), "the exclusion list can be published")).toMatchObject({ status: "ok", detail: "no wallet is excluded" });
+    await w.db.query("insert into exclusions (wallet, reason_code, note) values ($1, 'team', 'private'), ($2, 'removed code', 'gone')", [addr(41), addr(42)]);
+    await w.db.query("update exclusions set removed_at = now() where wallet = $1", [addr(42)]);
+    expect(find(await w.run(), "the exclusion list can be published")).toMatchObject({ status: "ok", detail: "1 wallet is excluded, each with a code the public exclusion list can carry" });
+    await w.db.query("insert into exclusions (wallet, reason_code) values ('not-a-wallet', 'team'), ($1, 'lp pool')", [addr(43)]);
+    const check = find(await w.run(), "the exclusion list can be published");
+    expect(check.status).toBe("fail");
+    expect(check.detail).toBe(`2 of the 3 active exclusions cannot go out in the public exclusion list: ${exclusionProblem(addr(43), "lp pool")}; ${exclusionProblem("not-a-wallet", "team")}`);
+    expect(check.fix).toContain("until then the keeper makes no eligibility list");
+    for (let i = 0; i < 5; i++) await w.db.query("insert into exclusions (wallet, reason_code) values ($1, '')", [addr(50 + i)]);
+    expect(find(await w.run(), "the exclusion list can be published").detail).toMatch(/^7 of the 8 active exclusions .*; and 2 more$/);
+    await w.db.query("delete from exclusions");
+    expect(find(await w.run(), "the exclusion list can be published").status).toBe("ok");
+  });
+
+  it("skips the exclusion check when there is no exclusions table", async () => {
+    const w = await healthyWorld({ skipDb: true });
+    expect(find(await w.run(), "the exclusion list can be published")).toMatchObject({ status: "skip", detail: "there is no exclusions table (the migration check says why)" });
+  });
+
   it("fails when the role it connects as cannot insert or update", async () => {
     const w = await healthyWorld({ ownDb: true });
     await w.db.exec("create role reader; grant select on all tables in schema public to reader; set role reader;");
@@ -1029,7 +1053,7 @@ describe("main", () => {
     const w = await healthyWorld();
     const ready = await main(["--"], { env: w.env, ports: w.ports });
     expect(ready.code).toBe(0);
-    expect(ready.out).toContain("READY. 33 checks passed, 1 warning, 0 failures, 0 skipped.");
+    expect(ready.out).toContain("READY. 34 checks passed, 1 warning, 0 failures, 0 skipped.");
     const broken = await healthyWorld({ env: { MIN_TWAB: undefined } });
     const failed = await main([], { env: broken.env, ports: broken.ports });
     expect(failed.code).toBe(1);

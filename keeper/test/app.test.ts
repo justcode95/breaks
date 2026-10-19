@@ -8,6 +8,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { type AppConfig, RANDOMNESS_REQUEST_RENT, buildJobs, checkSchema, sqlFromPool, verifyKeeperIdentity, verifyMint } from "../src/app.js";
 import { buildEligibility, serializeInputs } from "../src/eligibility/eligibility.js";
 import { listDocument } from "../src/eligibility/planner.js";
+import { exclusionsDocument } from "../src/eligibility/exclusions.js";
 import { hashv, toHex, utf8 } from "../src/draw/bytes.js";
 import { assignCards } from "../src/draw/pool.js";
 import { Tree } from "../src/draw/tree.js";
@@ -98,6 +99,7 @@ describe("checkSchema", () => {
       "indexed_accounts.until_sig is missing (migration 0006)",
       "fee_swaps.signature is missing (migration 0007)",
       "bot_posts.valid_until is missing (migration 0008)",
+      "eligibility_lists.exclusions_uri is missing (migration 0010)",
       "breaks.status does not accept 'drawn' (migration 0004)",
       "breaks.status does not accept 'refunded' (migration 0009)",
       "balance_events is not unique per owner (migration 0006)",
@@ -109,10 +111,20 @@ describe("checkSchema, the refunded status", () => {
   it("names a database that has every migration but 0009, since the refund job could not finish a break there", async () => {
     const dir = join(import.meta.dirname, "..", "..", "db", "migrations");
     const files = readdirSync(dir).sort();
-    expect(files.at(-1)).toMatch(/^0009_/);
+    const db = new PGlite();
+    for (const f of files.filter((f) => !f.startsWith("0009_"))) await db.exec(readFileSync(join(dir, f), "utf8"));
+    expect(await checkSchema(db)).toEqual(["breaks.status does not accept 'refunded' (migration 0009)"]);
+  });
+});
+
+describe("checkSchema, the exclusion snapshots", () => {
+  it("names a database that has every migration but 0010, since the planner could not store the exclusion list it used", async () => {
+    const dir = join(import.meta.dirname, "..", "..", "db", "migrations");
+    const files = readdirSync(dir).sort();
+    expect(files.at(-1)).toMatch(/^0010_/);
     const db = new PGlite();
     for (const f of files.slice(0, -1)) await db.exec(readFileSync(join(dir, f), "utf8"));
-    expect(await checkSchema(db)).toEqual(["breaks.status does not accept 'refunded' (migration 0009)"]);
+    expect(await checkSchema(db)).toEqual(["eligibility_lists.exclusions_uri is missing (migration 0010)"]);
   });
 });
 
@@ -736,7 +748,7 @@ describe("the jobs, with the lists published as files", () => {
     const jobs = await buildJobs(on({ intervalSecs: 45 }), { sql: shared, chain: w.chain, finalized: w.chain, reader: quietNode(), wallets: w.chain, keeper: KEEPER, log });
     expect(jobs.map((j) => j.name)).toEqual(["indexer", "scheduler", "publish", "pipeline", "pack-buyer", "delivery", "refunds"]);
     expect(jobs.find((j) => j.name === "publish")?.intervalMs).toBe(45_000);
-    expect(infos).toContain("publishing eligibility lists, the balance events and records behind them, card pools and the ledgers of delivered breaks as files");
+    expect(infos).toContain("publishing eligibility lists, the balance events, records and exclusion lists behind them, card pools and the ledgers of delivered breaks as files");
   });
 
   it("needs a chain reader at the finalized commitment: nothing is published against a commitment that could roll back", async () => {
@@ -764,9 +776,13 @@ describe("the jobs, with the lists published as files", () => {
     const record = listDocument(breakId, window, policy, { root: tree.root.hash, totalWeight: 7n, entryCount: 1, inputsHash: hashv(utf8(inputs)) }, buildEligibility({ events, window, policy, exclusions: new Map() }));
     const recordHash = toHex(hashv(utf8(record)));
     await shared.query("insert into published_documents (sha256, content_type, body) values ($1, 'application/json', $2) on conflict do nothing", [recordHash, record]);
+    // And the exclusion list it was made with: an exchange's wallet that held none of the token.
+    const exclusions = exclusionsDocument(inputsHash, new Map([[addr(33), "exchange"]]));
+    const exclusionsHash = toHex(hashv(utf8(exclusions)));
+    await shared.query("insert into published_documents (sha256, content_type, body) values ($1, 'application/json', $2) on conflict do nothing", [exclusionsHash, exclusions]);
     await shared.query(
-      "insert into eligibility_lists (break_id, root, total_weight, entry_count, inputs_hash, list_uri, inputs_uri) values ($1::bigint, decode($2, 'hex'), 7, 1, decode($3, 'hex'), $4, $5)",
-      [breakId, toHex(tree.root.hash), inputsHash, `db:sha256:${recordHash}`, `db:sha256:${inputsHash}`],
+      "insert into eligibility_lists (break_id, root, total_weight, entry_count, inputs_hash, list_uri, inputs_uri, exclusions_uri) values ($1::bigint, decode($2, 'hex'), 7, 1, decode($3, 'hex'), $4, $5, $6)",
+      [breakId, toHex(tree.root.hash), inputsHash, `db:sha256:${recordHash}`, `db:sha256:${inputsHash}`, `db:sha256:${exclusionsHash}`],
     );
     const account = encodeBreak(
       brk({ id: 31n, status: "EligibilityCommitted", opensAt: BigInt(window.start), closesAt: BigInt(window.end), eligibilityRoot: tree.root.hash, eligibilityTotalWeight: 7n, eligibilityCount: 1, eligibilityInputsHash: hashv(utf8(inputs)) }),
@@ -786,6 +802,9 @@ describe("the jobs, with the lists published as files", () => {
       // And the record of why the holder is on the list, under the same inputs hash.
       expect(await readdir(join(dir, "records"))).toEqual([`${inputsHash}.json`]);
       expect(JSON.parse(await readFile(join(dir, "records", `${inputsHash}.json`), "utf8")).wallets).toEqual([{ wallet: holder, twab: "7", weight: "7", reason: null }]);
+      // And the whole exclusion list, as it was stored.
+      expect(await readdir(join(dir, "exclusions"))).toEqual([`${inputsHash}.json`]);
+      expect(await readFile(join(dir, "exclusions", `${inputsHash}.json`), "utf8")).toBe(exclusions);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

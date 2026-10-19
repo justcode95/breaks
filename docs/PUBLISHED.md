@@ -8,7 +8,11 @@ A fourth file, the **record**, says why each wallet is in or out (its average ba
 minimum and the cap that were applied). The chain commits to no hash of its own for it, so it is checked differently: see
 "How to check a file".
 
-A fifth, the **ledger**, is published once every card of a break is delivered. It follows each pack from its purchase to its
+Next to the record goes the **exclusion list** the break's list was made with: every wallet left out on purpose, with its
+code, also the ones that held none of the token (the record names only those that did). It is filed under the same inputs
+hash and checked against the record.
+
+A sixth, the **ledger**, is published once every card of a break is delivered. It follows each pack from its purchase to its
 card, and each spot to the card the draw gave it and the transaction that sent it there. The chain commits no hash of it
 either; it is filed under the pool hash and checked against the chain and the draw.
 
@@ -35,6 +39,12 @@ A file is written only when the keeper's own data provably hashes to what the ch
   exclusions the record itself states: every wallet, its TWAB, its weight and its reason, in the same order. So the wallets it
   calls eligible rebuild the committed root. Like the balance events it is published from the committed list on, also when
   nobody was eligible;
+- the exclusion list: the planner stores the active rows of its `exclusions` table when it builds the list (each wallet and
+  its public code; the private note never), and it goes out only once the record checks out and names exactly its wallets as
+  excluded, with the same codes, and no other wallet of the record (see "How to check a file"). A list made before the
+  keeper kept them (migration 0010) has none. An exclusion that this file could not carry (a wallet that is not an address,
+  or a code that is not 1 to 64 letters, digits, `_`, `.` or `-`) stops the keeper from making the next list, as an error in
+  its log, until it is fixed;
 - the cards: the pool hash and the number of cards equal the ones committed by `commit_pool`, and the seed is final
   (`Settled` or `Drawn`), so the draw can be checked.
 - the ledger: the break is `Drawn` on chain and every card is delivered. The packs must be exactly the first `pool_size` of
@@ -51,6 +61,7 @@ eligibility/<root>.json        root = the 64 hex digits committed in `commit_eli
 inputs/<inputs hash>.txt       inputs hash = the 64 hex digits of `inputs_hash`, committed in `commit_eligibility`
 pool/<pool hash>.json          pool hash = the 64 hex digits committed in `commit_pool`
 records/<inputs hash>.json     the same inputs hash as the balance events it was computed from (a pointer, not its own hash)
+exclusions/<inputs hash>.json  the same inputs hash again: the exclusion list that record was made with (a pointer too)
 ledger/<pool hash>.json        the same pool hash as the cards (a pointer, not its own hash), once every card is delivered
 ```
 
@@ -67,7 +78,11 @@ Numbers that can exceed 2^53 (weights) are decimal strings.
 {"version":1,"kind":"pool","poolHash":"<64 hex>","cards":["<mint base58>", ...]}
 {"version":1,"kind":"ledger","poolHash":"<64 hex>","buyer":"<base58>","packs":[{"index":0,"price":"<decimal or null>","purchaseTx":"<signature>","card":"<mint base58>","proof":"<reference or null>"}, ...],"spots":[{"kind":"paid","index":0,"wallet":"<base58>","card":"<mint base58>","deliveryTx":"<signature or null>"}, ...]}
 {"version":1,"kind":"record","inputsHash":"<64 hex>","root":"<64 hex>","totalWeight":"<decimal>","entryCount":6,"window":{"start":<unix s>,"end":<unix s>},"policy":{"minTwab":"<decimal>","capPerWallet":"<decimal, only when there is a cap>"},"wallets":[{"wallet":"<base58>","twab":"<decimal>","weight":"<decimal>","reason":null}, ...]}
+{"version":1,"kind":"exclusions","inputsHash":"<64 hex>","entries":[{"wallet":"<base58>","code":"<code>"}, ...]}
 ```
+
+In an exclusion list, `entries` are sorted by the wallets' 32 bytes, no wallet twice, and a code is 1 to 64 letters, digits,
+`_`, `.` or `-`. An empty list has `"entries":[]`.
 
 In a record, `wallets` has every owner that appears in the balance events, sorted by the wallets' 32 bytes. `reason` is `null`
 for a wallet on the list, and otherwise one of `below_min_twab` (its TWAB is below the minimum, or zero), `off_curve` (the
@@ -127,6 +142,9 @@ and amounts are whole token base units. A change of owner is two lines, one for 
   least the minimum, and the wallets with `reason: null`, built into the tree, must give the committed root. What cannot be
   checked against the chain is the policy itself and why an `excluded:` wallet is excluded: those are the keeper's word,
   published here for anyone to read and question.
+- **Exclusion list.** Its `inputsHash` must be the file's name and the record's. Exclusion is the first rule the keeper
+  applies, so every wallet of the record must have `reason` `excluded:<code>` exactly when the list names it, with that code;
+  the other wallets of the list held none of the token and change nothing. Why a wallet is on it is the keeper's word.
 - **Cards.** `sha256("breaks:pool:v1" ‖ mint_0 ‖ mint_1 ‖ …)` over the sorted mints must equal the file's name and the
   `poolHash` on the break's account, and the number of cards `poolSize`.
 - **Ledger.** Its `poolHash` must be the file's name and the break account's `poolHash`, and its cards must be the pool. The
@@ -220,9 +238,10 @@ That line must follow from the record's rules and agree with the free-spot winne
 wallet's line is checked against the rules there; the verify page checks every wallet of one break. A record that passed is
 kept for the visit, so it is not fetched again; one that was missing or wrong is fetched again on the next read.
 
-`docs/published-example/` holds a small list, its balance events, its record, a pool and its ledger, made by the keeper's own
-code. The record has one wallet for each reason a wallet is out (an exchange that is excluded, a wallet below the minimum and a
-pool's vault off the curve). The ledger is a draw that really happened: break id 7, seed `5a` × 32, the paid spots bought by
+`docs/published-example/` holds a small list, its balance events, its record, its exclusion list, a pool and its ledger, made
+by the keeper's own code. The record has one wallet for each reason a wallet is out (an exchange that is excluded, a wallet
+below the minimum and a pool's vault off the curve). The exclusion list names that exchange and a team wallet that held none of
+the token, which no record shows. The ledger is a draw that really happened: break id 7, seed `5a` × 32, the paid spots bought by
 the keeper test's holders 11, 12 and 13, and two free winners drawn from the list. It has one of each `null`: a price, a proof
 and a delivery transaction. The keeper's tests pin them, and the
 website's tests read and check them, so the two sides cannot drift apart on the format. Regenerate them with
@@ -233,7 +252,7 @@ website's tests read and check them, so the two sides cannot drift apart on the 
 - A ledger before every card is delivered. A break whose cards stop part way has a published pool but no ledger; what each
   card's delivery looks like on chain depends on the card standard (Phase 0), so the site links the transactions and does not
   read them.
-- The whole exclusion list (`exclusions`). Each break's record names every excluded wallet that held the token, with its
-  code; a wallet on the list of exclusions that never held the token appears in no record.
+- The exclusion list of a list made before migration 0010: the keeper did not keep it then. Its record still names every
+  excluded wallet that held the token. The private notes of the `exclusions` table are never published.
 - A smaller form of the inputs file. It lists every balance event since the token's launch, which is fine for thousands of
   holders and will not be for a very busy token.
