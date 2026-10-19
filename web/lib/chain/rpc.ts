@@ -62,15 +62,31 @@ export async function getAccounts(opts: RpcOptions & { addresses: readonly Addre
 }
 
 async function batch(opts: RpcOptions & { commitment?: "finalized" | "confirmed" }, addresses: readonly Address[]): Promise<(RpcAccount | null)[]> {
-  const result = await rpc<{ value?: ({ data?: unknown; owner?: unknown } | null)[] }>(opts, "getMultipleAccounts", [addresses, { encoding: "base64", commitment: opts.commitment ?? "finalized" }]);
-  const value = result?.value;
-  if (!Array.isArray(value) || value.length !== addresses.length) throw new RpcFailure("the node's answer did not have one entry per account");
-  return value.map((v) => {
+  const result = await rpc<{ value?: unknown } | null>(opts, "getMultipleAccounts", [addresses, { encoding: "base64", commitment: opts.commitment ?? "finalized" }]);
+  return entries(result?.value, addresses.length);
+}
+
+/** The accounts of a `getMultipleAccounts` answer, one per address asked for. */
+function entries(value: unknown, count: number): (RpcAccount | null)[] {
+  if (!Array.isArray(value) || value.length !== count) throw new RpcFailure("the node's answer did not have one entry per account");
+  return value.map((v: { data?: unknown; owner?: unknown } | null) => {
     if (v === null) return null;
-    const data = Array.isArray(v.data) ? v.data[0] : undefined;
-    if (typeof data !== "string" || typeof v.owner !== "string") throw new RpcFailure("the node's answer for an account was malformed");
+    const data = Array.isArray(v?.data) ? v.data[0] : undefined;
+    if (typeof data !== "string" || typeof v?.owner !== "string") throw new RpcFailure("the node's answer for an account was malformed");
     return { data: base64.decode(data), owner: v.owner };
   });
+}
+
+/**
+ * The accounts at `addresses` (at most 100, one request, so they come from the same moment) and the slot the node read them at,
+ * at `finalized`.
+ */
+export async function getAccountsAt(opts: RpcOptions & { addresses: readonly Address[] }): Promise<{ slot: number; accounts: (RpcAccount | null)[] }> {
+  if (opts.addresses.length > BATCH) throw new RangeError(`at most ${BATCH} accounts in one request`);
+  const result = await rpc<{ context?: { slot?: unknown }; value?: unknown } | null>(opts, "getMultipleAccounts", [opts.addresses, { encoding: "base64", commitment: "finalized" }]);
+  const slot = result?.context?.slot;
+  if (typeof slot !== "number" || !Number.isSafeInteger(slot) || slot < 0) throw new RpcFailure("the node's answer did not say which slot it is from");
+  return { slot, accounts: entries(result?.value, opts.addresses.length) };
 }
 
 export interface ProgramAccount {

@@ -940,6 +940,11 @@ th .hint {
   min-width: 32rem;
 }
 
+/* the treasury's transactions: what each one did keeps a readable line next to the columns that do not wrap */
+.table-wrap table.history td.words {
+  min-width: 16rem;
+}
+
 .scroll a {
   font-weight: 800;
 }

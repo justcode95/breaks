@@ -1,23 +1,28 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { type Treasury, loadTreasury } from "../../lib/chain/treasury";
 import { BREAK_SHAPE, TREASURY_SETUP } from "../../lib/site";
 import { TreasuryDetails } from "./details";
+import { TreasuryHistory } from "./treasury-history";
 
-type State = { state: "loading" } | { state: "error"; message: string } | { state: "loaded"; treasury: Treasury; readAt: number };
+/** `reads`: how many times the treasury was read, so the history is read again with it. */
+type State = { state: "loading" } | { state: "error"; message: string } | { state: "loaded"; treasury: Treasury; readAt: number; reads: number };
 
 const nowSecs = () => Math.floor(Date.now() / 1000);
 
 export function TreasuryView() {
   const [view, setView] = useState<State>({ state: "loading" });
   const [now, setNow] = useState(nowSecs);
+  const reads = useRef(0);
 
   const load = useCallback(async () => {
     if (TREASURY_SETUP.kind !== "on") return;
     setView({ state: "loading" });
     try {
-      setView({ state: "loaded", treasury: await loadTreasury(TREASURY_SETUP.config), readAt: nowSecs() });
+      const treasury = await loadTreasury(TREASURY_SETUP.config);
+      reads.current++;
+      setView({ state: "loaded", treasury, readAt: nowSecs(), reads: reads.current });
     } catch (err) {
       setView({ state: "error", message: err instanceof Error ? err.message : String(err) });
     }
@@ -55,6 +60,7 @@ export function TreasuryView() {
           readAt={view.readAt}
           refresh={() => void load()}
           {...(BREAK_SHAPE.kind === "on" ? { shape: BREAK_SHAPE.config } : {})}
+          history={<TreasuryHistory key={view.reads} />}
         />
       )}
     </div>
