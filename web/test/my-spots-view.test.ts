@@ -40,7 +40,7 @@ describe("the page of a wallet's spots", () => {
     const html = render(mine());
     expect(text(html)).toContain("This wallet has no paid spots in any break.");
     expect(html).not.toContain("<table");
-    expect(text(html)).toContain("Cards and their delivery are not on chain, so they are not shown here.");
+    expect(text(html)).toContain("Cards and their delivery are not on chain: the cards this wallet got are shown below, from each break's published ledger.");
   });
 
   it("counts the spots and the breaks they are in, in the singular and the plural", () => {

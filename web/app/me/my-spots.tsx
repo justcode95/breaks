@@ -10,6 +10,7 @@ import { runRefund } from "../../lib/chain/run-refund";
 import { SETUP } from "../../lib/site";
 import { useWallet } from "../../lib/wallet/provider";
 import { shortAddress } from "../../lib/wallet/wallets";
+import { MyCards } from "./my-cards";
 import { MyHolding } from "./my-holding";
 import { MyStanding } from "./my-standing";
 import { RefundStatusView } from "./refund-status";
@@ -29,6 +30,9 @@ export function MySpots() {
   // The newest breaks, from the last read that worked. They are the same for every wallet, so the free-spot lists stay on the
   // page (and are not read again) while the spots are read again or another wallet's are read.
   const [breaks, setBreaks] = useState<BreakRow[] | undefined>(undefined);
+  // The last spots read, with the wallet they are for: the cards are worked out from them and stay on the page while the spots
+  // are read again.
+  const [kept, setKept] = useState<{ owner: string; mine: Mine } | undefined>(undefined);
   // The minimum average balance the newest checked list asked for, from the free-spot lists below; the same for every wallet.
   const [minimum, setMinimum] = useState<{ number: number; minTwab: bigint } | undefined>(undefined);
 
@@ -51,6 +55,7 @@ export function MySpots() {
     if (mine === newest.current) {
       setView({ state: "loaded", mine: m, readAt: nowSecs() });
       setBreaks(m.recent);
+      setKept({ owner: address, mine: m });
     }
     return m;
   }, [address]);
@@ -112,6 +117,7 @@ export function MySpots() {
           <p className="hint">The spots are read from the chain (finalized). Nothing in them comes from a server of ours.</p>
         </>
       )}
+      {kept && kept.owner === address && view.state !== "error" && <MyCards owner={address} mine={kept.mine} />}
       {breaks && view.state !== "error" && (
         <>
           <MyHolding owner={address} rows={breaks} minimum={minimum} />

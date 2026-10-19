@@ -107,7 +107,7 @@ export function MySpotsView({ mine, now, onRefund, busy = false }: { mine: Mine;
           Free spots are looked for in the newest {mine.searched} of {mine.totalBreaks} breaks.
         </p>
       )}
-      <p className="hint">Cards and their delivery are not on chain, so they are not shown here.</p>
+      <p className="hint">Cards and their delivery are not on chain: the cards this wallet got are shown below, from each break's published ledger.</p>
     </>
   );
 }
