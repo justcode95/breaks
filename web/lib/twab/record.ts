@@ -38,7 +38,7 @@ const MAX_PROBLEMS = 20;
 const HEX64 = /^[0-9a-f]{64}$/;
 const DECIMAL = /^(0|[1-9]\d*)$/;
 /** An exclusion code is shown to people: a short name of letters, digits and a few signs, never anything a page could act on. */
-const CODE = /^[A-Za-z0-9_.-]{1,64}$/;
+export const CODE = /^[A-Za-z0-9_.-]{1,64}$/;
 
 const ZERO_ROOT = "0".repeat(64);
 

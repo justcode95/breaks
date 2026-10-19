@@ -35,6 +35,7 @@ function inputOf(c: Case): VerifyInput {
     seed: c.seed,
     holders: c.leaves.map((l) => `${b58(l.wallet)} ${l.weight}`).join("\n"),
     record: "",
+    exclusions: "",
     inputs: "",
     freeSpots: String(winners),
     paidOwners: Array.from({ length: paid }, (_, i) => base58.encode(new Uint8Array(32).fill(200 + i))).join("\n"),

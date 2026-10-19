@@ -51,7 +51,7 @@ export default function HowItWorksPage() {
           <p>
             Anyone can buy a paid spot with USDC. Free spots go to holders of the coin. Holding is measured as the average balance over the whole sale, so buying a
             moment before the end counts for little, and your chance grows with that average (the rule for very large holders is still being decided). Liquidity
-            pools, exchanges and team wallets are left out, and that list is meant to be public.
+            pools, exchanges and team wallets are left out, and the list of them is published with each break's lists.
           </p>
           <Link href="/me">See your spots</Link>
         </li>

@@ -52,9 +52,14 @@ describe("the How it works page", () => {
     expect(body).toContain("every paid spot can be refunded to the wallet that bought it");
   });
 
+  it("says the list of wallets left out is published with each break's lists", () => {
+    expect(body).toContain("Liquidity pools, exchanges and team wallets are left out, and the list of them is published with each break's lists.");
+    expect(body).not.toContain("meant to be public");
+  });
+
   it("says what is still undecided or not built, instead of describing it as done", () => {
     expect(body).toContain("the rule for very large holders is still being decided");
-    expect(body).toContain("that list is meant to be public");
+
     expect(body).toContain("some of what is described below is designed but not built");
   });
 
