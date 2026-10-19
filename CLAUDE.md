@@ -253,6 +253,35 @@ Also by `chain.test.ts` (`buyer`, `packBudget`), `how.test.ts`, and by 71 delibe
 - no `Referer` or cookie on any request;
 - the only console error is the browser's line for the deliberately missing file. **Never run against a real host, node or wallet**; on devnet the transactions come from the mock providers until Phase 0.
 
+**Randomness on the break page** (`web/lib/chain/randomness.ts`, `web/app/breaks/[number]/{randomness-view,randomness-card}.tsx`): a "Randomness" card on the page of a break whose randomness was asked for (`RandomnessRequested`, `Settled` or `Drawn`), placed after "Committed before the draw". It reads the program's config at `finalized` for the randomness program (`decodeConfig` now reads `randomnessProgram`, and `decodeBreak` reads `randomnessAttempt` and `randomnessRequestId`, all pinned to the Rust samples). Then it reads ORAO's request account and checks, with the page's own code:
+- `requestId`: the request id on the break is `sha256("breaks:randomness:v1" ‖ break ‖ attempt ‖ eligibility root ‖ pool hash)`, so it could not be known before both were committed (pinned to the Rust `breaks.request_id` vector);
+- the attempt is 1 to 5;
+- `requestAddress`: the request account is at the VRF program's PDA of `["orao-vrf-randomness-request", id]` (pinned to the address the real `orao-solana-vrf` crate gives in `keeper/test/fixtures/orao.json`) and owned by the randomness program;
+- `parseRequest` reads the account the way the program does (pinned to the real crate's pending and fulfilled bytes, which the web test reads out of the Rust tests in `programs/breaks/src/randomness.rs`): the account name, a seed equal to the request id, state 0 or 1, a full answer that is not blank;
+- for a `Settled` or `Drawn` break, ORAO has answered and the draw seed is `sha256("breaks:seed:v1" ‖ answer)` (the `breaks.draw_seed` vector); before that, the break has no seed.
+
+The card shows the request id (with what it commits to), the attempt (and why there was more than one), the randomness program, the request account, ORAO's 64-byte answer and the draw seed. It says which stage it is at: answered and the seed worked out from it; answered and waiting for someone to settle it (anyone can); or still waiting for ORAO. Anything that does not add up is listed as an alert. It says plainly what stays ORAO's word: a fulfilled request keeps only the combined 64 bytes, not each oracle's signature, so the page cannot check them against ORAO's keys. The request is looked up under the randomness program the config names **now**: if the admin switched it with `set_randomness` after the request, the card says there is no request account there. It reads again only when the break's stage, attempt, request id or seed changes. Tested by `web/test/randomness.test.ts`:
+- the Rust vectors and the real crate's address and bytes;
+- every refusal of `parseRequest`, at the exact lengths;
+- every problem `checkRandomness` finds, including that each commitment changes the id and the attempt's edges 1 and 5;
+- `loadRandomness` against a pretend node: nothing read before the request or for a cancelled break, the config and then the request at `finalized`, another randomness program, every way the config or the request can be missing or wrong;
+- every state of the card and that a problem is never markup.
+
+Also by `chain.test.ts` (the new fields), and by 44 deliberate breaks of the new code. 40 were caught at once, three gaps were closed by new tests, and one is the same code (with two states, "not pending" is "fulfilled"). The gaps:
+- the request address worked out from the break's own id instead of the commitments;
+- the seed checked only for `Drawn`, not `Settled`;
+- the loader skipping a request that is still waiting.
+
+`randomness-card.tsx` has **no unit test**. The browser check covers it, against a fake node:
+- a drawn break whose seed is ORAO's answer, with the card placed after "Committed before the draw";
+- a break waiting for ORAO on its second attempt, which says why there was a second;
+- a settled break whose seed is not ORAO's answer, shown as an alert with both seeds;
+- no card before the request or for a cancelled break;
+- Refresh not asking the node for the card again;
+- a phone with no sideways scroll, and no console errors.
+
+**Never run against the real ORAO or a real node.**
+
 **Not built:** the rest of the dashboard (the wallet's token balance and its average balance during a sale that is still on, its cards, linking an X handle).
 
 ### 5. X bot (`keeper/src/bot/`, built: see the Keeper section)
@@ -309,7 +338,7 @@ On-chain tests share helpers in `testkit/` (deploy with an upgrade authority, se
 2. **Treasury** (initialize, deposit_fees, set_split; merged). No admin-transfer instruction yet: decide whether to add a two-step handover.
 3. **Breaks program** — create/buy/close/commit/fund/cancel/refund, randomness (ORAO) and the free-spot draw, with the treasury lock/pay-out (merged and in review).
 4. **Keeper** — TWAB, eligibility, the draw logic and the instruction encoders / account decoders (built, tested against the Rust vectors); the pack buyer, delivery and the on-chain pipeline (mock providers, a modelled chain); the real RPC client (offline-tested only), the jobs wiring (`indexer`, `scheduler`, `fee-sweep`, `pipeline`, `pack-buyer`, `delivery`, `refunds`), the pre-funding steps (close, eligibility, fund), the balance indexer, the break scheduler and the fee sweep without a swapper, the devnet setup tool (offline-tested only); next: a first devnet run, the real pack provider and card transfer (after Phase 0).
-5. **Website** — live break, dashboard, transparency + verify tool (started: the verify tool, from pasted inputs or a break loaded from the chain, with the weights and every wallet's reason checked against the published balance events and record; the read-only page of one break, `/breaks/<number>`, and the list of breaks with the latest one on the home page; the treasury page; a wallet connection; buying a paid spot from the break page; a "My spots" page with refunds and where the wallet stands on the free-spot lists; the per-spot ledger on a break's page; the "How it works" page; the reserve bar).
+5. **Website** — live break, dashboard, transparency + verify tool (started: the verify tool, from pasted inputs or a break loaded from the chain, with the weights and every wallet's reason checked against the published balance events and record; the read-only page of one break, `/breaks/<number>`, and the list of breaks with the latest one on the home page; the treasury page; a wallet connection; buying a paid spot from the break page; a "My spots" page with refunds and where the wallet stands on the free-spot lists; the per-spot ledger and the randomness request on a break's page; the "How it works" page; the reserve bar).
 6. **X bot** (built and tested offline against a pretend poster and a signature check; never run against X).
 7. **Hardening** — admin panel, monitoring/alerts, external audit, then mainnet with small breaks.
 

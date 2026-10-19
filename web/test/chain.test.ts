@@ -56,6 +56,8 @@ describe("the accounts, as the Rust program writes them", () => {
     expect([b.paidSpots, b.freeSpots, b.spotsSold, b.eligibilityCount, b.poolSize, b.freeWinnerCount]).toEqual([o.paidSpots, o.freeSpots, o.spotsSold, o.eligibilityCount, o.poolSize, o.freeWinnerCount]);
     expect([b.spotPrice, b.opensAt, b.closesAt, b.eligibilityTotalWeight, b.packBudget, b.seededAt].map(String)).toEqual([o.spotPrice, o.opensAt, o.closesAt, o.eligibilityTotalWeight, o.packBudget, o.seededAt]);
     expect([toHex(b.eligibilityRoot), toHex(b.poolHash), toHex(b.seed)]).toEqual([o.eligibilityRoot, o.poolHash, o.seed]);
+    // The randomness request: the attempt and the seed given to ORAO, the fields between the pool hash and the draw seed.
+    expect([b.randomnessAttempt, toHex(b.randomnessRequestId)]).toEqual([o.randomnessAttempt, o.randomnessRequestId]);
     expect(b.tiers.map((t) => ({ machine: toHex(t.machine), maxPrice: t.maxPrice.toString() }))).toEqual(o.tiers);
     expect(b.packs).toEqual(o.packs);
     // The hash of the published balance events: not the root, the pool hash or the seed, which are the fields around it.
@@ -78,10 +80,11 @@ describe("the accounts, as the Rust program writes them", () => {
     const v = named("breaks.account.BreaksConfig");
     const c = decodeConfig(fromHex(v.inputs.data as string));
     const o = v.outputs as Record<string, unknown>;
-    expect({ admin: c.admin, buyer: c.buyer, usdcMint: c.usdcMint, nextBreakId: c.nextBreakId.toString(), paused: c.paused }).toEqual({
+    expect({ admin: c.admin, buyer: c.buyer, usdcMint: c.usdcMint, randomnessProgram: c.randomnessProgram, nextBreakId: c.nextBreakId.toString(), paused: c.paused }).toEqual({
       admin: o.admin,
       buyer: o.buyer,
       usdcMint: o.usdcMint,
+      randomnessProgram: o.randomnessProgram,
       nextBreakId: o.nextBreakId,
       paused: o.paused,
     });

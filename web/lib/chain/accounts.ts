@@ -86,6 +86,10 @@ export interface BreakAccount {
   /** What the program paid the buyer wallet for the packs (the caps of the first `poolSize` of the list); 0 until funded. */
   packBudget: bigint;
   poolHash: Uint8Array;
+  /** How many times randomness was asked for (a request ORAO never answers can be repeated); 0 before the first. */
+  randomnessAttempt: number;
+  /** The seed given to ORAO for the latest request: it commits to the break, the attempt, the root and the pool hash. */
+  randomnessRequestId: Uint8Array;
   /** All zeros until the randomness has been settled. */
   seed: Uint8Array;
   seededAt: bigint;
@@ -120,8 +124,8 @@ export function decodeBreak(data: Uint8Array): BreakAccount {
   const poolSize = r.u16();
   const packBudget = r.u64();
   const poolHash = r.fixed(32);
-  r.u8(); // randomness attempt
-  r.fixed(32); // randomness request id
+  const randomnessAttempt = r.u8();
+  const randomnessRequestId = r.fixed(32);
   r.i64(); // randomness requested at
   const seed = r.fixed(32);
   const seededAt = r.i64();
@@ -146,6 +150,8 @@ export function decodeBreak(data: Uint8Array): BreakAccount {
     poolSize,
     packBudget,
     poolHash,
+    randomnessAttempt,
+    randomnessRequestId,
     seed,
     seededAt,
     freeWinnerCount,
@@ -178,6 +184,8 @@ export interface ConfigAccount {
   buyer: Address;
   /** The USDC mint the paid spots are bought with. */
   usdcMint: Address;
+  /** The VRF program randomness is asked of (ORAO's, in production). */
+  randomnessProgram: Address;
   /** The id the next break will get; the breaks that exist are `0 .. nextBreakId - 1`. */
   nextBreakId: bigint;
   /** While paused, no break is created and no spot is sold (refunds and cancelling still work). */
@@ -190,7 +198,7 @@ export function decodeConfig(data: Uint8Array): ConfigAccount {
   r.fixed(32); // keeper
   const buyer = r.address();
   const usdcMint = r.address();
-  r.fixed(32); // randomness program
+  const randomnessProgram = r.address();
   r.u64(); // randomness timeout
   const nextBreakId = r.u64();
   r.u64(); // minimum window
@@ -198,5 +206,5 @@ export function decodeConfig(data: Uint8Array): ConfigAccount {
   r.u16(); // most paid spots
   r.u16(); // most free spots
   const paused = r.bool();
-  return { admin, buyer, usdcMint, nextBreakId, paused };
+  return { admin, buyer, usdcMint, randomnessProgram, nextBreakId, paused };
 }
