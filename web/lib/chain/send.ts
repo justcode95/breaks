@@ -76,7 +76,7 @@ const WORDS: Record<Flow, FlowWords> = {
   },
   refund: {
     nothing: "refunded",
-    feeFor: "the network fee",
+    feeFor: "the network fee (and the rent of the USDC account, when the refund opens one)",
     messages: {
       WrongStatus: "This break was not cancelled, so its spots are not refunded.",
       AlreadyRefunded: "This spot was already refunded.",

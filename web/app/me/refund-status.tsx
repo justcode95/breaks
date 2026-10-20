@@ -43,6 +43,7 @@ export function RefundStatusView({ state, onDismiss }: { state: RefundState; onD
               <p className="buy-result good" role="status">
                 <strong>Refunded.</strong> {money(state.result.amount)} is back in the USDC account of {shortAddress(state.address)} for {which}.
               </p>
+              {state.result.opened && <p className="hint">The wallet had no USDC account, so this refund opened one first. The SOL paid for its rent stays in that account, which is the wallet's.</p>}
               <p className="hint">{state.seen ? "The list below now shows it as refunded." : "The chain is still finalizing it; the list below updates in a few seconds."}</p>
               <Explorer signature={state.result.signature} />
             </>

@@ -3,8 +3,9 @@ import { createAssociatedTokenAccountIdempotent } from "../src/solana/associated
 import { ASSOCIATED_TOKEN_PROGRAM, associatedTokenAddress } from "../src/solana/pubkey.js";
 import { addr } from "./support/chain.js";
 
-// The layout of the associated token program's `CreateIdempotent`, written out by hand (there is no library of it in this
-// repository to compare with): the program ATokenGPv..., instruction 1, and these six accounts in this order.
+// The layout of the associated token program's `CreateIdempotent`: the program ATokenGPv..., instruction 1, and these six accounts
+// in this order. Also checked against the instruction the program's own interface crate builds (the vector
+// `spl.associated_token.create_idempotent` in programs/treasury/instruction-vectors.json, in instructions.test.ts).
 describe("createAssociatedTokenAccountIdempotent", () => {
   const payer = addr(1);
   const owner = addr(2);

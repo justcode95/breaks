@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { MySpotsView } from "../app/me/rows";
+import { MySpotsView, refundCostText } from "../app/me/rows";
 import { decodeBreak } from "../lib/chain/accounts";
 import type { Mine, MyFreeWin, MySpot } from "../lib/chain/mine";
 import { type BreakFields, breakFieldsFromVector, encodeBreak } from "./support/accounts";
@@ -131,6 +131,25 @@ describe("the page of a wallet's spots", () => {
     it("disables the buttons while a refund runs, since one runs at a time", () => {
       const html = renderToStaticMarkup(withRefund(mine({ spots: [spot(3, 0, { status: "Cancelled" })] }), { busy: true }));
       expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Refund \$20<\/button>/);
+    });
+
+    it("says before the button is pressed what a refund costs beyond the network fee", () => {
+      const refundable = mine({ spots: [spot(3, 0, { status: "Cancelled" })] });
+      const html = (refundTerms?: Parameters<typeof refundCostText>[0]) =>
+        text(renderToStaticMarkup(createElement(MySpotsView, { mine: refundable, now: NOW, onRefund: () => {}, ...(refundTerms ? { refundTerms } : {}) })));
+      const opens = "This wallet has no USDC account, so a refund opens one in the same transaction: besides the network fee, about 0.00203928 SOL goes into the new account as its rent, and stays there.";
+      expect(html({ opens: true, rent: 2_039_280n })).toContain(opens);
+      const unknown = "If the wallet has no USDC account, a refund opens one in the same transaction, which takes a little SOL for its rent.";
+      expect(html("unknown")).toContain(unknown);
+      // Not known until it is read.
+      expect(html()).toContain(unknown);
+      const has = html({ opens: false });
+      expect(has).not.toContain("opens one");
+      expect(has).not.toContain("rent");
+      expect(refundCostText({ opens: false })).toBeUndefined();
+      // Nothing about the cost without a refund to send, or without a way to send one.
+      expect(text(renderToStaticMarkup(createElement(MySpotsView, { mine: mine({ spots: [spot(3, 0, { status: "Cancelled", refunded: true })] }), now: NOW, onRefund: () => {}, refundTerms: { opens: true, rent: 1n } })))).not.toContain("rent");
+      expect(text(renderToStaticMarkup(createElement(MySpotsView, { mine: refundable, now: NOW, refundTerms: { opens: true, rent: 1n } })))).not.toContain("rent");
     });
 
     it("says to use the button to send the refund, instead of that the site cannot", () => {

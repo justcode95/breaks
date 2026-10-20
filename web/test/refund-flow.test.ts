@@ -8,7 +8,7 @@ import { fill } from "./support/wallet";
 
 const A = fill(1);
 const B = fill(2);
-const refunded = (signature = "sig-1", amount = 20_000_000n): RefundResult => ({ kind: "refunded", signature, amount });
+const refunded = (signature = "sig-1", amount = 20_000_000n): RefundResult => ({ kind: "refunded", signature, amount, opened: false });
 const start = (over: Partial<{ address: string; breakNumber: number; index: number }> = {}): RefundAction => ({ type: "start", address: A, breakNumber: 3, index: 0, ...over });
 const run = (actions: RefundAction[], from: RefundState = idleRefund) => actions.reduce(refundReducer, from);
 

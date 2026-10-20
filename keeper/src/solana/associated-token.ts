@@ -1,6 +1,7 @@
 // The associated token program's `CreateIdempotent`: makes a wallet's usual token account for a mint, and does nothing if it
 // already exists. Anyone can pay for it. Layout from the program's interface (instruction 1; payer, account, owner, mint, system
-// program, token program); there is no library of it in this repository to compare with, so the tests pin it by hand.
+// program, token program), pinned to the instruction the interface crate itself builds (`spl.associated_token.create_idempotent` in
+// programs/treasury/instruction-vectors.json).
 
 import {
   type Instruction,

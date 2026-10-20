@@ -16,8 +16,8 @@ export interface NodeScript {
   accounts: Map<Address, Served>;
   genesis?: string;
   lamports?: number;
-  /** The rent of an account of 60 bytes and of 0 bytes. */
-  rent?: { spot: number; bare: number };
+  /** The rent of an account of 60 bytes (a spot), of 0 bytes and of 165 bytes (a token account). */
+  rent?: { spot?: number; bare?: number; tokenAccount?: number };
   blockhash?: string;
   lastValidBlockHeight?: number;
   /** What `getSignatureStatuses` answers, one entry per call; the last one repeats. `"fail"` makes that call fail. */
@@ -92,7 +92,7 @@ export function rpcNode(script: NodeScript) {
       case "getBalance":
         return reply({ context: { slot: 1 }, value: script.lamports ?? 5_000_000 });
       case "getMinimumBalanceForRentExemption":
-        return reply(params[0] === 0 ? (script.rent?.bare ?? 890_880) : (script.rent?.spot ?? 1_308_480));
+        return reply(params[0] === 0 ? (script.rent?.bare ?? 890_880) : params[0] === 165 ? (script.rent?.tokenAccount ?? 2_039_280) : (script.rent?.spot ?? 1_308_480));
       case "getLatestBlockhash":
         return reply({ context: { slot: 1 }, value: { blockhash: script.blockhash, lastValidBlockHeight: script.lastValidBlockHeight ?? 1000 } });
       case "getSignatureStatuses": {

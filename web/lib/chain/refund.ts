@@ -1,8 +1,10 @@
 // Refunding a paid spot of a cancelled break from the site. The program lets anyone send a refund and always pays the spot's owner
 // (`refund_spot` takes no signer: the sender only pays the network fee), so this is the least that can go wrong with money: the
-// USDC goes back to the owner's own USDC account or the transaction fails. Even so it follows the buy flow's rules: every check
-// that can be made without the wallet is made first, the wallet is asked last, and the outcome is said as exactly as it is known.
-// This site only sends refunds for the connected wallet's own spots. Devnet only: the node is asked which network it is, first.
+// USDC goes back to the owner's own USDC account or the transaction fails. A wallet with no USDC account (one it closed, say) has
+// one opened in the same transaction, at its own cost: the rent stays in the new account, which is the wallet's. Even so it follows
+// the buy flow's rules: every check that can be made without the wallet is made first, the wallet is asked last, and the outcome
+// is said as exactly as it is known. This site only sends refunds for the connected wallet's own spots. Devnet only: the node is
+// asked which network it is, first.
 
 import type { Wallet, WalletAccount } from "@wallet-standard/base";
 import { endSentence, errorText } from "../wallet/wallets";
@@ -14,6 +16,7 @@ import { checkDevnet } from "./cluster";
 import type { PurchaseStep } from "./purchase";
 import { type RpcOptions, getAccounts } from "./rpc";
 import { SIGNATURE_FEE_LAMPORTS, type Timing, latestBlockhash, rentExempt, signAndSend, solBalance, watchTransaction } from "./send";
+import { TOKEN_ACCOUNT_BYTES, openTokenAccountInstruction } from "./token-account";
 import { buildTransaction } from "./transaction";
 import { sol } from "./view";
 
@@ -47,8 +50,8 @@ export function checkRefund(c: { break: Pick<BreakAccount, "status">; spot: Pick
 }
 
 export type RefundResult =
-  /** The network confirmed it: the spot's price is back in the owner's USDC account. */
-  | { kind: "refunded"; signature: string; amount: bigint }
+  /** The network confirmed it: the spot's price is back in the owner's USDC account (`opened` by this transaction, or not). */
+  | { kind: "refunded"; signature: string; amount: bigint; opened: boolean }
   /** A check failed before the wallet was asked: nothing was sent. */
   | { kind: "refused"; reason: string }
   /** The wallet did not send it, or said no. (If it did send it, the wallet's history shows it.) */
@@ -74,6 +77,8 @@ export interface RefundOptions extends Timing {
 
 interface Ready {
   amount: bigint;
+  /** The transaction opens the owner's USDC account first. */
+  opened: boolean;
   tx: Uint8Array;
   lastValidBlockHeight: number;
 }
@@ -96,7 +101,7 @@ export async function refundSpot(o: RefundOptions): Promise<RefundResult> {
 
   o.onStep?.("confirming");
   const watched = await watchTransaction(nodeOpts, sent.signature, ready.lastValidBlockHeight, "refund", o);
-  if (watched.kind === "confirmed") return { kind: "refunded", signature: sent.signature, amount: ready.amount };
+  if (watched.kind === "confirmed") return { kind: "refunded", signature: sent.signature, amount: ready.amount, opened: ready.opened };
   return { kind: watched.kind, signature: sent.signature, reason: watched.reason };
 }
 
@@ -127,17 +132,36 @@ async function prepare(o: RefundOptions, nodeOpts: RpcOptions): Promise<Ready | 
   const refund = checkRefund({ break: brk, spot });
   if (!refund.ok) return { refused: refund.reason };
 
-  // The refund goes to the owner's own USDC account, which has to exist: this transaction does not create one.
+  // The refund goes to the owner's own USDC account. When it has none, this transaction opens it first.
   const usdc = await loadUsdcBalance({ rpcUrl: o.rpcUrl, program: o.program, owner: spot.owner, commitment: "confirmed", ...(o.fetch ? { fetch: o.fetch } : {}) });
-  if (usdc.balance === null) return { refused: "This wallet has no USDC account to receive the refund, so nothing was sent. A USDC account is opened by receiving any USDC; then try again." };
+  const opens = usdc.balance === null;
 
-  // The wallet pays the network fee, and what is left of it must still be a valid account.
-  const [lamports, rentBare] = await Promise.all([solBalance(nodeOpts, o.account.address), rentExempt(nodeOpts, 0, "the rent of a wallet")]);
-  const need = SIGNATURE_FEE_LAMPORTS + rentBare;
-  if (lamports < need) return { refused: `This wallet needs about ${sol(need)} for the network fee, and has ${sol(lamports)}.` };
+  // The wallet pays the network fee and, when the account is opened, its rent; what is left of it must still be a valid account.
+  const [lamports, rentBare, rentAccount] = await Promise.all([
+    solBalance(nodeOpts, o.account.address),
+    rentExempt(nodeOpts, 0, "the rent of a wallet"),
+    opens ? rentExempt(nodeOpts, TOKEN_ACCOUNT_BYTES, "the rent of a token account") : Promise.resolve(0n),
+  ]);
+  const need = SIGNATURE_FEE_LAMPORTS + rentBare + rentAccount;
+  if (lamports < need) {
+    return { refused: `This wallet needs about ${sol(need)} for the network fee${opens ? " and the rent of the USDC account this refund opens" : ""}, and has ${sol(lamports)}.` };
+  }
 
   const latest = await latestBlockhash(nodeOpts);
-  const instruction = refundSpotInstruction({ program: o.program, breakId, index: o.index, ownerUsdc: usdc.account });
-  const built = buildTransaction({ feePayer: o.account.address, recentBlockhash: latest.blockhash, instructions: [instruction] });
-  return { amount: refund.amount, tx: built.unsigned, lastValidBlockHeight: latest.lastValidBlockHeight };
+  const instructions = [
+    ...(opens ? [openTokenAccountInstruction({ payer: o.account.address, owner: spot.owner, mint: usdc.mint })] : []),
+    refundSpotInstruction({ program: o.program, breakId, index: o.index, ownerUsdc: usdc.account }),
+  ];
+  const built = buildTransaction({ feePayer: o.account.address, recentBlockhash: latest.blockhash, instructions });
+  return { amount: refund.amount, opened: opens, tx: built.unsigned, lastValidBlockHeight: latest.lastValidBlockHeight };
+}
+
+/** What a refund costs the wallet beyond the network fee: nothing, or the rent of the USDC account it opens. */
+export type RefundTerms = { opens: false } | { opens: true; rent: bigint };
+
+/** Whether a refund to `owner` would open its USDC account, and what that account's rent is. Throws when the node cannot be read. */
+export async function loadRefundTerms(o: { rpcUrl: string; program: Address; owner: Address; fetch?: typeof fetch }): Promise<RefundTerms> {
+  const usdc = await loadUsdcBalance({ rpcUrl: o.rpcUrl, program: o.program, owner: o.owner, commitment: "confirmed", ...(o.fetch ? { fetch: o.fetch } : {}) });
+  if (usdc.balance !== null) return { opens: false };
+  return { opens: true, rent: await rentExempt({ url: o.rpcUrl, ...(o.fetch ? { fetch: o.fetch } : {}) }, TOKEN_ACCOUNT_BYTES, "the rent of a token account") };
 }
