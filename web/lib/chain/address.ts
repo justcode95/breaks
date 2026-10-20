@@ -59,6 +59,9 @@ export type Bucket = "subsidy" | "holder";
 /** The token account that holds a treasury bucket: a PDA of the treasury program (`["subsidy_vault"]`, `["holder_vault"]`). */
 export const vaultAddress = (treasuryProgram: Address, bucket: Bucket): Address => findProgramAddress([utf8(`${bucket}_vault`)], treasuryProgram);
 
+/** The breaks program's signer for the treasury (`["treasury_authority"]`): the treasury's controller in production. */
+export const treasuryAuthorityAddress = (program: Address): Address => findProgramAddress([utf8("treasury_authority")], program);
+
 export const escrowAddress = (program: Address, breakKey: Address): Address => findProgramAddress([utf8("escrow"), addressToBytes(breakKey)], program);
 
 /** The programs a purchase talks to besides the breaks program. */

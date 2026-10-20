@@ -5,7 +5,7 @@
 import { type Address, type Bucket, SYSTEM_PROGRAM, TOKEN_PROGRAM, addressFromBytes, configAddress, vaultAddress } from "./address";
 import { accountReader } from "./accounts";
 import { LoadError } from "./load";
-import { RpcFailure, getAccounts } from "./rpc";
+import { type RpcAccount, RpcFailure, getAccounts } from "./rpc";
 
 const TOKEN_ACCOUNT_LEN = 165;
 
@@ -69,46 +69,56 @@ export interface TreasuryOptions {
   fetch?: typeof fetch;
 }
 
+/** The treasury's config account and its two vaults, in this order: what `loadTreasury` reads. */
+export function treasuryAddresses(treasuryProgram: Address): [Address, Address, Address] {
+  return [configAddress(treasuryProgram), vaultAddress(treasuryProgram, "subsidy"), vaultAddress(treasuryProgram, "holder")];
+}
+
 /** The config and both vaults, read in one request so they come from the same moment. */
 export async function loadTreasury(opts: TreasuryOptions): Promise<Treasury> {
-  const configKey = configAddress(opts.treasuryProgram);
-  const vaults: Record<Bucket, Address> = { subsidy: vaultAddress(opts.treasuryProgram, "subsidy"), holder: vaultAddress(opts.treasuryProgram, "holder") };
   try {
-    const [config, subsidyVault, holderVault] = await getAccounts({ url: opts.rpcUrl, addresses: [configKey, vaults.subsidy, vaults.holder], ...(opts.fetch ? { fetch: opts.fetch } : {}) });
-    if (!config) throw new LoadError("The treasury has not been set up on this network (its config account does not exist).");
-    if (config.owner !== opts.treasuryProgram) throw new LoadError("The treasury's config account is not owned by the treasury program.");
-    let c: TreasuryConfig;
-    try {
-      c = decodeTreasuryConfig(config.data);
-    } catch (err) {
-      throw new LoadError(`The treasury's config account could not be read: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    const notes: string[] = [];
-    const bucket = (name: Bucket, account: typeof subsidyVault, locked: bigint): BucketView => {
-      if (!account) throw new LoadError(`The ${name} vault should exist but its account is missing.`);
-      if (account.owner !== TOKEN_PROGRAM) throw new LoadError(`The ${name} vault is not a token account (it is not owned by the token program).`);
-      let t: TokenAccount;
-      try {
-        t = decodeTokenAccount(account.data);
-      } catch (err) {
-        throw new LoadError(`The ${name} vault could not be read: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      if (t.owner !== configKey) throw new LoadError(`The ${name} vault is not controlled by the treasury (its token authority is another address).`);
-      if (t.mint !== c.usdcMint) throw new LoadError(`The ${name} vault does not hold the treasury's USDC.`);
-      if (t.frozen) notes.push(`The ${name} vault is frozen: no money can move in or out of it.`);
-      if (locked > t.amount) notes.push(`More is reserved in the ${name} bucket than its vault holds. This should not happen.`);
-      return { balance: t.amount, locked, available: t.amount > locked ? t.amount - locked : 0n, vault: vaults[name] };
-    };
-    const subsidy = bucket("subsidy", subsidyVault, c.lockedSubsidy);
-    const holder = bucket("holder", holderVault, c.lockedHolder);
-    if (c.subsidyBps + c.holderBps !== 10_000) notes.push("The two shares of the split do not add up to 100%.");
-    return { config: c, configAddress: configKey, subsidy, holder, notes };
+    const accounts = await getAccounts({ url: opts.rpcUrl, addresses: treasuryAddresses(opts.treasuryProgram), ...(opts.fetch ? { fetch: opts.fetch } : {}) });
+    return treasuryFromAccounts(opts.treasuryProgram, accounts);
   } catch (err) {
     if (err instanceof LoadError) throw err;
     if (err instanceof RpcFailure) throw new LoadError(err.message);
     throw new LoadError(`Could not read the treasury: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+/** The treasury from its three accounts as the node gave them (`treasuryAddresses`' order), each checked; throws a `LoadError` saying what is wrong. */
+export function treasuryFromAccounts(treasuryProgram: Address, [config, subsidyVault, holderVault]: readonly (RpcAccount | null | undefined)[]): Treasury {
+  const [configKey, subsidyKey, holderKey] = treasuryAddresses(treasuryProgram);
+  const vaults: Record<Bucket, Address> = { subsidy: subsidyKey, holder: holderKey };
+  if (!config) throw new LoadError("The treasury has not been set up on this network (its config account does not exist).");
+  if (config.owner !== treasuryProgram) throw new LoadError("The treasury's config account is not owned by the treasury program.");
+  let c: TreasuryConfig;
+  try {
+    c = decodeTreasuryConfig(config.data);
+  } catch (err) {
+    throw new LoadError(`The treasury's config account could not be read: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const notes: string[] = [];
+  const bucket = (name: Bucket, account: RpcAccount | null | undefined, locked: bigint): BucketView => {
+    if (!account) throw new LoadError(`The ${name} vault should exist but its account is missing.`);
+    if (account.owner !== TOKEN_PROGRAM) throw new LoadError(`The ${name} vault is not a token account (it is not owned by the token program).`);
+    let t: TokenAccount;
+    try {
+      t = decodeTokenAccount(account.data);
+    } catch (err) {
+      throw new LoadError(`The ${name} vault could not be read: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (t.owner !== configKey) throw new LoadError(`The ${name} vault is not controlled by the treasury (its token authority is another address).`);
+    if (t.mint !== c.usdcMint) throw new LoadError(`The ${name} vault does not hold the treasury's USDC.`);
+    if (t.frozen) notes.push(`The ${name} vault is frozen: no money can move in or out of it.`);
+    if (locked > t.amount) notes.push(`More is reserved in the ${name} bucket than its vault holds. This should not happen.`);
+    return { balance: t.amount, locked, available: t.amount > locked ? t.amount - locked : 0n, vault: vaults[name] };
+  };
+  const subsidy = bucket("subsidy", subsidyVault, c.lockedSubsidy);
+  const holder = bucket("holder", holderVault, c.lockedHolder);
+  if (c.subsidyBps + c.holderBps !== 10_000) notes.push("The two shares of the split do not add up to 100%.");
+  return { config: c, configAddress: configKey, subsidy, holder, notes };
 }
 
 /** True until the admin has appointed a controller. */
