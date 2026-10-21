@@ -1,13 +1,34 @@
 import Link from "next/link";
 import { type Mine, type MySpot, spotState } from "../../lib/chain/mine";
-import { money, share, stageLabel, tone } from "../../lib/chain/view";
+import type { RefundTerms } from "../../lib/chain/refund";
+import { money, share, sol, stageLabel, tone } from "../../lib/chain/view";
+
+/** What a refund costs beyond the network fee, before the button is pressed; "unknown" while it is read or when it cannot be. */
+export function refundCostText(terms: RefundTerms | "unknown"): string | undefined {
+  if (terms === "unknown") return "If the wallet has no USDC account, a refund opens one in the same transaction, which takes a little SOL for its rent.";
+  if (!terms.opens) return undefined;
+  return `This wallet has no USDC account, so a refund opens one in the same transaction: besides the network fee, about ${sol(terms.rent)} goes into the new account as its rent, and stays there.`;
+}
 
 /**
  * What a wallet has in the breaks: the paid spots it bought and the free spots it won. Pure: the data comes in and the clicks go
  * out. With `onRefund`, a spot of a cancelled break that has not been refunded gets a button (disabled while `busy`, since one
- * refund runs at a time).
+ * refund runs at a time), and `refundTerms` says what a refund costs beyond the fee.
  */
-export function MySpotsView({ mine, now, onRefund, busy = false }: { mine: Mine; now: number; onRefund?: (spot: MySpot) => void; busy?: boolean }) {
+export function MySpotsView({
+  mine,
+  now,
+  onRefund,
+  busy = false,
+  refundTerms = "unknown",
+}: {
+  mine: Mine;
+  now: number;
+  onRefund?: (spot: MySpot) => void;
+  busy?: boolean;
+  refundTerms?: RefundTerms | "unknown";
+}) {
+  const cost = onRefund ? refundCostText(refundTerms) : undefined;
   const { spots, freeWins } = mine;
   const breaks = new Set(spots.map((s) => s.breakNumber)).size;
   const refundable = spots.filter((s) => !s.refunded && s.break.status === "Cancelled").length;
@@ -65,6 +86,7 @@ export function MySpotsView({ mine, now, onRefund, busy = false }: { mine: Mine;
               A cancelled break's spots are paid back to the wallet that bought them. Anyone can send the refund.{onRefund ? " Use the button to send yours." : " This site cannot send it yet."}
             </p>
           )}
+          {refundable > 0 && cost && <p className="hint">{cost}</p>}
           {mine.truncated && <p className="hint">Only the newest spots are shown.</p>}
         </section>
       )}

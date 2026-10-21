@@ -2,9 +2,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { base58 } from "@scure/base";
 import { describe, expect, it } from "vitest";
-import { type Address, TOKEN_PROGRAM, associatedTokenAddress, breakAddress, configAddress, escrowAddress, spotAddress } from "../lib/chain/address";
+import { type Address, SYSTEM_PROGRAM, TOKEN_PROGRAM, associatedTokenAddress, breakAddress, configAddress, escrowAddress, spotAddress } from "../lib/chain/address";
 import { GENESIS_HASHES } from "../lib/chain/cluster";
-import { type RefundResult, checkRefund, refundSpot, refundSpotInstruction } from "../lib/chain/refund";
+import { LoadError } from "../lib/chain/load";
+import { type RefundResult, checkRefund, loadRefundTerms, refundSpot, refundSpotInstruction } from "../lib/chain/refund";
+import { openTokenAccountInstruction } from "../lib/chain/token-account";
 import { BREAKS_ERRORS, SIGNATURE_FEE_LAMPORTS, describeTransactionError } from "../lib/chain/send";
 import { buildTransaction } from "../lib/chain/transaction";
 import { toHex } from "../lib/draw/bytes";
@@ -75,7 +77,12 @@ describe("what the program checks for a refund", () => {
 });
 
 function world(
-  over: { brk?: Partial<BreakFields> | null; spot?: { owner?: Address; refunded?: boolean; paid?: bigint; breakId?: bigint; index?: number } | null; usdc?: "none" | "frozen" | "other-mint" | bigint } = {},
+  over: {
+    brk?: Partial<BreakFields> | null;
+    spot?: { owner?: Address; refunded?: boolean; paid?: bigint; breakId?: bigint; index?: number } | null;
+    /** The wallet's USDC account: none, SOL sent to its address before it was opened, something else there, or a token account. */
+    usdc?: "none" | "prefunded" | "system-data" | "frozen" | "other-mint" | bigint;
+  } = {},
 ): Map<Address, Served> {
   const accounts = new Map<Address, Served>();
   accounts.set(configAddress(PROGRAM), { data: encodeConfig(CONFIG), owner: PROGRAM });
@@ -87,7 +94,9 @@ function world(
       owner: PROGRAM,
     });
   }
-  if (over.usdc !== "none") {
+  if (over.usdc === "prefunded" || over.usdc === "system-data") {
+    accounts.set(ME_USDC, { data: over.usdc === "prefunded" ? new Uint8Array(0) : new Uint8Array(8), owner: SYSTEM_PROGRAM });
+  } else if (over.usdc !== "none") {
     const u = over.usdc;
     accounts.set(ME_USDC, {
       data: encodeTokenAccount({ mint: u === "other-mint" ? fill(8) : CONFIG.usdcMint, owner: ME, amount: typeof u === "bigint" ? u : 0n, ...(u === "frozen" ? { state: 2 as const } : {}) }),
@@ -132,7 +141,7 @@ const reason = async (s: Setup) => ((await run(s)).result as { kind: string; rea
 describe("refunding a spot", () => {
   it("checks everything, asks the wallet once to sign and send the right transaction, and waits for the network to confirm", async () => {
     const { result, node, wallet, steps } = await run();
-    expect(result).toEqual({ kind: "refunded", signature: SIG, amount: 20_000_000n });
+    expect(result).toEqual({ kind: "refunded", signature: SIG, amount: 20_000_000n, opened: false });
     expect(steps).toEqual(["checking", "waiting-for-wallet", "confirming"]);
 
     expect(wallet.sendCalls).toHaveLength(1);
@@ -214,14 +223,68 @@ describe("refunding a spot", () => {
     expect(r.wallet.sendCalls).toHaveLength(0);
   });
 
-  it("refuses a wallet with no USDC account (this transaction does not create one) and one whose account cannot receive", async () => {
-    const none = await run({ world: { usdc: "none" } });
-    expect(none.result).toMatchObject({ kind: "refused", reason: "This wallet has no USDC account to receive the refund, so nothing was sent. A USDC account is opened by receiving any USDC; then try again." });
-    expect(none.wallet.sendCalls).toHaveLength(0);
+  it("opens the wallet's USDC account first, in the same transaction, when it has none, and says so", async () => {
+    for (const usdc of ["none", "prefunded"] as const) {
+      const { result, wallet, node } = await run({ world: { usdc } });
+      expect(result, usdc).toEqual({ kind: "refunded", signature: SIG, amount: 20_000_000n, opened: true });
+      expect(wallet.sendCalls).toHaveLength(1);
+      const expected = buildTransaction({
+        feePayer: ME,
+        recentBlockhash: BLOCKHASH,
+        instructions: [
+          openTokenAccountInstruction({ payer: ME, owner: ME, mint: CONFIG.usdcMint }),
+          refundSpotInstruction({ program: PROGRAM, breakId: SAMPLE.id, index: INDEX, ownerUsdc: ME_USDC }),
+        ],
+      });
+      // The account opened is the one the refund pays: the wallet's own, for the program's USDC, paid for by the wallet.
+      expect(wallet.sendCalls[0]?.transaction, usdc).toEqual(expected.unsigned);
+      expect(node.calls.filter((c) => c.method === "getMinimumBalanceForRentExemption").map((c) => c.params[0]).sort()).toEqual([0, 165]);
+    }
+    // A wallet that has one, holding nothing or something, is paid into it and nothing is opened.
+    for (const usdc of [0n, 5n]) {
+      const { result, wallet } = await run({ world: { usdc } });
+      expect(result).toMatchObject({ kind: "refunded", opened: false });
+      expect(decodeMessage((wallet.sendCalls[0]?.transaction as Uint8Array).slice(65)).instructions).toHaveLength(1);
+    }
+  });
+
+  it("refuses a wallet whose USDC address holds something that is not its USDC account", async () => {
     expect((await reason({ world: { usdc: "frozen" } })).reason).toContain("frozen");
     expect((await reason({ world: { usdc: "other-mint" } })).reason).toContain("holds another token");
-    // A USDC balance of nothing is fine: the refund adds to it.
-    expect((await run({ world: { usdc: 0n } })).result.kind).toBe("refunded");
+    // An account of the system program with data in it cannot be opened as a token account.
+    const r = await run({ world: { usdc: "system-data" } });
+    expect(r.result).toMatchObject({ kind: "refused" });
+    expect((r.result as { reason: string }).reason).toContain("not a token account");
+    expect(r.wallet.sendCalls).toHaveLength(0);
+  });
+
+  it("refuses a wallet that cannot pay the fee, the rent of the account it opens and keep a valid account, down to the lamport", async () => {
+    const need = Number(SIGNATURE_FEE_LAMPORTS) + 890_880 + 2_039_280;
+    const short = await run({ world: { usdc: "none" }, node: { lamports: need - 1 } });
+    expect(short.result).toMatchObject({ kind: "refused", reason: "This wallet needs about 0.00293516 SOL for the network fee and the rent of the USDC account this refund opens, and has 0.002935159 SOL." });
+    expect(short.wallet.sendCalls).toHaveLength(0);
+    expect((await run({ world: { usdc: "none" }, node: { lamports: need } })).result).toMatchObject({ kind: "refunded", opened: true });
+    // The rent of the account comes from the node.
+    expect((await run({ world: { usdc: "none" }, node: { lamports: need, rent: { tokenAccount: 2_039_281 } } })).result.kind).toBe("refused");
+    // With an account already there, it is not part of what the wallet needs.
+    expect((await run({ node: { lamports: need - 2_039_280 } })).result.kind).toBe("refunded");
+  });
+
+  it("says before the button is pressed whether a refund opens the USDC account, and what its rent is", async () => {
+    const terms = (usdc: NonNullable<Parameters<typeof world>[0]>["usdc"], script: Partial<NodeScript> = {}) => {
+      const node = rpcNode({ accounts: world({ usdc }), ...script });
+      return { node, got: loadRefundTerms({ rpcUrl: "http://node.test", program: PROGRAM, owner: ME, fetch: node.fetchFn }) };
+    };
+    const has = terms(5n);
+    expect(await has.got).toEqual({ opens: false });
+    // Nothing more is asked when nothing is opened, and the account is read as the refund reads it.
+    expect(has.node.methods()).toEqual(["getMultipleAccounts", "getMultipleAccounts"]);
+    for (const c of has.node.calls) expect((c.params[1] as { commitment: string }).commitment).toBe("confirmed");
+    expect(await terms("none").got).toEqual({ opens: true, rent: 2_039_280n });
+    expect(await terms("prefunded", { rent: { tokenAccount: 3_000_000 } }).got).toEqual({ opens: true, rent: 3_000_000n });
+    await expect(terms("frozen").got).rejects.toBeInstanceOf(LoadError);
+    await expect(terms("none", { failing: ["getMinimumBalanceForRentExemption"] }).got).rejects.toThrow("is failing");
+    await expect(terms(5n, { failing: ["getMultipleAccounts"] }).got).rejects.toThrow("is failing");
   });
 
   it("refuses a wallet that cannot pay the network fee and keep a valid account, down to the lamport", async () => {
@@ -260,7 +323,7 @@ describe("refunding a spot", () => {
     expect(await failed(code("AlreadyRefunded"))).toEqual({ kind: "failed", signature: SIG, reason: "This spot was already refunded." });
     expect((await failed(code("WrongStatus"))).reason).toBe("This break was not cancelled, so its spots are not refunded.");
     expect((await failed("BlockhashNotFound")).reason).toBe("The transaction was too old (its blockhash expired). Nothing was refunded; try again.");
-    expect((await failed("InsufficientFundsForFee")).reason).toBe("The wallet does not have enough SOL for the network fee.");
+    expect((await failed("InsufficientFundsForFee")).reason).toBe("The wallet does not have enough SOL for the network fee (and the rent of the USDC account, when the refund opens one).");
     // The buy flow's guesses about the token program do not apply: a refund names the number.
     for (const custom of [0, 1]) {
       expect((await failed({ InstructionError: [0, { Custom: custom }] })).reason).toBe(`The network refused it (${JSON.stringify({ InstructionError: [0, { Custom: custom }] })}).`);

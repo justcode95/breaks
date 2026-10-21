@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { type Address, TOKEN_PROGRAM, associatedTokenAddress, configAddress } from "../lib/chain/address";
+import { type Address, SYSTEM_PROGRAM, TOKEN_PROGRAM, associatedTokenAddress, configAddress } from "../lib/chain/address";
 import { loadUsdcBalance } from "../lib/chain/balance";
 import { LoadError } from "../lib/chain/load";
 import { type ConfigFields, type Served, configFieldsFromVector, encodeConfig, encodeTokenAccount, fakeNode } from "./support/accounts";
@@ -52,6 +52,8 @@ describe("a wallet's USDC balance", () => {
   it("is zero for an account that holds nothing, and null for a wallet that has no USDC account yet", async () => {
     expect(await load(node({ token: { data: encodeTokenAccount({ mint: CONFIG.usdcMint, owner: WALLET, amount: 0n }), owner: TOKEN_PROGRAM } }))).toMatchObject({ balance: 0n });
     expect(await load(node({ token: null }))).toEqual({ mint: CONFIG.usdcMint, account: ATA, balance: null });
+    // SOL sent to the address before the account was opened leaves an empty account of the system program: still no USDC account.
+    expect(await load(node({ token: { data: new Uint8Array(0), owner: SYSTEM_PROGRAM } }))).toEqual({ mint: CONFIG.usdcMint, account: ATA, balance: null });
   });
 
   it("looks in the account of the wallet it was asked about", async () => {
@@ -72,6 +74,9 @@ describe("a wallet's USDC balance", () => {
       token: { data: encodeTokenAccount({ mint: over.mint ?? CONFIG.usdcMint, owner: over.authority ?? WALLET, amount: 1n, ...(over.state === undefined ? {} : { state: over.state }) }), owner: over.programOwner ?? TOKEN_PROGRAM },
     });
     await expect(load(node(acct({ programOwner: fill(9) })))).rejects.toThrow("is not a token account");
+    // An account of the system program is no USDC account only while it is empty: with data in it, it is something else.
+    await expect(load(node({ token: { data: new Uint8Array(1), owner: SYSTEM_PROGRAM } }))).rejects.toThrow("is not a token account");
+    await expect(load(node({ token: { data: new Uint8Array(0), owner: fill(9) } }))).rejects.toThrow("is not a token account");
     await expect(load(node(acct({ mint: fill(9) })))).rejects.toThrow("holds another token");
     await expect(load(node(acct({ authority: fill(9) })))).rejects.toThrow("belongs to another wallet");
     await expect(load(node(acct({ state: 2 })))).rejects.toThrow("frozen");

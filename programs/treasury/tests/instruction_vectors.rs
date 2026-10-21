@@ -197,6 +197,22 @@ fn treasury_instruction_vectors() {
         )
     };
 
+    // The associated token program's `CreateIdempotent`, built by its own interface crate: the keeper opens the buyer wallet's
+    // USDC account with it, and the website a refunded wallet's. It is not a treasury instruction, so it names its program.
+    let open_token_account = {
+        use anchor_spl::associated_token::{
+            spl_associated_token_account::instruction::create_associated_token_account_idempotent, ID,
+        };
+        let ix = create_associated_token_account_idempotent(&authority, &controller, &mint, &token);
+        assert_eq!(ix.program_id, ID);
+        instruction_case(
+            "spl.associated_token.create_idempotent",
+            &format!("{{ \"programId\": \"{ID}\", \"payer\": \"{authority}\", \"owner\": \"{controller}\", \"mint\": \"{mint}\" }}"),
+            &ix.data,
+            &ix.accounts,
+        )
+    };
+
     check_vectors(
         concat!(env!("CARGO_MANIFEST_DIR"), "/instruction-vectors.json"),
         &format!("{{ \"treasury\": \"{}\" }}", treasury::ID),
@@ -212,6 +228,7 @@ fn treasury_instruction_vectors() {
             config_account,
             vault,
             token_mint,
+            open_token_account,
         ],
     );
 }

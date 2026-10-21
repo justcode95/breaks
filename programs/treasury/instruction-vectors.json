@@ -111,6 +111,19 @@
       "name": "spl.account.Mint",
       "inputs": { "data": "01000000020202020202020202020202020202020202020202020202020202020202020200aa15445fdab40d0901010000000606060606060606060606060606060606060606060606060606060606060606" },
       "outputs": { "supply": "987654321000000000", "decimals": 9, "initialized": true }
+    },
+    {
+      "name": "spl.associated_token.create_idempotent",
+      "inputs": { "programId": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", "payer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi", "owner": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF", "mint": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8" },
+      "data": "01",
+      "accounts": [
+        { "pubkey": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi", "signer": true, "writable": true },
+        { "pubkey": "8NnQPcKF1VqMCcWoUz7fPa6y3zMRqGpHDsQt3corBhp2", "signer": false, "writable": true },
+        { "pubkey": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF", "signer": false, "writable": false },
+        { "pubkey": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8", "signer": false, "writable": false },
+        { "pubkey": "11111111111111111111111111111111", "signer": false, "writable": false },
+        { "pubkey": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "signer": false, "writable": false }
+      ]
     }
   ]
 }

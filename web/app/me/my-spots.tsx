@@ -4,7 +4,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { waitForRefund } from "../../lib/chain/follow";
 import type { BreakRow } from "../../lib/chain/list";
 import { type Mine, type MySpot, loadMine } from "../../lib/chain/mine";
-import { refundSpot } from "../../lib/chain/refund";
+import { type RefundTerms, loadRefundTerms, refundSpot } from "../../lib/chain/refund";
 import { idleRefund, refundReducer } from "../../lib/chain/refund-state";
 import { runRefund } from "../../lib/chain/run-refund";
 import { SETUP } from "../../lib/site";
@@ -69,6 +69,21 @@ export function MySpots() {
   }, [address, reload]);
   useEffect(() => load(), [load]);
 
+  // What a refund costs this wallet beyond the network fee (whether it opens the USDC account): read when the wallet has a spot to
+  // refund, and again once a refund has run, since it may have opened the account. Only the newest read counts, and only for the
+  // wallet it was read for.
+  const refundable = view.state === "loaded" ? view.mine.spots.filter((s) => !s.refunded && s.break.status === "Cancelled").length : 0;
+  const [terms, setTerms] = useState<{ owner: string; terms: RefundTerms } | undefined>(undefined);
+  const termsRead = useRef(0);
+  useEffect(() => {
+    if (!address || SETUP.kind !== "on" || refundable === 0 || refund.status === "running") return;
+    const read = ++termsRead.current;
+    const config = SETUP.config;
+    loadRefundTerms({ rpcUrl: config.rpcUrl, program: config.breaksProgram, owner: address })
+      .then((t) => read === termsRead.current && setTerms({ owner: address, terms: t }))
+      .catch(() => read === termsRead.current && setTerms(undefined));
+  }, [address, refundable, refund.status]);
+
   const guard = useRef(false);
   const onRefund = useCallback(
     (spot: MySpot) => {
@@ -110,7 +125,7 @@ export function MySpots() {
       )}
       {view.state === "loaded" && (
         <>
-          <MySpotsView mine={view.mine} now={nowSecs()} onRefund={onRefund} busy={refund.status === "running"} />
+          <MySpotsView mine={view.mine} now={nowSecs()} onRefund={onRefund} busy={refund.status === "running"} refundTerms={terms && terms.owner === address ? terms.terms : "unknown"} />
           <div className="actions">
             <button type="button" className="secondary" onClick={load}>Refresh</button>
           </div>

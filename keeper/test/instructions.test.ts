@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { fromHex, toHex } from "../src/draw/bytes.js";
+import { createAssociatedTokenAccountIdempotent } from "../src/solana/associated-token.js";
 import * as breaks from "../src/solana/breaks.js";
 import { Reader, Writer } from "../src/solana/codec.js";
 import type { Instruction } from "../src/solana/instruction.js";
@@ -89,6 +90,7 @@ const treasuryBuilders: Record<string, Builder> = {
       bucket: i.bucket,
       amount: big(i.amount),
     }),
+  "spl.associated_token.create_idempotent": (i) => createAssociatedTokenAccountIdempotent({ payer: i.payer, owner: i.owner, mint: i.mint }),
 };
 
 const breaksBuilders: Record<string, Builder> = {
@@ -203,7 +205,8 @@ function check(file: VectorFile, programId: string, builders: Record<string, Bui
     if (!build && !decode && !value) throw new Error(`no TypeScript counterpart for the vector "${c.name}"`);
     const label = `${c.name} (${JSON.stringify(c.inputs).slice(0, 80)})`;
     it(label, () => {
-      if (build) expectInstruction(build(c.inputs), c, programId);
+      // A case of another program (the associated token program's, among the treasury's) names it.
+      if (build) expectInstruction(build(c.inputs), c, c.inputs.programId ?? programId);
       else if (decode) expect(plain(decode(bytes(c.inputs.data)))).toEqual(c.outputs);
       else if (value) expect(plain(value(c.inputs))).toEqual(c.outputs);
     });

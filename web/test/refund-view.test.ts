@@ -35,7 +35,7 @@ describe("the refund status", () => {
   });
 
   it("says a refund is done by the amount, the wallet and the spot, and whether the page already shows it", () => {
-    const done: RefundResult = { kind: "refunded", signature: SIGNATURE, amount: 20_000_000n };
+    const done: RefundResult = { kind: "refunded", signature: SIGNATURE, amount: 20_000_000n, opened: false };
     const early = view(finished(done));
     expect(text(early.html)).toContain(`Refunded. $20 is back in the USDC account of ${SHORT} for spot #1 of break #3.`);
     expect(text(early.html)).toContain("The chain is still finalizing it; the list below updates in a few seconds.");
@@ -45,8 +45,15 @@ describe("the refund status", () => {
     expect(text(later.html)).not.toContain("still finalizing");
   });
 
+  it("says when the refund opened the wallet's USDC account first, and only then", () => {
+    const opened = text(view(finished({ kind: "refunded", signature: SIGNATURE, amount: 20_000_000n, opened: true })).html);
+    expect(opened).toContain(`Refunded. $20 is back in the USDC account of ${SHORT} for spot #1 of break #3.`);
+    expect(opened).toContain("The wallet had no USDC account, so this refund opened one first. The SOL paid for its rent stays in that account, which is the wallet's.");
+    expect(text(view(finished({ kind: "refunded", signature: SIGNATURE, amount: 20_000_000n, opened: false })).html)).not.toContain("opened one");
+  });
+
   it("links the transaction on the devnet explorer, and never from text that is not a signature", () => {
-    const html = view(finished({ kind: "refunded", signature: SIGNATURE, amount: 1n })).html;
+    const html = view(finished({ kind: "refunded", signature: SIGNATURE, amount: 1n, opened: false })).html;
     expect(html).toContain(`<a href="https://explorer.solana.com/tx/${SIGNATURE}?cluster=devnet" target="_blank" rel="noopener noreferrer">`);
     for (const signature of ["", "abc", `${"5".repeat(70)}"><script>`, "javascript:alert(1)", "0".repeat(87)]) {
       const bad = view(finished({ kind: "failed", signature, reason: "x" })).html;
@@ -85,7 +92,7 @@ describe("the refund status", () => {
 
   it("closes a result with the dismiss handler, whatever the result", () => {
     for (const result of [
-      { kind: "refunded", signature: SIGNATURE, amount: 1n },
+      { kind: "refunded", signature: SIGNATURE, amount: 1n, opened: false },
       { kind: "refused", reason: "x" },
       { kind: "declined", reason: "x" },
       { kind: "failed", signature: SIGNATURE, reason: "x" },

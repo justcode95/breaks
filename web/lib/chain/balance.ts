@@ -4,7 +4,7 @@
 
 import type { ConfigAccount } from "./accounts";
 import { decodeConfig } from "./accounts";
-import { type Address, TOKEN_PROGRAM, associatedTokenAddress, configAddress } from "./address";
+import { type Address, SYSTEM_PROGRAM, TOKEN_PROGRAM, associatedTokenAddress, configAddress } from "./address";
 import { LoadError } from "./load";
 import { RpcFailure, getAccounts } from "./rpc";
 import { decodeTokenAccount } from "./treasury";
@@ -12,7 +12,7 @@ import { decodeTokenAccount } from "./treasury";
 export interface UsdcBalance {
   /** The USDC mint of the breaks program. */
   mint: Address;
-  /** The wallet's associated token account for it, which may not exist yet. */
+  /** The wallet's associated token account for it, which may not be open yet. */
   account: Address;
   /** What the account holds in USDC base units, or `null` when the wallet has no USDC account yet. */
   balance: bigint | null;
@@ -44,7 +44,9 @@ export async function loadUsdcBalance(opts: BalanceOptions): Promise<UsdcBalance
 
     const account = associatedTokenAddress(opts.owner, c.usdcMint);
     const [token] = await getAccounts({ url: opts.rpcUrl, addresses: [account], ...extra });
-    if (!token) return { mint: c.usdcMint, account, balance: null };
+    // Nothing there: no USDC account yet. SOL sent to the address before the account was opened leaves an empty account of the
+    // system program there, which is no USDC account either (the associated token program still opens one at that address).
+    if (!token || (token.owner === SYSTEM_PROGRAM && token.data.length === 0)) return { mint: c.usdcMint, account, balance: null };
     if (token.owner !== TOKEN_PROGRAM) throw new LoadError("The wallet's USDC account is not a token account (it is not owned by the token program).");
     let t: ReturnType<typeof decodeTokenAccount>;
     try {
