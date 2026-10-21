@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { startLoop } from "../src/run.js";
+import type { Job } from "../src/job.js";
+import { startKeeper, startLoop } from "../src/run.js";
+import { JobHealth } from "../src/watch/health.js";
 import { logger } from "./support/world.js";
 
 beforeEach(() => {
@@ -99,5 +101,55 @@ describe("startLoop", () => {
     expect(errors).toEqual(["tick failed"]);
     expect(ticks).toBeGreaterThanOrEqual(3);
     await loop.stop();
+  });
+});
+
+describe("startKeeper", () => {
+  it("runs the watchdog on a loop of its own, so a job that never finishes, which holds up the runner, is still reported", async () => {
+    const health = new JobHealth();
+    let clock = 1_800_000_000_000;
+    const ctx = { now: () => new Date(clock), log: logger().log };
+    let quick = 0;
+    const jobs: Job[] = [
+      { name: "pipeline", intervalMs: 1000, run: () => new Promise<void>(() => {}) }, // waits for a node that never answers
+      { name: "indexer", intervalMs: 1000, run: async () => void quick++ },
+    ];
+    const seen: string[][] = [];
+    const watchdog: Job = {
+      name: "watchdog",
+      intervalMs: 60_000,
+      run: async () => {
+        clock += 60_000;
+        seen.push(health.snapshot().filter((j) => j.runningSince).map((j) => `${j.name} since ${(clock - j.runningSince!.getTime()) / 60_000} min`));
+      },
+    };
+    const keeper = startKeeper({ jobs, watchdog, observer: health, ctx, tickMs: 1000 });
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    // The runner is stuck in its first tick: the indexer ran once, never again.
+    expect(quick).toBe(1);
+    // The watchdog kept running and saw the run that does not end grow older.
+    expect(seen.length).toBe(11);
+    expect(seen.at(-1)).toEqual(["pipeline since 11 min"]);
+    void keeper.stop(); // would wait for the stuck run forever
+  });
+
+  it("stops both loops", async () => {
+    let jobRuns = 0;
+    let watchRuns = 0;
+    const ctx = { now: () => new Date(), log: logger().log }; // the fake timers move the clock
+    const keeper = startKeeper({
+      jobs: [{ name: "a", intervalMs: 1000, run: async () => void jobRuns++ }],
+      watchdog: { name: "watchdog", intervalMs: 1000, run: async () => void watchRuns++ },
+      observer: new JobHealth(),
+      ctx,
+      tickMs: 1000,
+    });
+    await vi.advanceTimersByTimeAsync(2500);
+    await keeper.stop();
+    const [j, w] = [jobRuns, watchRuns];
+    expect(j).toBeGreaterThan(1);
+    expect(w).toBe(3);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect([jobRuns, watchRuns]).toEqual([j, w]);
   });
 });

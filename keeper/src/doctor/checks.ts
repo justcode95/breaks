@@ -21,7 +21,7 @@ import { UPGRADEABLE_LOADER } from "../solana/instruction.js";
 import { type Signer, loadSignerFromFile } from "../solana/keypair.js";
 import { decodeProgramAccount, decodeProgramData } from "../solana/loader.js";
 import { type Address, associatedTokenAddress } from "../solana/pubkey.js";
-import { RANDOMNESS_REQUEST_ACCOUNT_BYTES, SIGNATURE_FEE, createBreakCost, rentExempt } from "../solana/rent.js";
+import { keeperSolNeed } from "../solana/rent.js";
 import type { RpcClient } from "../solana/rpc.js";
 import { decodeMint, decodeTokenAccount } from "../solana/token.js";
 import { decodeTreasuryConfig, treasuryAddresses } from "../solana/treasury.js";
@@ -107,16 +107,8 @@ const sol = (lamports: bigint) => `${amount(lamports, 9)} SOL`;
 
 // ---------------------------------------------------------------------------------------------- rules
 
-/**
- * What the keeper's wallet needs in SOL: to create a break (rent of two accounts, a fee, and the least a wallet may be left
- * with) and to see one all the way through: the other keeper transactions of its life (close, commit the list, fund, commit
- * the pool, ask for randomness, settle it, one claim per free spot) and ORAO's fee and the rent of its request account.
- */
-export function keeperSolNeed(freeSpots: number, oraoRequestFee: bigint): { create: bigint; cycle: bigint } {
-  const create = createBreakCost().total;
-  const others = BigInt(6 + freeSpots) * SIGNATURE_FEE;
-  return { create, cycle: create + others + oraoRequestFee + rentExempt(RANDOMNESS_REQUEST_ACCOUNT_BYTES) };
-}
+// The watchdog needs it too, so it lives with the other costs.
+export { keeperSolNeed };
 
 /** How far this machine's clock is from the chain's, in seconds, and what that means for a keeper that sets sale windows by its own clock. */
 export function clockVerdict(skewSecs: number): { status: "ok" | "warn" | "fail"; text: string } {
@@ -766,6 +758,18 @@ const DEFS: Def[] = [
       return cfg.bot.poster === "x"
         ? ok(`posts to X as the account of the four X_* credentials, at most ${cfg.bot.limits.maxPerDay} a day`)
         : ok("on as a dry run: posts are only written to the log (BOT_POSTER=log)");
+    },
+  },
+  {
+    section: "Outputs",
+    title: "the watchdog's alerts",
+    run: async (c) => {
+      const cfg = await c.config.need();
+      const when = `a problem that lasts ${cfg.watch.afterMins} min is reported once, and again when it clears`;
+      if (cfg.watch.alerts === "telegram" && cfg.watch.telegram) {
+        return ok(`${when}, in the keeper's log and in the Telegram chat ${cfg.watch.telegram.chatId}; not checked here: the keeper sends a message there when it starts, which shows the token and the chat work`);
+      }
+      return warn(`${when}, only in the keeper's log: nobody is told when a break gets stuck`, "set ALERTS=telegram with ALERT_TELEGRAM_BOT_TOKEN and ALERT_TELEGRAM_CHAT_ID (keeper/.env.example)");
     },
   },
 ];

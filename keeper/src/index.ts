@@ -1,12 +1,14 @@
 import pg from "pg";
-import { buildJobs, sqlFromPool } from "./app.js";
+import { buildJobs, buildWatchdog, sqlFromPool } from "./app.js";
+import { urlSecrets } from "./doctor/report.js";
+import { JobHealth } from "./watch/health.js";
 import { loadConfig } from "./config.js";
 import { RpcTokenReader } from "./indexer/reader.js";
 import { RpcAccountReader } from "./bot/world.js";
 import { RpcWalletReader } from "./sweep/wallet.js";
-import { createRunner, type Logger } from "./job.js";
+import type { Logger } from "./job.js";
 import { connectFromConfig } from "./pipeline/rpc-chain.js";
-import { startLoop } from "./run.js";
+import { startKeeper } from "./run.js";
 import { RpcClient } from "./solana/rpc.js";
 
 const log: Logger = {
@@ -34,10 +36,13 @@ async function main() {
   const wallets = new RpcWalletReader(rpc, config.commitment);
   // The X bot announces only what is final.
   const finalized = new RpcAccountReader(rpc, "finalized");
-  const jobs = await buildJobs(config, { sql: sqlFromPool(pool), chain, reader, wallets, finalized, keeper: chain.keeper, log });
-  const runner = createRunner(jobs, { now: () => new Date(), log });
-  log.info("keeper started", { cluster: config.cluster, keeper: chain.keeper, jobs: jobs.map((j) => j.name) });
-  const loop = startLoop(runner, config.jobTickMs, log);
+  const sql = sqlFromPool(pool);
+  const jobs = await buildJobs(config, { sql, chain, reader, wallets, finalized, keeper: chain.keeper, log });
+  // The watchdog watches the runner's jobs, from a loop of its own (see startKeeper).
+  const health = new JobHealth();
+  const watchdog = buildWatchdog(config, { sql, chain, wallets, keeper: chain.keeper, log, health, secrets: [...urlSecrets(config.rpcUrl, "rpc"), ...urlSecrets(config.databaseUrl, "db")] });
+  log.info("keeper started", { cluster: config.cluster, keeper: chain.keeper, jobs: [...jobs.map((j) => j.name), watchdog.name] });
+  const loop = startKeeper({ jobs, watchdog, observer: health, ctx: { now: () => new Date(), log }, tickMs: config.jobTickMs });
 
   let stopping = false;
   for (const sig of ["SIGINT", "SIGTERM"] as const) {

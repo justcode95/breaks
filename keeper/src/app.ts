@@ -10,6 +10,9 @@
 //   publish    - (only when PUBLISH_DIR is set) writes each break's eligible wallets and cards as files named by the hashes the chain committed
 //   x-bot      - (only when BOT_ENABLED) announces the reserve, the sale, the free-spot winners and the results on X, from finalized chain data
 //   refunds    - sends `refund_spot` for every spot of a cancelled break, so buyers get their USDC back without coming to the website
+// and, built apart by `buildWatchdog` and run on a loop of its own (`startKeeper` in run.ts) because it watches the runner:
+//   watchdog   - reports, once, a job that keeps failing or never finishes, a break stuck in a stage, too little SOL or a
+//                pause, to the log and (with ALERTS=telegram) a Telegram chat, and again when it clears
 
 import { XBot, botJob } from "./bot/bot.js";
 import { LogPoster, type Poster } from "./bot/poster.js";
@@ -47,6 +50,10 @@ import { SqlBreakRepo } from "./pipeline/repo.js";
 import { DrawnBreaks, FundedBreaks } from "./pipeline/sources.js";
 import { configAddress, decodeBreaksConfig } from "./solana/breaks.js";
 import type { Address } from "./solana/pubkey.js";
+import { scrubber } from "./doctor/report.js";
+import { type Alerter, LogAlerter, TelegramAlerter } from "./watch/alerter.js";
+import type { JobHealth } from "./watch/health.js";
+import { SqlWatchStore, Watchdog, type WatchdogDeps, watchdogJob } from "./watch/watchdog.js";
 
 /** The one thing the keeper needs from a `pg` pool; kept narrow so tests can use another Postgres. */
 export function sqlFromPool(pool: { query(text: string, params?: unknown[]): Promise<{ rows: unknown[] }> }): Sql {
@@ -322,4 +329,50 @@ export async function buildJobs(config: AppConfig, deps: AppDeps): Promise<Job[]
     }),
     refundJob({ refunder: new BreakRefunder({ chain, programs: config.programs, repo, log }), intervalMs }),
   ];
+}
+
+export type WatchConfig = Pick<Config, "cluster" | "programs" | "vrf" | "eligibility" | "scheduler" | "watch">;
+
+/**
+ * What the watchdog is built with: every setting it takes from the configuration, the channels (the log, and Telegram with
+ * ALERTS=telegram) and the secrets it hides (`secrets`, such as the node's url and the database's password, and the bot token).
+ */
+export function watchdogDeps(
+  config: WatchConfig,
+  deps: Pick<AppDeps, "sql" | "chain" | "wallets" | "keeper" | "log" | "now"> & { health?: JobHealth; secrets?: readonly string[]; telegram?: Alerter },
+): WatchdogDeps {
+  const { watch } = config;
+  const channels: Alerter[] = [new LogAlerter(deps.log)];
+  if (watch.alerts === "telegram") {
+    if (!watch.telegram) throw new Error("ALERTS=telegram needs ALERT_TELEGRAM_BOT_TOKEN and ALERT_TELEGRAM_CHAT_ID");
+    channels.push(deps.telegram ?? new TelegramAlerter(watch.telegram));
+  }
+  return {
+    chain: deps.chain,
+    wallets: deps.wallets,
+    keeper: deps.keeper,
+    programs: config.programs,
+    vrfProgram: config.vrf.program,
+    freeSpots: config.scheduler.template.freeSpots,
+    store: new SqlWatchStore(deps.sql),
+    ...(deps.health ? { jobs: deps.health } : {}),
+    limits: { afterMs: watch.afterMins * 60_000, settleSecs: config.eligibility.settleSecs },
+    channels,
+    title: `BREAKS keeper on ${config.cluster}`,
+    repeatMs: watch.repeatHours * 3_600_000,
+    scrub: scrubber([...(deps.secrets ?? []), ...(watch.telegram ? [watch.telegram.token] : [])]),
+    log: deps.log,
+    now: deps.now ?? (() => new Date()),
+  };
+}
+
+/** The watchdog job, which watches the runner: pass the same `JobHealth` to the runner (`startKeeper` does). It only reads. */
+export function buildWatchdog(config: WatchConfig, deps: Parameters<typeof watchdogDeps>[1]): Job {
+  const built = watchdogDeps(config, deps);
+  if (built.channels.length > 1) {
+    deps.log.info("watchdog on: alerts go to the log and to a Telegram chat", { chat: config.watch.telegram?.chatId, afterMins: config.watch.afterMins });
+  } else {
+    deps.log.info("watchdog on: alerts only go to the log (ALERTS=log)", { afterMins: config.watch.afterMins });
+  }
+  return watchdogJob({ watchdog: new Watchdog(built), intervalMs: config.watch.intervalSecs * 1000 });
 }

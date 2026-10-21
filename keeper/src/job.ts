@@ -18,6 +18,12 @@ export interface Job {
   run(ctx: JobContext): Promise<void>;
 }
 
+/** Hears when each run starts and ends (the watchdog's view of the jobs). A run that throws ends with its error. */
+export interface RunObserver {
+  started(name: string, at: Date): void;
+  finished(name: string, at: Date, error?: string): void;
+}
+
 interface JobState {
   job: Job;
   nextRunAt: number;
@@ -25,16 +31,20 @@ interface JobState {
 }
 
 /** Runs each job on its own interval. One failing job never stops the others and a job never overlaps itself. */
-export function createRunner(jobs: Job[], ctx: JobContext) {
+export function createRunner(jobs: Job[], ctx: JobContext, observer?: RunObserver) {
   const start = ctx.now().getTime();
   const states: JobState[] = jobs.map((job) => ({ job, nextRunAt: start, running: false }));
 
   async function runJob(state: JobState): Promise<void> {
     state.running = true;
+    observer?.started(state.job.name, ctx.now());
     try {
       await state.job.run(ctx);
+      observer?.finished(state.job.name, ctx.now());
     } catch (err) {
-      ctx.log.error(`job ${state.job.name} failed`, { error: err instanceof Error ? err.message : String(err) });
+      const error = err instanceof Error ? err.message : String(err);
+      ctx.log.error(`job ${state.job.name} failed`, { error });
+      observer?.finished(state.job.name, ctx.now(), error);
     } finally {
       state.running = false;
       state.nextRunAt = ctx.now().getTime() + state.job.intervalMs;

@@ -50,3 +50,14 @@ export function createBreakCost(): CreateBreakCost {
   const keep = rentExempt(0);
   return { rent, fee, keep, total: rent + fee + keep };
 }
+
+/**
+ * What the keeper's wallet needs in SOL: to create a break (rent of two accounts, a fee, and the least a wallet may be left
+ * with) and to see one all the way through: the other keeper transactions of its life (close, commit the list, fund, commit
+ * the pool, ask for randomness, settle it, one claim per free spot) and ORAO's fee and the rent of its request account.
+ */
+export function keeperSolNeed(freeSpots: number, oraoRequestFee: bigint): { create: bigint; cycle: bigint } {
+  const create = createBreakCost().total;
+  const others = BigInt(6 + freeSpots) * SIGNATURE_FEE;
+  return { create, cycle: create + others + oraoRequestFee + rentExempt(RANDOMNESS_REQUEST_ACCOUNT_BYTES) };
+}

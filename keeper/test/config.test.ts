@@ -55,7 +55,37 @@ describe("loadConfig", () => {
         limits: { minGapSecs: 60, maxPerDay: 20, maxAttempts: 5, retryStepSecs: 120 },
         lookback: 5,
       },
+      watch: { alerts: "log", afterMins: 15, repeatHours: 12, intervalSecs: 60 },
     });
+  });
+
+  it("sends the watchdog's alerts to Telegram only when told, with a token and a chat that can be one", () => {
+    const token = "123456789:AAH-secret_token_value_0123456789";
+    expect(loadConfig({ ...base, ALERTS: "telegram", ALERT_TELEGRAM_BOT_TOKEN: token, ALERT_TELEGRAM_CHAT_ID: "-1001234567890" }).watch).toEqual({
+      alerts: "telegram",
+      telegram: { token, chatId: "-1001234567890" },
+      afterMins: 15,
+      repeatHours: 12,
+      intervalSecs: 60,
+    });
+    // The settings without ALERTS=telegram are not used.
+    expect(loadConfig({ ...base, ALERT_TELEGRAM_BOT_TOKEN: token, ALERT_TELEGRAM_CHAT_ID: "@breaks_alerts" }).watch).toEqual({ alerts: "log", afterMins: 15, repeatHours: 12, intervalSecs: 60 });
+    const missing = parseConfig({ ...base, ALERTS: "telegram" });
+    expect("problems" in missing && missing.problems).toEqual(["ALERT_TELEGRAM_BOT_TOKEN: is required when ALERTS=telegram", "ALERT_TELEGRAM_CHAT_ID: is required when ALERTS=telegram"]);
+    const bad = parseConfig({ ...base, ALERTS: "telegram", ALERT_TELEGRAM_BOT_TOKEN: "my-secret-XYZZY-0123456789abcdef", ALERT_TELEGRAM_CHAT_ID: "my chat" });
+    expect("problems" in bad && bad.problems).toEqual([
+      "ALERT_TELEGRAM_BOT_TOKEN: is not a bot token as BotFather gives it (digits, a colon, then the secret)",
+      "ALERT_TELEGRAM_CHAT_ID: must be a chat's number (a group's is negative) or a public channel's @name",
+    ]);
+    expect(() => loadConfig({ ...base, ALERTS: "email" })).toThrow(/ALERTS/);
+  });
+
+  it("takes the watchdog's times within their limits", () => {
+    expect(loadConfig({ ...base, ALERT_AFTER_MINS: "1", ALERT_REPEAT_HOURS: "0", WATCH_INTERVAL_SECS: "10" }).watch).toEqual({ alerts: "log", afterMins: 1, repeatHours: 0, intervalSecs: 10 });
+    expect(loadConfig({ ...base, ALERT_AFTER_MINS: "1440", ALERT_REPEAT_HOURS: "168", WATCH_INTERVAL_SECS: "3600" }).watch).toMatchObject({ afterMins: 1440, repeatHours: 168, intervalSecs: 3600 });
+    for (const [name, value] of [["ALERT_AFTER_MINS", "0"], ["ALERT_AFTER_MINS", "1441"], ["ALERT_AFTER_MINS", "1.5"], ["ALERT_REPEAT_HOURS", "-1"], ["ALERT_REPEAT_HOURS", "169"], ["WATCH_INTERVAL_SECS", "9"], ["WATCH_INTERVAL_SECS", "3601"]] as const) {
+      expect(() => loadConfig({ ...base, [name]: value }), `${name}=${value}`).toThrow(new RegExp(name));
+    }
   });
 
   it("publishes the lists only when told where, and refuses an interval that would hammer the node", () => {
