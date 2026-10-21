@@ -61,7 +61,7 @@ export function jobAlerts(jobs: readonly JobStatus[], now: Date, limits: WatchLi
     if (j.runningSince && now.getTime() - j.runningSince.getTime() >= limits.afterMs) {
       out.push({
         key: `job:${j.name}:hung`,
-        text: `A run of the ${j.name} job started ${duration(now.getTime() - j.runningSince.getTime())} ago and has not finished: something it waits on (the node, the database) does not answer.`,
+        text: `A run of the ${j.name} job started ${duration(now.getTime() - j.runningSince.getTime())} ago and has not finished: something it waits on (the node, the database) does not answer, and until it ends the keeper starts no other job.`,
       });
     }
   }
@@ -119,7 +119,9 @@ export function breakAlert(b: BreakFacts, now: Date, limits: WatchLimits): Alert
         ? { key, text: `${name} has had its eligibility list committed for at least ${duration(t - seen)} and is neither funded nor cancelled: is the program paused, or the buyer wallet's USDC account missing? ${log}` }
         : undefined;
     case "Funded":
-      return over(seen) ? { key, text: `${name} has been funded for at least ${duration(t - seen)} and its packs are not all bought and pulled ${log}.` } : undefined;
+      return over(seen)
+        ? { key, text: `${name} has been funded for at least ${duration(t - seen)} and its pool is not committed: the packs are not all bought and pulled, or commit_pool has not landed ${log}.` }
+        : undefined;
     case "PoolCommitted":
       return over(seen) ? { key, text: `${name}'s pool has been committed for at least ${duration(t - seen)} and no randomness has been asked for ${log}.` } : undefined;
     case "RandomnessRequested": {

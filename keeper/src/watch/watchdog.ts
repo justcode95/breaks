@@ -77,6 +77,8 @@ export class Watchdog {
   private readonly seen = new Map<bigint, { status: BreakFacts["status"]; since: Date }>();
   /** Since when a source could not be read, and why. */
   private readonly unread = new Map<Source, { since: Date; error: string }>();
+  /** Channels whose last send failed: why, and when that was last logged. */
+  private readonly failing = new Map<string, { error: string; loggedAt: number }>();
   /** The last alerts each group gave, used again while what the group needs cannot be read (so nothing clears by accident). */
   private last = { chain: [] as Alert[], breaks: [] as Alert[] };
 
@@ -202,12 +204,23 @@ export class Watchdog {
       try {
         await alerter.send({ text: out.text, urgent: out.urgent });
         book.delivered(out, at);
+        if (this.failing.delete(alerter.name)) this.deps.log.info(`the watchdog reaches ${alerter.name} again`);
       } catch (err) {
-        this.deps.log.error(`the watchdog could not send its message to ${alerter.name}; it tries again next run`, { error: this.deps.scrub(message(err)) });
+        this.sendFailed(alerter.name, this.deps.scrub(message(err)), at);
       }
     }
   }
+
+  /** A channel that cannot be reached is said when it starts, when the reason changes and once an hour, not on every run. */
+  private sendFailed(channel: string, error: string, at: Date): void {
+    const last = this.failing.get(channel);
+    if (last && last.error === error && at.getTime() - last.loggedAt < HOUR) return;
+    this.failing.set(channel, { error, loggedAt: at.getTime() });
+    this.deps.log.error(`the watchdog cannot send its messages to ${channel}; it tries again every run`, { error });
+  }
 }
+
+const HOUR = 3_600_000;
 
 export function watchdogJob(deps: { watchdog: Watchdog; intervalMs: number }): Job {
   return {

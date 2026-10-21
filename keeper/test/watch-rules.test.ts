@@ -52,7 +52,7 @@ describe("jobAlerts", () => {
     const running = { name: "indexer", failures: 0, runningSince: at(0) };
     expect(jobAlerts([running], at(15 * MIN - 1), limits)).toEqual([]);
     expect(jobAlerts([running], at(20 * MIN), limits)).toEqual([
-      { key: "job:indexer:hung", text: "A run of the indexer job started 20 min ago and has not finished: something it waits on (the node, the database) does not answer." },
+      { key: "job:indexer:hung", text: "A run of the indexer job started 20 min ago and has not finished: something it waits on (the node, the database) does not answer, and until it ends the keeper starts no other job." },
     ]);
   });
 
@@ -83,7 +83,7 @@ describe("breakAlert", () => {
   it("names the break as people see it (id + 1) and keys it by id and stage", () => {
     expect(edge(facts(), 0)).toEqual({
       key: "break:6:Funded",
-      text: "Break #7 has been funded for at least 15 min and its packs are not all bought and pulled (see the keeper's log).",
+      text: "Break #7 has been funded for at least 15 min and its pool is not committed: the packs are not all bought and pulled, or commit_pool has not landed (see the keeper's log).",
     });
   });
 

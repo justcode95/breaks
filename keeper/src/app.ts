@@ -10,9 +10,9 @@
 //   publish    - (only when PUBLISH_DIR is set) writes each break's eligible wallets and cards as files named by the hashes the chain committed
 //   x-bot      - (only when BOT_ENABLED) announces the reserve, the sale, the free-spot winners and the results on X, from finalized chain data
 //   refunds    - sends `refund_spot` for every spot of a cancelled break, so buyers get their USDC back without coming to the website
-// and, built apart by `buildWatchdog` because it watches the runner as well:
-//   watchdog   - reports, once, a job that keeps failing, a break stuck in a stage, too little SOL or a pause, to the log and
-//                (with ALERTS=telegram) a Telegram chat, and again when it clears
+// and, built apart by `buildWatchdog` and run on a loop of its own (`startKeeper` in run.ts) because it watches the runner:
+//   watchdog   - reports, once, a job that keeps failing or never finishes, a break stuck in a stage, too little SOL or a
+//                pause, to the log and (with ALERTS=telegram) a Telegram chat, and again when it clears
 
 import { XBot, botJob } from "./bot/bot.js";
 import { LogPoster, type Poster } from "./bot/poster.js";
@@ -366,7 +366,7 @@ export function watchdogDeps(
   };
 }
 
-/** The watchdog job, which also watches the runner: pass the same `JobHealth` to `createRunner`. It only reads. */
+/** The watchdog job, which watches the runner: pass the same `JobHealth` to the runner (`startKeeper` does). It only reads. */
 export function buildWatchdog(config: WatchConfig, deps: Parameters<typeof watchdogDeps>[1]): Job {
   const built = watchdogDeps(config, deps);
   if (built.channels.length > 1) {

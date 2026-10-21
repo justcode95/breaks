@@ -138,7 +138,7 @@ describe("Watchdog", () => {
     await s.watchdog.run();
     expect(s.recorder.sent.at(-1)?.urgent).toBe(true);
     expect(s.recorder.take()).toEqual([
-      "BREAKS keeper on devnet: 1 new problem.\nNew:\n• Break #5 has been funded for at least 15 min and its packs are not all bought and pulled (see the keeper's log).",
+      "BREAKS keeper on devnet: 1 new problem.\nNew:\n• Break #5 has been funded for at least 15 min and its pool is not committed: the packs are not all bought and pulled, or commit_pool has not landed (see the keeper's log).",
     ]);
     s.clock.advance(MIN);
     await s.watchdog.run();
@@ -149,7 +149,7 @@ describe("Watchdog", () => {
     await s.watchdog.run();
     expect(s.recorder.sent.at(-1)?.urgent).toBe(false);
     expect(s.recorder.take()).toEqual([
-      "BREAKS keeper on devnet: 1 cleared.\nCleared:\n• Break #5 has been funded for at least 16 min and its packs are not all bought and pulled (see the keeper's log).",
+      "BREAKS keeper on devnet: 1 cleared.\nCleared:\n• Break #5 has been funded for at least 16 min and its pool is not committed: the packs are not all bought and pulled, or commit_pool has not landed (see the keeper's log).",
     ]);
     s.clock.advance(15 * MIN);
     await s.watchdog.run();
@@ -236,7 +236,7 @@ describe("Watchdog", () => {
         "BREAKS keeper on devnet: 2 new problems.",
         "New:",
         "• The indexer job has failed every run for 15 min (2 runs in a row). Last error: getSignaturesForAddress: 429 Too Many Requests",
-        "• A run of the delivery job started 15 min ago and has not finished: something it waits on (the node, the database) does not answer.",
+        "• A run of the delivery job started 15 min ago and has not finished: something it waits on (the node, the database) does not answer, and until it ends the keeper starts no other job.",
       ].join("\n"),
     ]);
     s.health.finished("indexer", s.clock.now());
@@ -334,12 +334,30 @@ describe("Watchdog", () => {
     await both.run();
     expect(s.recorder.take()).toHaveLength(1);
     expect(second.take()).toEqual([]);
-    expect(s.errors).toEqual(["the watchdog could not send its message to telegram; it tries again next run"]);
+    expect(s.errors).toEqual(["the watchdog cannot send its messages to telegram; it tries again every run"]);
     expect(s.fields).toEqual([{ error: "Telegram did not take the message (401): [hidden] is wrong" }]);
+    // The same failure is not logged again on every run; a new reason is, and so is the same one an hour later.
+    s.clock.advance(60 * MIN - 1);
+    await both.run();
+    expect(s.errors).toHaveLength(1);
+    second.failing = "no answer from Telegram: fetch failed";
+    await both.run();
+    expect(s.fields.at(-1)).toEqual({ error: "no answer from Telegram: fetch failed" });
+    s.clock.advance(60 * MIN - 1);
+    await both.run();
+    expect(s.errors).toHaveLength(2);
+    s.clock.advance(1);
+    await both.run();
+    expect(s.errors).toHaveLength(3);
+    s.clock.advance(MIN); // and then not again for another hour
+    await both.run();
+    expect(s.errors).toHaveLength(3);
+    expect(s.infos).not.toContain("the watchdog reaches telegram again");
     second.failing = undefined;
     s.putConfig({ paused: true });
     await both.run();
     expect(s.recorder.take()).toEqual(["BREAKS keeper on devnet: 1 new problem.\nNew:\n• The breaks program is paused by its admin: no new breaks, spot sales or funding until it is unpaused (cancelling and refunds still work)."]);
+    expect(s.infos).toContain("the watchdog reaches telegram again");
     expect(second.take()).toEqual([
       "BREAKS keeper on devnet: 1 new problem.\nBREAKS keeper on devnet started. A problem that lasts is reported here once, and again when it clears.\nNew:\n• The breaks program is paused by its admin: no new breaks, spot sales or funding until it is unpaused (cancelling and refunds still work).",
     ]);
