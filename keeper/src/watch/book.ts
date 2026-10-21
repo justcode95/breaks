@@ -59,7 +59,6 @@ export class AlertBook {
       this.open.delete(key);
       if (o.told) this.cleared.set(key, o.text);
     }
-    if (![...this.open.values()].some((o) => o.told)) this.remindAt = undefined;
   }
 
   /** What to send now, if anything. */

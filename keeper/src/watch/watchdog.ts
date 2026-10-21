@@ -73,7 +73,7 @@ const message = (err: unknown) => (err instanceof Error ? err.message : String(e
 
 export class Watchdog {
   private readonly books: { alerter: Alerter; book: AlertBook }[];
-  /** When each break was first seen in its current status (by on-chain id). */
+  /** When each break was first seen in its current status (by on-chain id). A break that leaves the list never comes back. */
   private readonly seen = new Map<bigint, { status: BreakFacts["status"]; since: Date }>();
   /** Since when a source could not be read, and why. */
   private readonly unread = new Map<Source, { since: Date; error: string }>();
@@ -167,8 +167,6 @@ export class Watchdog {
       fail("chain", err);
       return undefined;
     }
-    const ids = new Set(active.map((a) => a.onchainId));
-    for (const id of this.seen.keys()) if (!ids.has(id)) this.seen.delete(id);
 
     const out: Alert[] = [];
     for (const [i, f] of facts.entries()) {

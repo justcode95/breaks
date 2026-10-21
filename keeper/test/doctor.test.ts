@@ -1016,6 +1016,11 @@ describe("secrets", () => {
     const out = await main([], { env: swapped.env, ports: swapped.ports });
     expect(out.out).toContain("ALERT_TELEGRAM_CHAT_ID: must be a chat's number");
     expect(out.out).not.toContain(SECRET_TELEGRAM_TOKEN);
+    // Pasted into a setting the report does print, it is still hidden.
+    const pasted = await healthyWorld({ env: { PUBLISH_DIR: `/srv/${SECRET_TELEGRAM_TOKEN}` } });
+    const printed = await main([], { env: pasted.env, ports: pasted.ports });
+    expect(printed.out).toContain("/srv/[hidden] can be written to");
+    expect(printed.out).not.toContain(SECRET_TELEGRAM_TOKEN);
   });
 
   it("hides a secret in what it tells the operator to do, not only in what it found", async () => {

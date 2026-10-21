@@ -117,6 +117,45 @@ describe("AlertBook", () => {
     expect(step(b, [a("one"), a("two")], 18 * HOUR)).toBe("BREAKS keeper on devnet: 2 still open.\nStill open:\n• one is wrong\n• two is wrong");
   });
 
+  it("lists only what the channel already knows as still open, when a reminder comes with something new", () => {
+    const b = book(12 * HOUR);
+    step(b, [a("old")], 0);
+    expect(step(b, [a("old"), a("new")], 12 * HOUR)).toBe(
+      "BREAKS keeper on devnet: 1 new problem, 1 still open.\nNew:\n• new is wrong\nStill open:\n• old is wrong",
+    );
+  });
+
+  it("keeps reminding of a problem that came back before its clearing was told", () => {
+    const b = book(12 * HOUR);
+    step(b, [a("k")], 0);
+    b.update([]);
+    expect(b.message(at(1))?.cleared).toEqual(["k"]); // not delivered
+    b.update([a("k")]);
+    expect(b.message(at(2))).toBeUndefined();
+    expect(step(b, [a("k")], 12 * HOUR)).toBe("BREAKS keeper on devnet: 1 still open.\nStill open:\n• k is wrong");
+  });
+
+  it("fits about 4,000 characters in a message by default", () => {
+    const b = book();
+    b.update(Array.from({ length: 36 }, (_, i) => a(`k${i}`, `${String(i).padStart(2, "0")} ${"w".repeat(100)}`)));
+    const out = b.message(at(1))!;
+    expect(out.opened).toHaveLength(36);
+    expect(out.text.length).toBeGreaterThan(3_700);
+    expect(out.text.length).toBeLessThanOrEqual(4_000);
+    b.update(Array.from({ length: 40 }, (_, i) => a(`k${i}`, `${String(i).padStart(2, "0")} ${"w".repeat(100)}`)));
+    expect(b.message(at(2))!.text).toMatch(/…and \d+ more, in the next message\.$/);
+  });
+
+  it("never goes over its size, with the line that says how many more there are, whatever the length of the lines", () => {
+    for (let len = 10; len <= MAX_LINE; len += 7) {
+      const b = book(HOUR, MIN_MESSAGE);
+      b.update(Array.from({ length: 40 }, (_, i) => a(`k${i}`, "z".repeat(len))));
+      const out = b.message(at(1))!;
+      expect(out.text.length, `lines of ${len}`).toBeLessThanOrEqual(MIN_MESSAGE);
+      expect(out.opened.length, `lines of ${len}`).toBeGreaterThan(0);
+    }
+  });
+
   it("never repeats with a repeat time of 0, and has nothing to repeat once everything cleared", () => {
     const never = book(0);
     step(never, [a("k")], 0);

@@ -49,7 +49,8 @@ describe("TelegramAlerter", () => {
     ];
     for (const [answer, reason] of cases) {
       const t = new TelegramAlerter({ token: TOKEN, chatId: "42", fetch: fakeFetch(() => answer).fetchFn });
-      await expect(t.send({ text: "x", urgent: true })).rejects.toThrow(reason);
+      const err = await t.send({ text: "x", urgent: true }).catch((e: Error) => e);
+      expect((err as Error).message).toBe(reason);
     }
     const long = new TelegramAlerter({ token: TOKEN, chatId: "42", fetch: fakeFetch(() => json(400, { description: `a\n\n${"b".repeat(500)}` })).fetchFn });
     await expect(long.send({ text: "x", urgent: true })).rejects.toThrow(/\(400\): a b{198}$/);
