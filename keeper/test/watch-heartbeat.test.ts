@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { TelegramAlerter } from "../src/watch/alerter.js";
 import { HttpHeartbeat } from "../src/watch/heartbeat.js";
 
 const URL_ = "https://hc.example/ping/5f1e2d3c-0123-4567-89ab-cdef01234567";
@@ -59,5 +60,19 @@ describe("HttpHeartbeat", () => {
       })) as unknown as typeof fetch;
     const err = await new HttpHeartbeat({ url: URL_, fetch: hanging, timeoutMs: 20 }).ping().catch((e: Error) => e);
     expect((err as Error).message).toBe("no answer from the outside check: The operation was aborted due to timeout");
+  });
+});
+
+describe("the time limits", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("are 10 s for a ping and 15 s for a Telegram message, unless told otherwise", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const f = fakeFetch(() => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    await new HttpHeartbeat({ url: URL_, fetch: f.fetchFn }).ping();
+    await new HttpHeartbeat({ url: URL_, fetch: f.fetchFn, timeoutMs: 3 }).ping();
+    await new TelegramAlerter({ token: "1:abcdefghijklmnopqrstuvwxyz", chatId: "42", fetch: f.fetchFn }).send({ text: "x", urgent: false });
+    await new TelegramAlerter({ token: "1:abcdefghijklmnopqrstuvwxyz", chatId: "42", fetch: f.fetchFn, timeoutMs: 4 }).send({ text: "x", urgent: false });
+    expect(timeout.mock.calls.map((c) => c[0])).toEqual([10_000, 3, 15_000, 4]);
   });
 });

@@ -9,7 +9,6 @@
 
 import { pathToFileURL } from "node:url";
 import { parseWatchConfig } from "../config.js";
-import { scrubber, urlSecrets } from "../doctor/report.js";
 import { TelegramAlerter } from "./alerter.js";
 
 const USAGE = `usage: pnpm --filter keeper send-test-alert [-- --help]
@@ -30,10 +29,10 @@ export async function main(argv: string[], deps: TestAlertDeps = {}): Promise<{ 
   if (args.includes("--help") || args.includes("-h")) return { code: 0, out: USAGE };
   if (args.length > 0) return { code: 2, out: `unknown argument ${args[0]}\n\n${USAGE}` };
 
-  const env = deps.env ?? process.env;
-  const hide = scrubber([env.ALERT_TELEGRAM_BOT_TOKEN ?? "", ...urlSecrets(env.ALERT_HEARTBEAT_URL, "rpc")]);
-  const parsed = parseWatchConfig(env);
-  if ("problems" in parsed) return { code: 2, out: hide(`The watchdog's settings cannot be read:\n${parsed.problems.map((p) => `  ${p}`).join("\n")}`) };
+  // Nothing printed here can hold a secret: a problem with a setting never repeats its value, the chat is a number or an
+  // @name, the outside check's address is not printed, and the Telegram channel hides its token in what it throws.
+  const parsed = parseWatchConfig(deps.env ?? process.env);
+  if ("problems" in parsed) return { code: 2, out: `The watchdog's settings cannot be read:\n${parsed.problems.map((p) => `  ${p}`).join("\n")}` };
 
   const { watch, cluster } = parsed;
   const outside = watch.heartbeatUrl
@@ -52,7 +51,7 @@ export async function main(argv: string[], deps: TestAlertDeps = {}): Promise<{ 
   try {
     await telegram.send({ text, urgent: true });
   } catch (err) {
-    const reason = hide(err instanceof Error ? err.message : String(err));
+    const reason = err instanceof Error ? err.message : String(err);
     return { code: 1, out: `The test message did not reach the chat ${watch.telegram.chatId}: ${reason}\nCheck the token with @BotFather, and that the bot was started in that chat (or added to the group).\n${outside}` };
   }
   return { code: 0, out: `Telegram took the test message for the chat ${watch.telegram.chatId}: look for it there.\n${outside}` };

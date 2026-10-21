@@ -440,6 +440,20 @@ describe("the outside check", () => {
     expect(s.infos.filter((i) => i.startsWith("the watchdog pings the outside check again"))).toHaveLength(1);
   });
 
+  it("times a channel's failure from its first run, however often its reason changes or it is logged again", async () => {
+    const s = withCheck();
+    s.telegram.failing = "no answer from Telegram: fetch failed";
+    await s.watchdog.run();
+    s.clock.advance(10 * MIN);
+    s.telegram.failing = "Telegram did not take the message (502)";
+    await s.watchdog.run(); // logged again, for its new reason
+    expect(s.errors.filter((e) => e.startsWith("the watchdog cannot send"))).toHaveLength(2);
+    s.clock.advance(5 * MIN);
+    await s.watchdog.run();
+    expect(s.check.attempts).toBe(2);
+    expect(s.errors.at(-1)).toBe("the watchdog stops pinging the outside check: telegram has not taken its messages for 15 min, so the check will report the keeper as down");
+  });
+
   it("is not held back by its own failures", async () => {
     const s = withCheck();
     s.check.failing = "the outside check did not take the ping (503)";
