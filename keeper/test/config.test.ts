@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig, parseConfig } from "../src/config.js";
+import { loadConfig, parseConfig, parseWatchConfig } from "../src/config.js";
 import { packMachineLabel } from "../src/scheduler/machine.js";
 import { oneMachine } from "./support/packs.js";
 import { ORAO_PROGRAM } from "../src/solana/breaks.js";
@@ -78,6 +78,35 @@ describe("loadConfig", () => {
       "ALERT_TELEGRAM_CHAT_ID: must be a chat's number (a group's is negative) or a public channel's @name",
     ]);
     expect(() => loadConfig({ ...base, ALERTS: "email" })).toThrow(/ALERTS/);
+  });
+
+  it("takes an outside check at an https address, or http to this machine", () => {
+    expect(loadConfig({ ...base, ALERT_HEARTBEAT_URL: "https://hc-ping.com/5f1e2d3c-0123-4567-89ab-cdef01234567" }).watch.heartbeatUrl).toBe("https://hc-ping.com/5f1e2d3c-0123-4567-89ab-cdef01234567");
+    expect(loadConfig({ ...base, ALERT_HEARTBEAT_URL: "http://127.0.0.1:8996/ping/x" }).watch.heartbeatUrl).toBe("http://127.0.0.1:8996/ping/x");
+    expect(loadConfig({ ...base, ALERT_HEARTBEAT_URL: "http://localhost/ping" }).watch.heartbeatUrl).toBe("http://localhost/ping");
+    expect(loadConfig(base).watch).not.toHaveProperty("heartbeatUrl");
+    for (const bad of ["http://hc.example/ping", "http://127.0.0.2/ping", "ftp://hc.example/x", "hc.example/ping", ""]) {
+      const r = parseConfig({ ...base, ALERT_HEARTBEAT_URL: bad });
+      expect("problems" in r && r.problems.some((p) => p.startsWith("ALERT_HEARTBEAT_URL:")), bad).toBe(true);
+    }
+    const r = parseConfig({ ...base, ALERT_HEARTBEAT_URL: "http://hc.example/ping/secret-key-0123456789" });
+    expect("problems" in r && r.problems).toEqual(["ALERT_HEARTBEAT_URL: must be an https:// address (or http:// to this machine)"]);
+  });
+
+  it("reads the watchdog's settings on their own, for a command that needs nothing else", () => {
+    const token = "123456789:AAH-secret_token_value_0123456789";
+    expect(parseWatchConfig({ ALERTS: "telegram", ALERT_TELEGRAM_BOT_TOKEN: token, ALERT_TELEGRAM_CHAT_ID: "42", SOLANA_CLUSTER: "localnet" })).toEqual({
+      cluster: "localnet",
+      watch: { alerts: "telegram", telegram: { token, chatId: "42" }, afterMins: 15, repeatHours: 12, intervalSecs: 60 },
+    });
+    expect(parseWatchConfig({})).toEqual({ cluster: "devnet", watch: { alerts: "log", afterMins: 15, repeatHours: 12, intervalSecs: 60 } });
+    expect(parseWatchConfig({ ALERTS: "telegram", ALERT_AFTER_MINS: "0" })).toEqual({
+      problems: ["ALERT_AFTER_MINS: Too small: expected number to be >=1", "ALERT_TELEGRAM_BOT_TOKEN: is required when ALERTS=telegram", "ALERT_TELEGRAM_CHAT_ID: is required when ALERTS=telegram"],
+    });
+    // The keeper reads the same settings the same way.
+    const full = loadConfig({ ...base, ALERTS: "telegram", ALERT_TELEGRAM_BOT_TOKEN: token, ALERT_TELEGRAM_CHAT_ID: "42", ALERT_HEARTBEAT_URL: "https://hc.example/p" });
+    const alone = parseWatchConfig({ ...base, ALERTS: "telegram", ALERT_TELEGRAM_BOT_TOKEN: token, ALERT_TELEGRAM_CHAT_ID: "42", ALERT_HEARTBEAT_URL: "https://hc.example/p" });
+    expect("watch" in alone && alone.watch).toEqual(full.watch);
   });
 
   it("takes the watchdog's times within their limits", () => {

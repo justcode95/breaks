@@ -4,6 +4,7 @@ import { type BreakAccount, ORAO_PROGRAM, breakAddress, configAddress, oraoNetwo
 import type { Address } from "../src/solana/pubkey.js";
 import { keeperSolNeed } from "../src/solana/rent.js";
 import type { AlertMessage, Alerter } from "../src/watch/alerter.js";
+import type { Heartbeat } from "../src/watch/heartbeat.js";
 import { JobHealth } from "../src/watch/health.js";
 import { SqlWatchStore, Watchdog, type WatchStore, watchdogJob } from "../src/watch/watchdog.js";
 import { scrubber } from "../src/doctor/report.js";
@@ -369,6 +370,126 @@ describe("Watchdog", () => {
     expect(job).toMatchObject({ name: "watchdog", intervalMs: 60_000 });
     await job.run({ now: s.clock.now, log: logger().log });
     expect(s.recorder.take()).toHaveLength(1);
+  });
+});
+
+class PretendCheck implements Heartbeat {
+  attempts = 0;
+  pings = 0;
+  failing: string | undefined;
+  async ping() {
+    this.attempts++;
+    if (this.failing) throw new Error(this.failing);
+    this.pings++;
+  }
+}
+
+describe("the outside check", () => {
+  function withCheck(over: Parameters<typeof setup>[0] = {}) {
+    const s = setup(over);
+    const telegram = new Recorder("telegram");
+    const check = new PretendCheck();
+    const deps = (s.watchdog as unknown as { deps: ConstructorParameters<typeof Watchdog>[0] }).deps;
+    const watchdog = new Watchdog({ ...deps, channels: [s.recorder, telegram], heartbeat: check });
+    return { ...s, telegram, check, watchdog };
+  }
+
+  it("is pinged once every run, after the messages, whatever the alerts say", async () => {
+    const s = withCheck();
+    s.putConfig({ paused: true });
+    await s.watchdog.run();
+    expect(s.check.pings).toBe(1);
+    s.chain.down = "fetch failed"; // problems are the channels' to tell; the ping says the keeper runs and is heard
+    for (let i = 0; i < 3; i++) {
+      s.clock.advance(20 * MIN);
+      await s.watchdog.run();
+    }
+    expect(s.check.pings).toBe(4);
+    expect(s.telegram.take().join("\n")).toContain("has not been able to read the node");
+  });
+
+  it("is held back once a channel has not taken its messages for the limit, and pinged again when it does", async () => {
+    const s = withCheck();
+    s.telegram.failing = "no answer from Telegram: fetch failed";
+    await s.watchdog.run();
+    s.clock.advance(15 * MIN - 1);
+    await s.watchdog.run();
+    expect(s.check.pings).toBe(2);
+    s.clock.advance(1);
+    await s.watchdog.run();
+    expect(s.check.attempts).toBe(2);
+    expect(s.errors.filter((e) => e.startsWith("the watchdog stops pinging"))).toEqual([
+      "the watchdog stops pinging the outside check: telegram has not taken its messages for 15 min, so the check will report the keeper as down",
+    ]);
+    // Said once, and held back for as long as it lasts.
+    for (let i = 0; i < 3; i++) {
+      s.clock.advance(10 * MIN);
+      await s.watchdog.run();
+    }
+    expect(s.check.attempts).toBe(2);
+    expect(s.errors.filter((e) => e.startsWith("the watchdog stops pinging"))).toHaveLength(1);
+
+    s.telegram.failing = undefined;
+    await s.watchdog.run();
+    expect(s.telegram.take()).toHaveLength(1); // the greeting, at last
+    expect(s.check.pings).toBe(3);
+    expect(s.infos).toEqual(expect.arrayContaining(["the watchdog reaches telegram again", "the watchdog pings the outside check again: every channel takes its messages"]));
+    s.clock.advance(MIN);
+    await s.watchdog.run();
+    expect(s.check.pings).toBe(4);
+    expect(s.infos.filter((i) => i.startsWith("the watchdog pings the outside check again"))).toHaveLength(1);
+  });
+
+  it("times a channel's failure from its first run, however often its reason changes or it is logged again", async () => {
+    const s = withCheck();
+    s.telegram.failing = "no answer from Telegram: fetch failed";
+    await s.watchdog.run();
+    s.clock.advance(10 * MIN);
+    s.telegram.failing = "Telegram did not take the message (502)";
+    await s.watchdog.run(); // logged again, for its new reason
+    expect(s.errors.filter((e) => e.startsWith("the watchdog cannot send"))).toHaveLength(2);
+    s.clock.advance(5 * MIN);
+    await s.watchdog.run();
+    expect(s.check.attempts).toBe(2);
+    expect(s.errors.at(-1)).toBe("the watchdog stops pinging the outside check: telegram has not taken its messages for 15 min, so the check will report the keeper as down");
+  });
+
+  it("is not held back by its own failures", async () => {
+    const s = withCheck();
+    s.check.failing = "the outside check did not take the ping (503)";
+    for (let i = 0; i < 4; i++) {
+      await s.watchdog.run();
+      s.clock.advance(15 * MIN);
+    }
+    expect(s.check.attempts).toBe(4);
+    expect(s.errors.filter((e) => e.startsWith("the watchdog stops pinging"))).toEqual([]);
+  });
+
+  it("logs a check it cannot reach when that starts, when the reason changes and once an hour, without secrets, and when it is reached again", async () => {
+    const s = withCheck({ secrets: ["ping/KEY0123456789"] });
+    s.check.failing = "no answer from the outside check: request to https://hc.example/ping/KEY0123456789 failed";
+    await s.watchdog.run();
+    expect(s.errors).toEqual(["the watchdog cannot ping the outside check (ALERT_HEARTBEAT_URL); it tries again every run"]);
+    expect(s.fields).toEqual([{ error: "no answer from the outside check: request to https://hc.example/[hidden] failed" }]);
+    s.clock.advance(60 * MIN - 1);
+    await s.watchdog.run();
+    expect(s.errors).toHaveLength(1);
+    s.check.failing = "the outside check did not take the ping (503)";
+    await s.watchdog.run();
+    expect(s.errors).toHaveLength(2);
+    s.clock.advance(60 * MIN);
+    await s.watchdog.run();
+    expect(s.errors).toHaveLength(3);
+    s.check.failing = undefined;
+    await s.watchdog.run();
+    expect(s.infos).toContain("the watchdog reaches the outside check again");
+    expect(s.check.pings).toBe(1);
+  });
+
+  it("is only pinged when there is one", async () => {
+    const s = setup();
+    await s.watchdog.run();
+    expect(s.errors).toEqual([]);
   });
 });
 

@@ -20,6 +20,7 @@ import {
   NOW,
   SECRET_DB_PASSWORD,
   SECRET_RPC_PATH,
+  SECRET_HEARTBEAT_KEY,
   SECRET_TELEGRAM_TOKEN,
   UPGRADER,
   USDC,
@@ -69,6 +70,7 @@ const EVERY_CHECK = [
   "the published lists have somewhere to go",
   "the X bot",
   "the watchdog's alerts",
+  "an outside check",
 ];
 
 const statusOf = (checks: Check[], title: string) => find(checks, title).status;
@@ -88,7 +90,7 @@ describe("a healthy setup", () => {
     expect(checks.map((c) => c.title)).toEqual(EVERY_CHECK);
     expect(checks.filter((c) => c.status !== "ok").map((c) => `${c.status}: ${c.title}`)).toEqual(["warn: real packs and cards"]);
     const report = summarize(checks);
-    expect(report).toMatchObject({ ok: 35, warned: 1, failed: 0, skipped: 0, ready: true });
+    expect(report).toMatchObject({ ok: 36, warned: 1, failed: 0, skipped: 0, ready: true });
     expect(w.node.sent).toEqual([]);
     expect(w.node.requests.map((r) => r.method).filter((m) => !READS.has(m))).toEqual([]);
   });
@@ -987,6 +989,19 @@ describe("the outputs", () => {
     expect(logOnly.status).toBe("warn");
     expect(logOnly.detail).toBe("a problem that lasts 5 min is reported once, and again when it clears, only in the keeper's log: nobody is told when a break gets stuck");
     expect(logOnly.fix).toContain("ALERTS=telegram");
+    expect(logOnly.fix).toContain("pnpm --filter keeper send-test-alert");
+  });
+
+  it("says whether an outside check is told the keeper is alive, without its address", async () => {
+    const set = find(await (await healthyWorld({ env: { WATCH_INTERVAL_SECS: "30" } })).run(), "an outside check");
+    expect(set.status).toBe("ok");
+    expect(set.detail).toBe("the watchdog pings ALERT_HEARTBEAT_URL every 30 s while its alerts get through; give the check that period and some grace. Not pinged here: a ping says the keeper is running");
+    const unset = find(await (await healthyWorld({ env: { ALERT_HEARTBEAT_URL: undefined } })).run(), "an outside check");
+    expect(unset.status).toBe("warn");
+    expect(unset.detail).toContain("nobody is told if the keeper itself stops");
+    expect(unset.fix).toContain("ALERT_HEARTBEAT_URL");
+    const bad = await healthyWorld({ env: { ALERT_HEARTBEAT_URL: "http://hc.example/ping/x" } });
+    expect(find(await bad.run(), "the settings load").detail).toContain("ALERT_HEARTBEAT_URL: must be an https:// address (or http:// to this machine)");
   });
 });
 
@@ -1016,6 +1031,11 @@ describe("secrets", () => {
     const out = await main([], { env: swapped.env, ports: swapped.ports });
     expect(out.out).toContain("ALERT_TELEGRAM_CHAT_ID: must be a chat's number");
     expect(out.out).not.toContain(SECRET_TELEGRAM_TOKEN);
+    // The outside check's address is a secret too, wherever it turns up.
+    const beat = await healthyWorld({ env: { PUBLISH_DIR: `/srv/${SECRET_HEARTBEAT_KEY}` } });
+    const beatOut = await main([], { env: beat.env, ports: beat.ports });
+    expect(beatOut.out).not.toContain(SECRET_HEARTBEAT_KEY);
+    expect(beatOut.out).not.toContain("hc.example/ping");
     // Pasted into a setting the report does print, it is still hidden.
     const pasted = await healthyWorld({ env: { PUBLISH_DIR: `/srv/${SECRET_TELEGRAM_TOKEN}` } });
     const printed = await main([], { env: pasted.env, ports: pasted.ports });
@@ -1053,8 +1073,13 @@ describe("secrets", () => {
 
   it("hides the pieces of a url that can be a secret, and nothing that is only a name", () => {
     expect(urlSecrets("https://user:p%40ss-word@rpc.example/v2/ABCDEF123456?api-key=KEY0123456", "rpc")).toEqual(
-      expect.arrayContaining(["p@ss-word", "p%40ss-word", "user", "v2/ABCDEF123456?api-key=KEY0123456", "KEY0123456"]),
+      expect.arrayContaining(["p@ss-word", "p%40ss-word", "user", "v2/ABCDEF123456?api-key=KEY0123456", "KEY0123456", "ABCDEF123456"]),
     );
+    // A part of the path of at least 12 characters can be a key on its own; a shorter one is a name.
+    expect(urlSecrets("https://hc.example/ping/0123456789a", "rpc")).not.toContain("0123456789a");
+    expect(urlSecrets("https://hc.example/ping/0123456789ab", "rpc")).toContain("0123456789ab");
+    expect(urlSecrets("https://hc.example/ping/0123456789ab", "rpc")).not.toContain("ping");
+    expect(urlSecrets("https://hc.example/a%20key%20with%20spaces", "rpc")).toEqual(expect.arrayContaining(["a key with spaces", "a%20key%20with%20spaces"]));
     expect(urlSecrets("https://api.devnet.solana.com", "rpc")).toEqual(["https://api.devnet.solana.com"]);
     const db = urlSecrets("postgres://keeper:hunter2hunter2@db.example:5432/breaks", "db");
     expect(db).toContain("hunter2hunter2");
@@ -1085,7 +1110,7 @@ describe("main", () => {
     const w = await healthyWorld();
     const ready = await main(["--"], { env: w.env, ports: w.ports });
     expect(ready.code).toBe(0);
-    expect(ready.out).toContain("READY. 35 checks passed, 1 warning, 0 failures, 0 skipped.");
+    expect(ready.out).toContain("READY. 36 checks passed, 1 warning, 0 failures, 0 skipped.");
     const broken = await healthyWorld({ env: { MIN_TWAB: undefined } });
     const failed = await main([], { env: broken.env, ports: broken.ports });
     expect(failed.code).toBe(1);
