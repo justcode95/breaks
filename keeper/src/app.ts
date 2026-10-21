@@ -50,8 +50,9 @@ import { SqlBreakRepo } from "./pipeline/repo.js";
 import { DrawnBreaks, FundedBreaks } from "./pipeline/sources.js";
 import { configAddress, decodeBreaksConfig } from "./solana/breaks.js";
 import type { Address } from "./solana/pubkey.js";
-import { scrubber } from "./doctor/report.js";
+import { scrubber, urlSecrets } from "./doctor/report.js";
 import { type Alerter, LogAlerter, TelegramAlerter } from "./watch/alerter.js";
+import { type Heartbeat, HttpHeartbeat } from "./watch/heartbeat.js";
 import type { JobHealth } from "./watch/health.js";
 import { SqlWatchStore, Watchdog, type WatchdogDeps, watchdogJob } from "./watch/watchdog.js";
 
@@ -339,7 +340,7 @@ export type WatchConfig = Pick<Config, "cluster" | "programs" | "vrf" | "eligibi
  */
 export function watchdogDeps(
   config: WatchConfig,
-  deps: Pick<AppDeps, "sql" | "chain" | "wallets" | "keeper" | "log" | "now"> & { health?: JobHealth; secrets?: readonly string[]; telegram?: Alerter },
+  deps: Pick<AppDeps, "sql" | "chain" | "wallets" | "keeper" | "log" | "now"> & { health?: JobHealth; secrets?: readonly string[]; telegram?: Alerter; heartbeat?: Heartbeat },
 ): WatchdogDeps {
   const { watch } = config;
   const channels: Alerter[] = [new LogAlerter(deps.log)];
@@ -358,9 +359,10 @@ export function watchdogDeps(
     ...(deps.health ? { jobs: deps.health } : {}),
     limits: { afterMs: watch.afterMins * 60_000, settleSecs: config.eligibility.settleSecs },
     channels,
+    ...(watch.heartbeatUrl ? { heartbeat: deps.heartbeat ?? new HttpHeartbeat({ url: watch.heartbeatUrl }) } : {}),
     title: `BREAKS keeper on ${config.cluster}`,
     repeatMs: watch.repeatHours * 3_600_000,
-    scrub: scrubber([...(deps.secrets ?? []), ...(watch.telegram ? [watch.telegram.token] : [])]),
+    scrub: scrubber([...(deps.secrets ?? []), ...(watch.telegram ? [watch.telegram.token] : []), ...urlSecrets(watch.heartbeatUrl, "rpc")]),
     log: deps.log,
     now: deps.now ?? (() => new Date()),
   };
@@ -369,10 +371,11 @@ export function watchdogDeps(
 /** The watchdog job, which watches the runner: pass the same `JobHealth` to the runner (`startKeeper` does). It only reads. */
 export function buildWatchdog(config: WatchConfig, deps: Parameters<typeof watchdogDeps>[1]): Job {
   const built = watchdogDeps(config, deps);
+  const outside = { outsideCheck: built.heartbeat !== undefined };
   if (built.channels.length > 1) {
-    deps.log.info("watchdog on: alerts go to the log and to a Telegram chat", { chat: config.watch.telegram?.chatId, afterMins: config.watch.afterMins });
+    deps.log.info("watchdog on: alerts go to the log and to a Telegram chat", { chat: config.watch.telegram?.chatId, afterMins: config.watch.afterMins, ...outside });
   } else {
-    deps.log.info("watchdog on: alerts only go to the log (ALERTS=log)", { afterMins: config.watch.afterMins });
+    deps.log.info("watchdog on: alerts only go to the log (ALERTS=log)", { afterMins: config.watch.afterMins, ...outside });
   }
   return watchdogJob({ watchdog: new Watchdog(built), intervalMs: config.watch.intervalSecs * 1000 });
 }

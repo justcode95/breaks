@@ -25,6 +25,7 @@ export const NOW = new Date("2027-01-15T12:00:00Z");
 export const SECRET_RPC_PATH = "SECRETPATH0123456789";
 export const SECRET_DB_PASSWORD = "pa55w0rd-very-secret";
 export const SECRET_TELEGRAM_TOKEN = "123456789:AAH-SECRET_telegram_token_0123456789";
+export const SECRET_HEARTBEAT_KEY = "HEARTBEAT-key-0123456789abcdef";
 
 export const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 export const USDC = addr(0xc0);
@@ -143,6 +144,7 @@ export async function healthyWorld(over: { env?: Record<string, string | undefin
       ALERTS: "telegram",
       ALERT_TELEGRAM_BOT_TOKEN: SECRET_TELEGRAM_TOKEN,
       ALERT_TELEGRAM_CHAT_ID: "-1001234567890",
+      ALERT_HEARTBEAT_URL: `https://hc.example/ping/${SECRET_HEARTBEAT_KEY}`,
       ...over.env,
     },
     breaks: {

@@ -769,7 +769,20 @@ const DEFS: Def[] = [
       if (cfg.watch.alerts === "telegram" && cfg.watch.telegram) {
         return ok(`${when}, in the keeper's log and in the Telegram chat ${cfg.watch.telegram.chatId}; not checked here: the keeper sends a message there when it starts, which shows the token and the chat work`);
       }
-      return warn(`${when}, only in the keeper's log: nobody is told when a break gets stuck`, "set ALERTS=telegram with ALERT_TELEGRAM_BOT_TOKEN and ALERT_TELEGRAM_CHAT_ID (keeper/.env.example)");
+      return warn(`${when}, only in the keeper's log: nobody is told when a break gets stuck`, "set ALERTS=telegram with ALERT_TELEGRAM_BOT_TOKEN and ALERT_TELEGRAM_CHAT_ID (keeper/.env.example), and try it with `pnpm --filter keeper send-test-alert`");
+    },
+  },
+  {
+    section: "Outputs",
+    title: "an outside check",
+    run: async (c) => {
+      const cfg = await c.config.need();
+      if (!cfg.watch.heartbeatUrl) {
+        return warn("ALERT_HEARTBEAT_URL is not set: nobody is told if the keeper itself stops, or its alerts stop getting through", "make a check that expects a ping (healthchecks.io and the like) and put its address in ALERT_HEARTBEAT_URL");
+      }
+      return ok(
+        `the watchdog pings ALERT_HEARTBEAT_URL every ${cfg.watch.intervalSecs} s while its alerts get through; give the check that period and some grace. Not pinged here: a ping says the keeper is running`,
+      );
     },
   },
 ];

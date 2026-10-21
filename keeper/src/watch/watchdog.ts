@@ -15,9 +15,10 @@ import type { Address } from "../solana/pubkey.js";
 import { keeperSolNeed } from "../solana/rent.js";
 import type { WalletReader } from "../sweep/wallet.js";
 import type { Alerter } from "./alerter.js";
+import type { Heartbeat } from "./heartbeat.js";
 import { AlertBook } from "./book.js";
 import type { JobStatus } from "./health.js";
-import { type Alert, type BreakFacts, WATCHDOG_JOB, type WatchLimits, breakAlert, jobAlerts, keeperAlert, pausedAlert, unreadAlert } from "./rules.js";
+import { type Alert, type BreakFacts, WATCHDOG_JOB, type WatchLimits, breakAlert, duration, jobAlerts, keeperAlert, pausedAlert, unreadAlert } from "./rules.js";
 
 /** What the watchdog reads from the keeper's database. */
 export interface WatchStore {
@@ -58,6 +59,8 @@ export interface WatchdogDeps {
   limits: WatchLimits;
   /** Where messages go. The first is the log and always works; the rest are tried and, if they fail, tried again next run. */
   channels: readonly Alerter[];
+  /** The outside check, pinged every run while every channel takes its messages (ALERT_HEARTBEAT_URL). */
+  heartbeat?: Heartbeat;
   /** BookOptions for every channel: the title and how often what stays open is listed again. */
   title: string;
   repeatMs: number;
@@ -77,8 +80,10 @@ export class Watchdog {
   private readonly seen = new Map<bigint, { status: BreakFacts["status"]; since: Date }>();
   /** Since when a source could not be read, and why. */
   private readonly unread = new Map<Source, { since: Date; error: string }>();
-  /** Channels whose last send failed: why, and when that was last logged. */
-  private readonly failing = new Map<string, { error: string; loggedAt: number }>();
+  /** Channels (and the outside check) whose last try failed: why, since when, and when that was last logged. */
+  private readonly failing = new Map<string, { error: string; since: number; loggedAt: number }>();
+  /** Whether the outside check's ping is being held back because a channel does not take its messages. */
+  private holding = false;
   /** The last alerts each group gave, used again while what the group needs cannot be read (so nothing clears by accident). */
   private last = { chain: [] as Alert[], breaks: [] as Alert[] };
 
@@ -206,19 +211,50 @@ export class Watchdog {
         book.delivered(out, at);
         if (this.failing.delete(alerter.name)) this.deps.log.info(`the watchdog reaches ${alerter.name} again`);
       } catch (err) {
-        this.sendFailed(alerter.name, this.deps.scrub(message(err)), at);
+        this.failed(alerter.name, `the watchdog cannot send its messages to ${alerter.name}; it tries again every run`, this.deps.scrub(message(err)), at);
       }
+    }
+    await this.beat(at);
+  }
+
+  /**
+   * Tells the outside check that the keeper is alive and its alerts get through. While a channel has not taken its messages
+   * for the limit, the ping is held back, so the check raises the alarm the channel cannot.
+   */
+  private async beat(at: Date): Promise<void> {
+    const { heartbeat, limits, log, scrub } = this.deps;
+    if (!heartbeat) return;
+    const stuck = [...this.failing].find(([name, f]) => name !== OUTSIDE_CHECK && at.getTime() - f.since >= limits.afterMs);
+    if (stuck) {
+      if (!this.holding) {
+        this.holding = true;
+        const [name, f] = stuck;
+        log.error(`the watchdog stops pinging the outside check: ${name} has not taken its messages for ${duration(at.getTime() - f.since)}, so the check will report the keeper as down`);
+      }
+      return;
+    }
+    if (this.holding) {
+      this.holding = false;
+      log.info("the watchdog pings the outside check again: every channel takes its messages");
+    }
+    try {
+      await heartbeat.ping();
+      if (this.failing.delete(OUTSIDE_CHECK)) log.info("the watchdog reaches the outside check again");
+    } catch (err) {
+      this.failed(OUTSIDE_CHECK, "the watchdog cannot ping the outside check (ALERT_HEARTBEAT_URL); it tries again every run", scrub(message(err)), at);
     }
   }
 
-  /** A channel that cannot be reached is said when it starts, when the reason changes and once an hour, not on every run. */
-  private sendFailed(channel: string, error: string, at: Date): void {
-    const last = this.failing.get(channel);
+  /** Something that cannot be reached is said when it starts, when the reason changes and once an hour, not on every run. */
+  private failed(name: string, says: string, error: string, at: Date): void {
+    const last = this.failing.get(name);
     if (last && last.error === error && at.getTime() - last.loggedAt < HOUR) return;
-    this.failing.set(channel, { error, loggedAt: at.getTime() });
-    this.deps.log.error(`the watchdog cannot send its messages to ${channel}; it tries again every run`, { error });
+    this.failing.set(name, { error, since: last?.since ?? at.getTime(), loggedAt: at.getTime() });
+    this.deps.log.error(says, { error });
   }
 }
+
+const OUTSIDE_CHECK = "the outside check";
 
 const HOUR = 3_600_000;
 

@@ -12,7 +12,8 @@
     "test": "vitest run",
     "phase0": "tsx src/phase0/main.ts",
     "check-setup": "tsx --env-file-if-exists=.env src/doctor/main.ts",
-    "setup-devnet": "tsx --env-file-if-exists=.env src/setup/main.ts"
+    "setup-devnet": "tsx --env-file-if-exists=.env src/setup/main.ts",
+    "send-test-alert": "tsx --env-file-if-exists=.env src/watch/test-alert.ts"
   },
   "dependencies": {
     "@noble/curves": "^2.4.0",

@@ -15,6 +15,7 @@ import { Tree } from "../src/draw/tree.js";
 import { createRunner, type Job } from "../src/job.js";
 import type { AlertMessage } from "../src/watch/alerter.js";
 import { JobHealth } from "../src/watch/health.js";
+import { HttpHeartbeat } from "../src/watch/heartbeat.js";
 import { ORAO_PROGRAM, breakAddress, oraoNetworkState, requestAddress } from "../src/solana/breaks.js";
 import { addressFromBytes, addressToBytes, associatedTokenAddress } from "../src/solana/pubkey.js";
 import { encodeBreak } from "./support/accounts.js";
@@ -971,11 +972,11 @@ describe("buildWatchdog", () => {
     const l = lines();
     const job = buildWatchdog(watchConfig({ intervalSecs: 30 }), { sql: shared, chain: w.chain, wallets: w.chain, keeper: KEEPER, log: l.log });
     expect(job).toMatchObject({ name: "watchdog", intervalMs: 30_000 });
-    expect(l.out).toEqual([["info", "watchdog on: alerts only go to the log (ALERTS=log)", { afterMins: 2 }]]);
+    expect(l.out).toEqual([["info", "watchdog on: alerts only go to the log (ALERTS=log)", { afterMins: 2, outsideCheck: false }]]);
 
     const t = lines();
     buildWatchdog(watchConfig({ alerts: "telegram", telegram: { token: TOKEN, chatId: "-100200" } }), { sql: shared, chain: w.chain, wallets: w.chain, keeper: KEEPER, log: t.log });
-    expect(t.out).toEqual([["info", "watchdog on: alerts go to the log and to a Telegram chat", { chat: "-100200", afterMins: 2 }]]);
+    expect(t.out).toEqual([["info", "watchdog on: alerts go to the log and to a Telegram chat", { chat: "-100200", afterMins: 2, outsideCheck: false }]]);
     expect(JSON.stringify(t.out)).not.toContain(TOKEN);
     expect(() => buildWatchdog(watchConfig({ alerts: "telegram" }), { sql: shared, chain: w.chain, wallets: w.chain, keeper: KEEPER, log: t.log })).toThrow(/ALERT_TELEGRAM_BOT_TOKEN/);
   });
@@ -1006,6 +1007,20 @@ describe("buildWatchdog", () => {
     const plain = watchdogDeps(watchConfig(), { sql: shared, chain: w.chain, wallets: w.chain, keeper: KEEPER, log: logger().log });
     expect(plain.channels.map((c) => c.name)).toEqual(["log"]);
     expect(plain).not.toHaveProperty("jobs");
+    expect(plain).not.toHaveProperty("heartbeat");
+
+    // The outside check: built from its address, which is hidden like any other secret, or the one passed in.
+    const beatUrl = "https://hc.example/ping/HEARTBEAT-key-0123456789abcdef";
+    const beat = watchdogDeps(watchConfig({ heartbeatUrl: beatUrl }), { sql: shared, chain: w.chain, wallets: w.chain, keeper: KEEPER, log: logger().log });
+    expect(beat.heartbeat).toBeInstanceOf(HttpHeartbeat);
+    expect(beat.scrub(`a ${beatUrl} b HEARTBEAT-key-0123456789abcdef c hc.example/ping/HEARTBEAT-key-0123456789abcdef`)).toBe("a [hidden] b [hidden] c hc.example/[hidden]");
+    const given = { ping: async () => {} };
+    expect(watchdogDeps(watchConfig({ heartbeatUrl: beatUrl }), { sql: shared, chain: w.chain, wallets: w.chain, keeper: KEEPER, log: logger().log, heartbeat: given }).heartbeat).toBe(given);
+    expect(watchdogDeps(watchConfig(), { sql: shared, chain: w.chain, wallets: w.chain, keeper: KEEPER, log: logger().log, heartbeat: given })).not.toHaveProperty("heartbeat");
+    const l = lines();
+    buildWatchdog(watchConfig({ heartbeatUrl: beatUrl }), { sql: shared, chain: w.chain, wallets: w.chain, keeper: KEEPER, log: l.log });
+    expect(l.out).toEqual([["info", "watchdog on: alerts only go to the log (ALERTS=log)", { afterMins: 2, outsideCheck: true }]]);
+    expect(JSON.stringify(l.out)).not.toContain("HEARTBEAT-key");
     expect(plain.now().getTime()).toBeGreaterThan(Date.now() - 60_000);
   });
 

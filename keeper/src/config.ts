@@ -28,9 +28,46 @@ const list = (s: string): number[] =>
     .map(Number);
 const httpsUrl = z.string().url().refine((u) => u.startsWith("https://"), "must be an https:// address");
 
+/** https, or http to this machine only (a check service run on the same host, or a test). */
+const localOrHttps = z
+  .string()
+  .url()
+  .refine((u) => {
+    // The check runs even when `url()` already refused the text.
+    if (!URL.canParse(u)) return false;
+    const url = new URL(u);
+    return url.protocol === "https:" || (url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1"));
+  }, "must be an https:// address (or http:// to this machine)");
+
+// The watchdog, always on: a problem that lasts ALERT_AFTER_MINS (a job that keeps failing, a break stuck in a stage, too
+// little SOL, the program paused) is reported once, and again when it clears; what stays open is listed again every
+// ALERT_REPEAT_HOURS (0: never). Messages always go to the log. ALERTS=telegram also sends them to one Telegram chat,
+// through the bot whose token BotFather gave (the token is a secret: never in a log or a commit). ALERT_HEARTBEAT_URL is
+// an outside check that is told every run that the keeper is alive and its alerts get through (a dead-man's switch such
+// as healthchecks.io: it raises the alarm when the pings stop); its address usually holds a secret key too.
+const watchFields = {
+  SOLANA_CLUSTER: z.enum(["devnet", "localnet"]).default("devnet"),
+  ALERTS: z.enum(["log", "telegram"]).default("log"),
+  ALERT_TELEGRAM_BOT_TOKEN: z.string().regex(TELEGRAM_TOKEN, "is not a bot token as BotFather gives it (digits, a colon, then the secret)").optional(),
+  ALERT_TELEGRAM_CHAT_ID: z.string().regex(TELEGRAM_CHAT, "must be a chat's number (a group's is negative) or a public channel's @name").optional(),
+  ALERT_HEARTBEAT_URL: localOrHttps.optional(),
+  ALERT_AFTER_MINS: z.coerce.number().int().min(1).max(1440).default(15),
+  ALERT_REPEAT_HOURS: z.coerce.number().int().min(0).max(168).default(12),
+  WATCH_INTERVAL_SECS: z.coerce.number().int().min(10).max(3600).default(60),
+};
+
+type WatchEnv = z.infer<z.ZodObject<typeof watchFields>>;
+
+function watchRules(e: WatchEnv, ctx: z.RefinementCtx): void {
+  if (e.ALERTS === "telegram") {
+    for (const name of ["ALERT_TELEGRAM_BOT_TOKEN", "ALERT_TELEGRAM_CHAT_ID"] as const) {
+      if (e[name] === undefined) ctx.addIssue({ code: "custom", path: [name], message: "is required when ALERTS=telegram" });
+    }
+  }
+}
+
 // Devnet only (CLAUDE.md guardrails). Adding "mainnet-beta" here is a rule change that needs the owner's sign-off.
 const shape = z.object({
-  SOLANA_CLUSTER: z.enum(["devnet", "localnet"]).default("devnet"),
   SOLANA_RPC_URL: z.string().url(),
   DATABASE_URL: z.string().min(1),
   // Only "mock" exists until Phase 0 shows how Collector Crypt purchases and card transfers work.
@@ -131,16 +168,7 @@ const shape = z.object({
   BOT_FINALITY_MARGIN_SECS: z.coerce.number().int().min(0).default(120),
   // Where the results page will be: the results post links to <BOT_SITE_URL>/breaks/<number>. No link without it.
   BOT_SITE_URL: httpsUrl.optional(),
-  // The watchdog, always on: a problem that lasts ALERT_AFTER_MINS (a job that keeps failing, a break stuck in a stage, too
-  // little SOL, the program paused) is reported once, and again when it clears; what stays open is listed again every
-  // ALERT_REPEAT_HOURS (0: never). Messages always go to the log. ALERTS=telegram also sends them to one Telegram chat,
-  // through the bot whose token BotFather gave (the token is a secret: never in a log or a commit).
-  ALERTS: z.enum(["log", "telegram"]).default("log"),
-  ALERT_TELEGRAM_BOT_TOKEN: z.string().regex(TELEGRAM_TOKEN, "is not a bot token as BotFather gives it (digits, a colon, then the secret)").optional(),
-  ALERT_TELEGRAM_CHAT_ID: z.string().regex(TELEGRAM_CHAT, "must be a chat's number (a group's is negative) or a public channel's @name").optional(),
-  ALERT_AFTER_MINS: z.coerce.number().int().min(1).max(1440).default(15),
-  ALERT_REPEAT_HOURS: z.coerce.number().int().min(0).max(168).default(12),
-  WATCH_INTERVAL_SECS: z.coerce.number().int().min(10).max(3600).default(60),
+  ...watchFields,
 });
 
 const schema = shape.superRefine((e, ctx) => {
@@ -154,11 +182,7 @@ const schema = shape.superRefine((e, ctx) => {
   if (!list(e.BOT_REMINDER_HOURS).every((h) => Number.isInteger(h) && h >= 1 && h <= 168)) {
     ctx.addIssue({ code: "custom", path: ["BOT_REMINDER_HOURS"], message: "must be whole hours from 1 to 168, like 3,1" });
   }
-  if (e.ALERTS === "telegram") {
-    for (const name of ["ALERT_TELEGRAM_BOT_TOKEN", "ALERT_TELEGRAM_CHAT_ID"] as const) {
-      if (e[name] === undefined) ctx.addIssue({ code: "custom", path: [name], message: "is required when ALERTS=telegram" });
-    }
-  }
+  watchRules(e, ctx);
   if (e.BOT_ENABLED && e.BOT_POSTER === "x") {
     for (const name of ["X_CONSUMER_KEY", "X_CONSUMER_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"] as const) {
       if (e[name] === undefined) ctx.addIssue({ code: "custom", path: [name], message: "is required when BOT_POSTER=x" });
@@ -207,21 +231,32 @@ export type Config = {
     lookback: number;
   };
   /** The watchdog. Telegram only with alerts "telegram". */
-  watch: { alerts: "log" | "telegram"; telegram?: { token: string; chatId: string }; afterMins: number; repeatHours: number; intervalSecs: number };
+  watch: WatchSettings;
 };
+
+export interface WatchSettings {
+  alerts: "log" | "telegram";
+  telegram?: { token: string; chatId: string };
+  /** The outside check the watchdog pings every run. */
+  heartbeatUrl?: string;
+  afterMins: number;
+  repeatHours: number;
+  intervalSecs: number;
+}
 
 /** The configuration, or every problem with it, one line each (`NAME: what is wrong`). */
 export function parseConfig(env: Record<string, string | undefined>): { config: Config } | { problems: string[] } {
   const parsed = schema.safeParse(env);
-  if (!parsed.success) {
-    // A setting that is not there at all is said so, instead of with the parser's "expected string, received undefined".
-    const problems = parsed.error.issues.map((i) => {
-      const name = i.path.join(".");
-      return `${name}: ${env[name] === undefined && /received (undefined|NaN)/.test(i.message) ? "is not set" : i.message}`;
-    });
-    return { problems };
-  }
+  if (!parsed.success) return { problems: problemsOf(parsed.error, env) };
   return { config: build(parsed.data) };
+}
+
+/** Every problem, one line each. A setting that is not there at all is said so, instead of with the parser's "expected string, received undefined". */
+function problemsOf(error: z.ZodError, env: Record<string, string | undefined>): string[] {
+  return error.issues.map((i) => {
+    const name = i.path.join(".");
+    return `${name}: ${env[name] === undefined && /received (undefined|NaN)/.test(i.message) ? "is not set" : i.message}`;
+  });
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -306,14 +341,26 @@ function build(e: z.infer<typeof schema>): Config {
       limits: { minGapSecs: e.BOT_MIN_GAP_SECS, maxPerDay: e.BOT_MAX_POSTS_PER_DAY, maxAttempts: e.BOT_MAX_ATTEMPTS, retryStepSecs: e.BOT_RETRY_STEP_SECS },
       lookback: e.BOT_LOOKBACK_BREAKS,
     },
-    watch: {
-      alerts: e.ALERTS,
-      ...(e.ALERTS === "telegram" && e.ALERT_TELEGRAM_BOT_TOKEN && e.ALERT_TELEGRAM_CHAT_ID
-        ? { telegram: { token: e.ALERT_TELEGRAM_BOT_TOKEN, chatId: e.ALERT_TELEGRAM_CHAT_ID } }
-        : {}),
-      afterMins: e.ALERT_AFTER_MINS,
-      repeatHours: e.ALERT_REPEAT_HOURS,
-      intervalSecs: e.WATCH_INTERVAL_SECS,
-    },
+    watch: buildWatch(e),
   };
+}
+
+function buildWatch(e: WatchEnv): WatchSettings {
+  return {
+    alerts: e.ALERTS,
+    ...(e.ALERTS === "telegram" && e.ALERT_TELEGRAM_BOT_TOKEN && e.ALERT_TELEGRAM_CHAT_ID
+      ? { telegram: { token: e.ALERT_TELEGRAM_BOT_TOKEN, chatId: e.ALERT_TELEGRAM_CHAT_ID } }
+      : {}),
+    ...(e.ALERT_HEARTBEAT_URL !== undefined ? { heartbeatUrl: e.ALERT_HEARTBEAT_URL } : {}),
+    afterMins: e.ALERT_AFTER_MINS,
+    repeatHours: e.ALERT_REPEAT_HOURS,
+    intervalSecs: e.WATCH_INTERVAL_SECS,
+  };
+}
+
+/** Only the watchdog's settings and the cluster, for a command that needs nothing else (`send-test-alert`). */
+export function parseWatchConfig(env: Record<string, string | undefined>): { cluster: Config["cluster"]; watch: WatchSettings } | { problems: string[] } {
+  const parsed = z.object(watchFields).superRefine(watchRules).safeParse(env);
+  if (!parsed.success) return { problems: problemsOf(parsed.error, env) };
+  return { cluster: parsed.data.SOLANA_CLUSTER, watch: buildWatch(parsed.data) };
 }

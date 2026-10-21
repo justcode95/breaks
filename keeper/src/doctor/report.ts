@@ -89,6 +89,8 @@ export function urlSecrets(raw: string | undefined, kind: "rpc" | "db"): string[
       const tail = `${u.pathname}${u.search}`.replace(/^\/+|\/+$/g, "");
       if (tail.length >= 6) secrets.push(tail);
       for (const [, value] of u.searchParams) if (value.length >= 6) secrets.push(value);
+      // A key that is a part of the path on its own (".../v2/<key>", ".../ping/<uuid>"); short parts are names, not keys.
+      for (const part of u.pathname.split("/")) if (part.length >= 12) secrets.push(decodeURIComponent(part), part);
     }
   } catch {
     // Not a url: the whole text is hidden, which is the safe side.

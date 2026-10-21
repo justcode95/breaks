@@ -39,7 +39,7 @@ export const realPorts: DoctorPorts = {
 /** Every value in the environment that the doctor must never print. */
 function secretsOf(env: Record<string, string | undefined>): string[] {
   const keys = ["X_CONSUMER_KEY", "X_CONSUMER_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET", "ALERT_TELEGRAM_BOT_TOKEN"];
-  return [...urlSecrets(env.SOLANA_RPC_URL, "rpc"), ...urlSecrets(env.DATABASE_URL, "db"), ...keys.map((k) => env[k] ?? "")];
+  return [...urlSecrets(env.SOLANA_RPC_URL, "rpc"), ...urlSecrets(env.DATABASE_URL, "db"), ...urlSecrets(env.ALERT_HEARTBEAT_URL, "rpc"), ...keys.map((k) => env[k] ?? "")];
 }
 
 export interface DoctorDeps {
