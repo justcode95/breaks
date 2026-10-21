@@ -7,6 +7,7 @@ import type { BotSettings } from "./bot/policy.js";
 import type { XCredentials } from "./bot/x-poster.js";
 import { parsePackGroups } from "./scheduler/packs-config.js";
 import { type Address, addressToBytes } from "./solana/pubkey.js";
+import { TELEGRAM_CHAT, TELEGRAM_TOKEN } from "./watch/alerter.js";
 
 const isAddress = (s: string) => {
   try {
@@ -130,6 +131,16 @@ const shape = z.object({
   BOT_FINALITY_MARGIN_SECS: z.coerce.number().int().min(0).default(120),
   // Where the results page will be: the results post links to <BOT_SITE_URL>/breaks/<number>. No link without it.
   BOT_SITE_URL: httpsUrl.optional(),
+  // The watchdog, always on: a problem that lasts ALERT_AFTER_MINS (a job that keeps failing, a break stuck in a stage, too
+  // little SOL, the program paused) is reported once, and again when it clears; what stays open is listed again every
+  // ALERT_REPEAT_HOURS (0: never). Messages always go to the log. ALERTS=telegram also sends them to one Telegram chat,
+  // through the bot whose token BotFather gave (the token is a secret: never in a log or a commit).
+  ALERTS: z.enum(["log", "telegram"]).default("log"),
+  ALERT_TELEGRAM_BOT_TOKEN: z.string().regex(TELEGRAM_TOKEN, "is not a bot token as BotFather gives it (digits, a colon, then the secret)").optional(),
+  ALERT_TELEGRAM_CHAT_ID: z.string().regex(TELEGRAM_CHAT, "must be a chat's number (a group's is negative) or a public channel's @name").optional(),
+  ALERT_AFTER_MINS: z.coerce.number().int().min(1).max(1440).default(15),
+  ALERT_REPEAT_HOURS: z.coerce.number().int().min(0).max(168).default(12),
+  WATCH_INTERVAL_SECS: z.coerce.number().int().min(10).max(3600).default(60),
 });
 
 const schema = shape.superRefine((e, ctx) => {
@@ -142,6 +153,11 @@ const schema = shape.superRefine((e, ctx) => {
   }
   if (!list(e.BOT_REMINDER_HOURS).every((h) => Number.isInteger(h) && h >= 1 && h <= 168)) {
     ctx.addIssue({ code: "custom", path: ["BOT_REMINDER_HOURS"], message: "must be whole hours from 1 to 168, like 3,1" });
+  }
+  if (e.ALERTS === "telegram") {
+    for (const name of ["ALERT_TELEGRAM_BOT_TOKEN", "ALERT_TELEGRAM_CHAT_ID"] as const) {
+      if (e[name] === undefined) ctx.addIssue({ code: "custom", path: [name], message: "is required when ALERTS=telegram" });
+    }
   }
   if (e.BOT_ENABLED && e.BOT_POSTER === "x") {
     for (const name of ["X_CONSUMER_KEY", "X_CONSUMER_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"] as const) {
@@ -190,6 +206,8 @@ export type Config = {
     limits: BotLimits;
     lookback: number;
   };
+  /** The watchdog. Telegram only with alerts "telegram". */
+  watch: { alerts: "log" | "telegram"; telegram?: { token: string; chatId: string }; afterMins: number; repeatHours: number; intervalSecs: number };
 };
 
 /** The configuration, or every problem with it, one line each (`NAME: what is wrong`). */
@@ -287,6 +305,15 @@ function build(e: z.infer<typeof schema>): Config {
       },
       limits: { minGapSecs: e.BOT_MIN_GAP_SECS, maxPerDay: e.BOT_MAX_POSTS_PER_DAY, maxAttempts: e.BOT_MAX_ATTEMPTS, retryStepSecs: e.BOT_RETRY_STEP_SECS },
       lookback: e.BOT_LOOKBACK_BREAKS,
+    },
+    watch: {
+      alerts: e.ALERTS,
+      ...(e.ALERTS === "telegram" && e.ALERT_TELEGRAM_BOT_TOKEN && e.ALERT_TELEGRAM_CHAT_ID
+        ? { telegram: { token: e.ALERT_TELEGRAM_BOT_TOKEN, chatId: e.ALERT_TELEGRAM_CHAT_ID } }
+        : {}),
+      afterMins: e.ALERT_AFTER_MINS,
+      repeatHours: e.ALERT_REPEAT_HOURS,
+      intervalSecs: e.WATCH_INTERVAL_SECS,
     },
   };
 }

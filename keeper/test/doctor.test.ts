@@ -20,6 +20,7 @@ import {
   NOW,
   SECRET_DB_PASSWORD,
   SECRET_RPC_PATH,
+  SECRET_TELEGRAM_TOKEN,
   UPGRADER,
   USDC,
   type World,
@@ -67,6 +68,7 @@ const EVERY_CHECK = [
   "the exclusion list can be published",
   "the published lists have somewhere to go",
   "the X bot",
+  "the watchdog's alerts",
 ];
 
 const statusOf = (checks: Check[], title: string) => find(checks, title).status;
@@ -86,7 +88,7 @@ describe("a healthy setup", () => {
     expect(checks.map((c) => c.title)).toEqual(EVERY_CHECK);
     expect(checks.filter((c) => c.status !== "ok").map((c) => `${c.status}: ${c.title}`)).toEqual(["warn: real packs and cards"]);
     const report = summarize(checks);
-    expect(report).toMatchObject({ ok: 34, warned: 1, failed: 0, skipped: 0, ready: true });
+    expect(report).toMatchObject({ ok: 35, warned: 1, failed: 0, skipped: 0, ready: true });
     expect(w.node.sent).toEqual([]);
     expect(w.node.requests.map((r) => r.method).filter((m) => !READS.has(m))).toEqual([]);
   });
@@ -974,6 +976,18 @@ describe("the outputs", () => {
     expect(check.detail).toContain("posts to X");
     expect(check.detail).toContain("at most 7 a day");
   });
+
+  it("says where the watchdog's alerts go, and warns when only the log hears them", async () => {
+    const telegram = find(await (await healthyWorld()).run(), "the watchdog's alerts");
+    expect(telegram.status).toBe("ok");
+    expect(telegram.detail).toBe(
+      "a problem that lasts 15 min is reported once, and again when it clears, in the keeper's log and in the Telegram chat -1001234567890; not checked here: the keeper sends a message there when it starts, which shows the token and the chat work",
+    );
+    const logOnly = find(await (await healthyWorld({ env: { ALERTS: undefined, ALERT_AFTER_MINS: "5" } })).run(), "the watchdog's alerts");
+    expect(logOnly.status).toBe("warn");
+    expect(logOnly.detail).toBe("a problem that lasts 5 min is reported once, and again when it clears, only in the keeper's log: nobody is told when a break gets stuck");
+    expect(logOnly.fix).toContain("ALERTS=telegram");
+  });
 });
 
 describe("secrets", () => {
@@ -989,6 +1003,19 @@ describe("secrets", () => {
     expect(result.out).toContain("cannot reach the database");
     expect(result.out).toContain("[hidden]");
     for (const secret of [url, SECRET_RPC_PATH, SECRET_DB_PASSWORD, "postgres://keeper"]) expect(result.out, secret).not.toContain(secret);
+  });
+
+  it("never prints the Telegram bot token, also when it is malformed or pasted where the chat goes", async () => {
+    const healthy = await main([], { env: (await healthyWorld()).env, ports: (await healthyWorld()).ports });
+    expect(healthy.out).not.toContain(SECRET_TELEGRAM_TOKEN);
+    const bad = await healthyWorld({ env: { ALERT_TELEGRAM_BOT_TOKEN: "not-a-token-but-a-secret-0123456789" } });
+    const refused = await main([], { env: bad.env, ports: bad.ports });
+    expect(refused.out).toContain("ALERT_TELEGRAM_BOT_TOKEN: is not a bot token");
+    expect(refused.out).not.toContain("not-a-token-but-a-secret-0123456789");
+    const swapped = await healthyWorld({ env: { ALERT_TELEGRAM_CHAT_ID: SECRET_TELEGRAM_TOKEN } });
+    const out = await main([], { env: swapped.env, ports: swapped.ports });
+    expect(out.out).toContain("ALERT_TELEGRAM_CHAT_ID: must be a chat's number");
+    expect(out.out).not.toContain(SECRET_TELEGRAM_TOKEN);
   });
 
   it("hides a secret in what it tells the operator to do, not only in what it found", async () => {
@@ -1053,7 +1080,7 @@ describe("main", () => {
     const w = await healthyWorld();
     const ready = await main(["--"], { env: w.env, ports: w.ports });
     expect(ready.code).toBe(0);
-    expect(ready.out).toContain("READY. 34 checks passed, 1 warning, 0 failures, 0 skipped.");
+    expect(ready.out).toContain("READY. 35 checks passed, 1 warning, 0 failures, 0 skipped.");
     const broken = await healthyWorld({ env: { MIN_TWAB: undefined } });
     const failed = await main([], { env: broken.env, ports: broken.ports });
     expect(failed.code).toBe(1);

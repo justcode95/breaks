@@ -4,15 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { beforeAll, describe, expect, it } from "vitest";
-import { type AppConfig, RANDOMNESS_REQUEST_RENT, buildJobs, checkSchema, sqlFromPool, verifyKeeperIdentity, verifyMint } from "../src/app.js";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { type AppConfig, RANDOMNESS_REQUEST_RENT, type WatchConfig, buildJobs, buildWatchdog, watchdogDeps, checkSchema, sqlFromPool, verifyKeeperIdentity, verifyMint } from "../src/app.js";
 import { buildEligibility, serializeInputs } from "../src/eligibility/eligibility.js";
 import { listDocument } from "../src/eligibility/planner.js";
 import { exclusionsDocument } from "../src/eligibility/exclusions.js";
 import { hashv, toHex, utf8 } from "../src/draw/bytes.js";
 import { assignCards } from "../src/draw/pool.js";
 import { Tree } from "../src/draw/tree.js";
-import { createRunner } from "../src/job.js";
+import { createRunner, type Job } from "../src/job.js";
+import type { AlertMessage } from "../src/watch/alerter.js";
+import { JobHealth } from "../src/watch/health.js";
 import { ORAO_PROGRAM, breakAddress, oraoNetworkState, requestAddress } from "../src/solana/breaks.js";
 import { addressFromBytes, addressToBytes, associatedTokenAddress } from "../src/solana/pubkey.js";
 import { encodeBreak } from "./support/accounts.js";
@@ -949,3 +951,105 @@ describe("the jobs, with the X bot", () => {
 function addressOf(bytes: Uint8Array): string {
   return addr(bytes[0] as number);
 }
+
+describe("buildWatchdog", () => {
+  const watchConfig = (watch: Partial<WatchConfig["watch"]> = {}): WatchConfig => ({
+    ...config,
+    cluster: "devnet",
+    watch: { alerts: "log", afterMins: 2, repeatHours: 12, intervalSecs: 60, ...watch },
+  });
+  const TOKEN = "123456789:AAH-secret_token_value_0123456789";
+
+  /** A log that keeps every line with its fields. */
+  const lines = () => {
+    const out: [string, string, Record<string, unknown> | undefined][] = [];
+    return { out, log: { info: (m: string, e?: Record<string, unknown>) => out.push(["info", m, e]), error: (m: string, e?: Record<string, unknown>) => out.push(["error", m, e]) } };
+  };
+
+  it("is the watchdog job, on its interval, and says where its alerts go", () => {
+    const w = world();
+    const l = lines();
+    const job = buildWatchdog(watchConfig({ intervalSecs: 30 }), { sql: shared, chain: w.chain, wallets: w.chain, keeper: KEEPER, log: l.log });
+    expect(job).toMatchObject({ name: "watchdog", intervalMs: 30_000 });
+    expect(l.out).toEqual([["info", "watchdog on: alerts only go to the log (ALERTS=log)", { afterMins: 2 }]]);
+
+    const t = lines();
+    buildWatchdog(watchConfig({ alerts: "telegram", telegram: { token: TOKEN, chatId: "-100200" } }), { sql: shared, chain: w.chain, wallets: w.chain, keeper: KEEPER, log: t.log });
+    expect(t.out).toEqual([["info", "watchdog on: alerts go to the log and to a Telegram chat", { chat: "-100200", afterMins: 2 }]]);
+    expect(JSON.stringify(t.out)).not.toContain(TOKEN);
+    expect(() => buildWatchdog(watchConfig({ alerts: "telegram" }), { sql: shared, chain: w.chain, wallets: w.chain, keeper: KEEPER, log: t.log })).toThrow(/ALERT_TELEGRAM_BOT_TOKEN/);
+  });
+
+  it("passes on every setting, in the units the watchdog counts in", () => {
+    const w = world();
+    const health = new JobHealth();
+    const now = () => new Date(5);
+    const d = watchdogDeps(
+      { ...watchConfig({ afterMins: 7, repeatHours: 3, alerts: "telegram", telegram: { token: TOKEN, chatId: "42" } }), cluster: "localnet", eligibility: { minTwab: 1n, settleSecs: 300 } },
+      { sql: shared, chain: w.chain, wallets: w.chain, keeper: KEEPER, log: logger().log, now, health, secrets: ["SECRETPATH0123456789"] },
+    );
+    expect(d).toMatchObject({
+      chain: w.chain,
+      wallets: w.chain,
+      keeper: KEEPER,
+      programs: PROGRAMS,
+      vrfProgram: ORAO_PROGRAM,
+      freeSpots: 2,
+      jobs: health,
+      limits: { afterMs: 7 * 60_000, settleSecs: 300 },
+      title: "BREAKS keeper on localnet",
+      repeatMs: 3 * 3_600_000,
+      now,
+    });
+    expect(d.channels.map((c) => c.name)).toEqual(["log", "telegram"]);
+    expect(d.scrub(`x SECRETPATH0123456789 ${TOKEN} y`)).toBe("x [hidden] [hidden] y");
+    const plain = watchdogDeps(watchConfig(), { sql: shared, chain: w.chain, wallets: w.chain, keeper: KEEPER, log: logger().log });
+    expect(plain.channels.map((c) => c.name)).toEqual(["log"]);
+    expect(plain).not.toHaveProperty("jobs");
+    expect(plain.now().getTime()).toBeGreaterThan(Date.now() - 60_000);
+  });
+
+  it("watches the real runner: a job that keeps failing is reported once in the log and on Telegram, without secrets, and nothing is sent to the chain", async () => {
+    const w = world();
+    const l = lines();
+    const sent: AlertMessage[] = [];
+    const send = vi.spyOn(w.chain, "sendAndConfirm");
+    let clock = 1_800_040_000_000;
+    const health = new JobHealth();
+    const watchdog = buildWatchdog(watchConfig({ alerts: "telegram", telegram: { token: TOKEN, chatId: "-100200" } }), {
+      sql: shared,
+      chain: w.chain,
+      wallets: w.chain,
+      keeper: KEEPER,
+      log: l.log,
+      now: () => new Date(clock),
+      health,
+      secrets: ["SECRETPATH0123456789"],
+      telegram: { name: "telegram", send: async (m) => void sent.push(m) },
+    });
+    const flaky: Job = {
+      name: "indexer",
+      intervalMs: 60_000,
+      run: async () => {
+        throw new Error(`request to https://rpc.example/SECRETPATH0123456789 failed; bot${TOKEN}`);
+      },
+    };
+    const runner = createRunner([flaky, watchdog], { now: () => new Date(clock), log: l.log }, health);
+    for (let i = 0; i < 4; i++) {
+      await runner.tick();
+      clock += 60_000;
+    }
+    const alert =
+      "• The indexer job has failed every run for 2 min (3 runs in a row). Last error: request to https://rpc.example/[hidden] failed; bot[hidden]";
+    expect(sent.map((m) => m.text)).toEqual([
+      "BREAKS keeper on devnet started. A problem that lasts is reported here once, and again when it clears.",
+      `BREAKS keeper on devnet: 1 new problem.\nNew:\n${alert}`,
+    ]);
+    expect(sent.map((m) => m.urgent)).toEqual([false, true]);
+    expect(l.out.filter(([, m]) => m === "watchdog").map(([level, , e]) => [level, e?.message])).toEqual([
+      ["info", "BREAKS keeper on devnet started. A problem that lasts is reported here once, and again when it clears."],
+      ["error", `BREAKS keeper on devnet: 1 new problem.\nNew:\n${alert}`],
+    ]);
+    expect(send).not.toHaveBeenCalled();
+  });
+});

@@ -1,5 +1,7 @@
 import pg from "pg";
-import { buildJobs, sqlFromPool } from "./app.js";
+import { buildJobs, buildWatchdog, sqlFromPool } from "./app.js";
+import { urlSecrets } from "./doctor/report.js";
+import { JobHealth } from "./watch/health.js";
 import { loadConfig } from "./config.js";
 import { RpcTokenReader } from "./indexer/reader.js";
 import { RpcAccountReader } from "./bot/world.js";
@@ -34,8 +36,13 @@ async function main() {
   const wallets = new RpcWalletReader(rpc, config.commitment);
   // The X bot announces only what is final.
   const finalized = new RpcAccountReader(rpc, "finalized");
-  const jobs = await buildJobs(config, { sql: sqlFromPool(pool), chain, reader, wallets, finalized, keeper: chain.keeper, log });
-  const runner = createRunner(jobs, { now: () => new Date(), log });
+  const sql = sqlFromPool(pool);
+  const health = new JobHealth();
+  const jobs = [
+    ...(await buildJobs(config, { sql, chain, reader, wallets, finalized, keeper: chain.keeper, log })),
+    buildWatchdog(config, { sql, chain, wallets, keeper: chain.keeper, log, health, secrets: [...urlSecrets(config.rpcUrl, "rpc"), ...urlSecrets(config.databaseUrl, "db")] }),
+  ];
+  const runner = createRunner(jobs, { now: () => new Date(), log }, health);
   log.info("keeper started", { cluster: config.cluster, keeper: chain.keeper, jobs: jobs.map((j) => j.name) });
   const loop = startLoop(runner, config.jobTickMs, log);
 
