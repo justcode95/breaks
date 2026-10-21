@@ -1019,7 +1019,7 @@ describe("secrets", () => {
     // Pasted into a setting the report does print, it is still hidden.
     const pasted = await healthyWorld({ env: { PUBLISH_DIR: `/srv/${SECRET_TELEGRAM_TOKEN}` } });
     const printed = await main([], { env: pasted.env, ports: pasted.ports });
-    expect(printed.out).toContain("/srv/[hidden] can be written to");
+    expect(printed.out).toContain("/srv/[hidden]"); // writable or not (CI does not run as root), the path is printed, hidden
     expect(printed.out).not.toContain(SECRET_TELEGRAM_TOKEN);
   });
 
